@@ -83,7 +83,11 @@ class DashboardService:
             },
             "expense_categories": self._expense_by_category(month_receipts, month_transactions),
             "shopping": self._pending_by_category(pending_items, quotes),
-            "promotions": self._promotions_for_bought_items(receipts=receipts, quotes=quotes),
+            "promotions": self._promotions_for_household_items(
+                receipts=receipts,
+                pending_items=pending_items,
+                quotes=quotes,
+            ),
             "monthly_cashflow": self._monthly_cashflow(
                 receipts=receipts,
                 transactions=series_transactions,
@@ -153,27 +157,42 @@ class DashboardService:
             )
         return [{"category": category, "items": items} for category, items in sorted(grouped.items())]
 
-    def _promotions_for_bought_items(
+    def _promotions_for_household_items(
         self,
         *,
         receipts: list[object],
+        pending_items: list[object],
         quotes: list[object],
     ) -> list[dict[str, str]]:
-        bought_names = {
+        household_item_names = {
             self._normalise(receipt_item.name)
             for receipt in receipts
             for receipt_item in receipt.items
             if receipt_item.name
         }
+        household_item_names.update(
+            self._normalise(item.name)
+            for item in pending_items
+            if item.name
+        )
         promotions: list[dict[str, str]] = []
         seen: set[tuple[str, str, str]] = set()
 
         for quote in quotes:
             if not quote.is_promotion:
                 continue
+            price = self._decimal_price(quote.price)
+            if price is None or price <= 0:
+                continue
+            if not self._valid_quote_for_item(item_store="", quote=quote):
+                continue
             quote_name = self._normalise(quote.item_name)
             product_name = self._normalise(quote.product_name)
-            if not self._matches_bought_item(quote_name=quote_name, product_name=product_name, bought_names=bought_names):
+            if not self._matches_household_item(
+                quote_name=quote_name,
+                product_name=product_name,
+                household_item_names=household_item_names,
+            ):
                 continue
             key = (quote_name, self._normalise(quote.store_name), quote.price or "")
             if key in seen:
@@ -363,7 +382,7 @@ class DashboardService:
             if item_store and item_store != "anywhere" and DashboardService._normalise(quote.store_name) != item_store:
                 continue
             price = DashboardService._decimal_price(quote.price)
-            if price is None:
+            if price is None or price <= 0:
                 continue
             candidates.append((price, DashboardService._store_rank(quote.store_name), quote))
 
@@ -375,7 +394,12 @@ class DashboardService:
     def _valid_quote_for_item(*, item_store: str, quote: object) -> bool:
         store = DashboardService._normalise(quote.store_name)
         product_name = DashboardService._normalise(quote.product_name)
-        if "pesquisou por" in product_name or "search" in product_name:
+        if (
+            "pesquisou por" in product_name
+            or "search" in product_name
+            or "elementsbytagname" in product_name
+            or product_name in {"document", "window", "undefined"}
+        ):
             return False
         if store == "minimix" and item_store not in {"minimix", "mini mix"}:
             return False
@@ -420,20 +444,48 @@ class DashboardService:
         return (value or "").strip().casefold()
 
     @staticmethod
-    def _matches_bought_item(
+    def _matches_household_item(
         *,
         quote_name: str,
         product_name: str,
-        bought_names: set[str],
+        household_item_names: set[str],
     ) -> bool:
         if not quote_name:
             return False
-        for bought_name in bought_names:
-            if not bought_name:
+        for item_name in household_item_names:
+            if not item_name:
                 continue
-            if quote_name in bought_name or bought_name in quote_name:
-                return True
-            if product_name and bought_name in product_name:
+            for related_name in DashboardService._related_item_names(item_name):
+                if quote_name in related_name or related_name in quote_name:
+                    return True
+                if product_name and related_name in product_name:
+                    return True
+                if product_name and quote_name in related_name:
+                    return True
+        return False
+
+    @staticmethod
+    def _related_item_names(item_name: str) -> set[str]:
+        names = {item_name}
+        aliases = {
+            "cashew": {"caju"},
+            "cashews": {"caju"},
+            "walnut": {"noz", "nozes"},
+            "walnuts": {"noz", "nozes"},
+            "oat": {"aveia"},
+            "oats": {"aveia"},
+            "tonic water": {"agua tonica", "água tónica"},
+            "cottage cheese": {"queijo cottage", "requeijao", "requeijão"},
+        }
+        for source, replacements in aliases.items():
+            if source in item_name:
+                names.update(replacements)
+        return names
+
+    @staticmethod
+    def _names_match(left: str, right: str) -> bool:
+        for related_name in DashboardService._related_item_names(left):
+            if related_name in right or right in related_name:
                 return True
         return False
 
