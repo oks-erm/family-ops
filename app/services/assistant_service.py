@@ -191,8 +191,15 @@ class AssistantService:
         user = await UserRepository(self.session).get_by_id(user_id=user_id)
         if user is None:
             raise RuntimeError("User must exist before assistant actions can run.")
+        from app.utils.datetime import now_in_timezone
+
         household_id = await self._household_id_for_user(user_id=user_id)
-        plan_date = self._tomorrow_for_user_timezone(user.timezone)
+        lowered = text.lower()
+        today = now_in_timezone(user.timezone).date()
+        if any(w in lowered for w in ("today", "tonight", "this evening")):
+            plan_date = today
+        else:
+            plan_date = today + timedelta(days=1)
         conversation = await self.planning_repository.get_conversation(
             user_id=user_id,
             plan_date=plan_date,
@@ -263,17 +270,23 @@ class AssistantService:
         if period == "week":
             start = today
             end = today + timedelta(days=6)
-        else:
+        elif period == "tomorrow":
+            start = today + timedelta(days=1)
+            end = start
+        else:  # "today" or legacy "day"
             start = today
             end = today
 
         tasks = await self.task_repository.list_pending_for_user(user_id=user_id, through_date=end)
         household_id = await self._household_id_for_user(user_id=user_id)
-        shopping_items = await self.shopping_repository.list_all_pending_for_household(
-            household_id=household_id,
-        )
 
-        lines = [f"This {period}" if period == "week" else "Today"]
+        if period == "week":
+            heading = "This week"
+        elif period == "tomorrow":
+            heading = "Tomorrow"
+        else:
+            heading = "Today"
+        lines = [heading]
         due_tasks = [task for task in tasks if task.due_date is not None]
         flexible_tasks = [task for task in tasks if task.due_date is None]
         if due_tasks or flexible_tasks:
@@ -306,12 +319,6 @@ class AssistantService:
             lines.append("")
             lines.append("Calendar")
             lines.extend(calendar_lines[:12])
-
-        if shopping_items:
-            lines.append("")
-            lines.append("Shopping")
-            for item in shopping_items[:8]:
-                lines.append(f"- {item.name} ({item.store_name_raw or 'anywhere'})")
 
         return AssistantResponse(intent=AssistantIntent.planning_note, text="\n".join(lines))
 
@@ -355,6 +362,11 @@ class AssistantService:
             day=plan_date,
             timezone=user.timezone,
         )
+        from app.utils.datetime import now_in_timezone
+
+        today = now_in_timezone(user.timezone).date()
+        current_time = now_in_timezone(user.timezone).time() if plan_date == today else None
+
         planning_service = PlanningService()
         plan = planning_service.build_daily_plan(
             PlanningInput(
@@ -368,6 +380,7 @@ class AssistantService:
                     f"{item.name} ({item.store_name_raw or 'anywhere'})" for item in shopping_items
                 ],
                 calendar_events=calendar_events,
+                current_time=current_time,
             )
         )
         await self.planning_repository.upsert_daily_plan(
@@ -556,7 +569,7 @@ class AssistantService:
         patterns = (
             r"^(?:task|todo|to do):\s+(.+)$",
             r"^(?:add task|create task|remind me to)\s+(.+)$",
-            r"^(?:i need to|we need to)\s+(.+)$",
+            r"^(?:i need to|we need to|need to)\s+(.+)$",
         )
         for pattern in patterns:
             match = re.match(pattern, stripped, flags=re.IGNORECASE)
@@ -629,8 +642,20 @@ class AssistantService:
     @staticmethod
     def _parse_planning_query(text: str) -> str | None:
         lowered = text.lower().strip(" ?!.")
+        # "plan today", "plan tomorrow", "plan for tomorrow", "plans for this week", etc.
+        time_ref_match = re.match(
+            r"^plans?\s+(?:for\s+)?(today|tonight|tomorrow|this week|next week)$",
+            lowered,
+        )
+        if time_ref_match:
+            ref = time_ref_match.group(1)
+            if "week" in ref:
+                return "week"
+            if "tomorrow" in ref:
+                return "tomorrow"
+            return "today"
         if lowered in {"plan", "plans"}:
-            return "day"
+            return "today"
         query_markers = (
             "what do i have to do",
             "what do we have to do",
@@ -638,6 +663,8 @@ class AssistantService:
             "what should we do",
             "what is my plan",
             "what's my plan",
+            "what's planned",
+            "what is planned",
             "show my plan",
             "show me my plan",
             "plans for",
@@ -647,7 +674,9 @@ class AssistantService:
             return None
         if "week" in lowered:
             return "week"
-        return "day"
+        if "tomorrow" in lowered:
+            return "tomorrow"
+        return "today"
 
     @staticmethod
     def _is_shopping_summary_query(text: str) -> bool:
@@ -670,4 +699,12 @@ class AssistantService:
         match = re.match(r"^plan\s+(.+)$", stripped, flags=re.IGNORECASE | re.DOTALL)
         if not match:
             return None
-        return match.group(1).strip()
+        content = match.group(1).strip()
+        # Time references are queries, not notes
+        if re.match(
+            r"^(today|tonight|tomorrow|this week|next week|for today|for tomorrow|for this week)$",
+            content,
+            flags=re.IGNORECASE,
+        ):
+            return None
+        return content

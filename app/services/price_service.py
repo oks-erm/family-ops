@@ -41,8 +41,8 @@ class PriceService:
     MAX_HISTORY_ITEMS = 30
     MAX_CONCURRENT_REQUESTS = 8
     QUERY_ALIASES = {
-        "cashew": ("caju",),
-        "cashews": ("caju",),
+        "cashew": ("caju", "cajus"),
+        "cashews": ("caju", "cajus"),
         "walnut": ("miolo de noz", "nozes", "noz"),
         "walnuts": ("miolo de noz", "nozes", "noz"),
         "oat": ("flocos de aveia", "aveia"),
@@ -435,7 +435,15 @@ class PriceService:
         query_tokens = {token for token in re.split(r"\W+", query.lower()) if len(token) >= 4}
         if not query_tokens:
             return True
-        return bool(title_tokens & query_tokens)
+        # Exact match first
+        if title_tokens & query_tokens:
+            return True
+        # Prefix match handles Portuguese plurals (caju/cajus, nozes/noz, etc.)
+        for qt in query_tokens:
+            for tt in title_tokens:
+                if tt.startswith(qt) or qt.startswith(tt):
+                    return True
+        return False
 
     @staticmethod
     def _format_price(value: str) -> str:

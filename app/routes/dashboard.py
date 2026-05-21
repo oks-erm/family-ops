@@ -244,6 +244,11 @@ async def dashboard_page(request: Request) -> str:
       gap: 12px;
       margin-bottom: 14px;
     }
+    .section-foot {
+      margin-top: 10px;
+      text-align: center;
+    }
+    .section-foot .link-btn[hidden] { display: none; }
     .link-btn {
       border: 1px solid var(--line);
       border-radius: 999px;
@@ -253,6 +258,7 @@ async def dashboard_page(request: Request) -> str:
       padding: 6px 10px;
       font-size: 12px;
     }
+    .icon-btn { padding: 4px 7px; font-size: 14px; }
     .link-btn:hover { color: var(--ink); border-color: #cbd5e1; }
     .rows { display: grid; gap: 6px; }
     .row {
@@ -461,17 +467,17 @@ async def dashboard_page(request: Request) -> str:
         <section class="panel">
           <div class="section-head">
             <h2>Shopping List</h2>
-            <button class="link-btn" type="button" data-collapse-target="categories">Show all</button>
           </div>
           <div id="categories"></div>
+          <div class="section-foot"><button class="link-btn" type="button" data-collapse-target="categories">Show all</button></div>
         </section>
 
         <section class="panel">
           <div class="section-head">
             <h2>Promotions On Things You Buy</h2>
-            <button class="link-btn" type="button" data-collapse-target="promotions">Show all</button>
           </div>
           <div class="rows" id="promotions"></div>
+          <div class="section-foot"><button class="link-btn" type="button" data-collapse-target="promotions">Show all</button></div>
         </section>
       </div>
 
@@ -667,7 +673,7 @@ async def dashboard_page(request: Request) -> str:
                     ${item.price_store ? `<span>· cheapest at ${escapeHtml(item.price_store)}</span>` : ""}
                     ${item.old_price ? `<span class="old-price">${escapeHtml(item.old_price)}</span>` : ""}
                     ${item.is_promotion === "yes" ? `<span class="promo">promotion</span>` : ""}
-                    <button class="link-btn" type="button" data-price-toggle="${escapeHtml(item.id)}">${item.price ? "Edit price" : "Add price"}</button>
+                    <button class="link-btn icon-btn" type="button" data-price-toggle="${escapeHtml(item.id)}" title="${item.price ? 'Edit price' : 'Add price'}">✏</button>
                   </div>
                   <form class="price-form" data-price-form="${escapeHtml(item.id)}">
                     <input name="store_name" placeholder="Store" value="${escapeHtml(item.store !== "anywhere" ? item.store : "Lidl")}">

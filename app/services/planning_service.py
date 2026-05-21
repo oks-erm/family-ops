@@ -21,6 +21,7 @@ class PlanningInput:
     tasks: list[str]
     shopping_items: list[str]
     calendar_events: list[CalendarEventInput]
+    current_time: time | None = None
 
 
 class PlanningService:
@@ -70,12 +71,6 @@ class PlanningService:
                 title = task["title"] if isinstance(task, dict) else str(task)
                 lines.append(f"- {title}")
 
-        shopping = plan.get("shopping") or []
-        if shopping:
-            lines.append("")
-            lines.append("Shopping")
-            for item in shopping:
-                lines.append(f"- {item}")
         return "\n".join(lines)
 
     def _fixed_events(self, planning_input: PlanningInput) -> list[dict[str, str]]:
@@ -106,7 +101,7 @@ class PlanningService:
         planning_input: PlanningInput,
         fixed_events: list[dict[str, str]],
     ) -> list[dict[str, str]]:
-        day_start = time(hour=7)
+        day_start = planning_input.current_time or time(hour=7)
         day_end = time(hour=22)
         busy = [
             (self._parse_hhmm(event["start"]), self._parse_hhmm(event["end"]))
