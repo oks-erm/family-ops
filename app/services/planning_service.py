@@ -36,6 +36,7 @@ class PlanningService:
             "notes": planning_input.unusual_notes,
             "fixed_events": fixed_events,
             "free_windows": free_windows,
+            "tasks": planning_input.tasks,
             "suggested_tasks": self._suggest_tasks(planning_input.tasks, free_windows),
         }
 
@@ -64,10 +65,14 @@ class PlanningService:
         tasks = plan.get("suggested_tasks") or []
         if tasks:
             lines.append("")
-            lines.append("Suggested tasks")
+            lines.append("Tasks")
             for task in tasks:
                 title = task["title"] if isinstance(task, dict) else str(task)
                 lines.append(f"- {title}")
+        elif not fixed_events and not plan.get("notes"):
+            lines.append("")
+            lines.append("Tasks")
+            lines.append("- No pending tasks.")
 
         return "\n".join(lines)
 

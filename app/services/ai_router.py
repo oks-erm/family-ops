@@ -42,9 +42,15 @@ class AiRouter:
             return AiJsonResult(provider=provider, data=None)
 
         prompt = (
-            "Classify this household assistant message. Return only compact JSON with keys "
-            "intent and confidence. Allowed intents: add_shopping_item, going_to_store, "
-            "planning_note, unknown.\n\n"
+            "Classify this household assistant message. Return only compact JSON with keys: "
+            "intent, confidence, item, date_ref, store_name. Allowed intents: "
+            "add_shopping_item, going_to_store, shopping_summary, task_created, planning_query, "
+            "planning_note, mark_shopping_purchased, remove_item, move_item, finance_transaction, "
+            "unknown. Use add_shopping_item only for products to buy, not activities. "
+            "Use task_created for actions/activities like play drums, cook dinner, call dentist. "
+            "Use planning_query for questions asking what to do or asking to show plan. "
+            "Use planning_note for schedule/context notes like sleep at 23:00. date_ref should be "
+            "today, tomorrow, week, or empty.\n\n"
             f"Message: {text}"
         )
 

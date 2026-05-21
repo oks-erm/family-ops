@@ -139,19 +139,19 @@ class AssistantService:
             return await self._expense_summary(user_id=user_id, period=period, store_name=store_name)
 
         ai_result = await self.ai_router.classify_light_intent(text=text)
-        ai_intent = (ai_result.data or {}).get("intent")
-        if ai_intent == AssistantIntent.planning_note:
-            return AssistantResponse(
-                intent=AssistantIntent.unknown,
-                text="To add a planning note, start the message with: plan ...",
-            )
+        ai_response = await self._handle_ai_classification(
+            user_id=user_id,
+            text=text,
+            data=ai_result.data,
+        )
+        if ai_response is not None:
+            return ai_response
 
         return AssistantResponse(
             intent=AssistantIntent.unknown,
             text=(
-                "I can handle shopping, tasks, receipts, and plans. Try: "
-                "'Need eggs from Lidl', 'I need to call dentist tomorrow', "
-                "'plan tomorrow', or 'plan cook dinner today'."
+                "I am not sure whether this is shopping, a task, or a plan note. "
+                "Please confirm with one of: 'buy ...', 'task ...', or 'plan ...'."
             ),
         )
 
@@ -208,6 +208,45 @@ class AssistantService:
             text="Saved. Draft plan:\n\n" + plan_text,
         )
 
+    async def _handle_ai_classification(
+        self,
+        *,
+        user_id: UUID,
+        text: str,
+        data: dict[str, object] | None,
+    ) -> AssistantResponse | None:
+        if not data:
+            return None
+        confidence = data.get("confidence")
+        try:
+            confidence_value = float(confidence)
+        except (TypeError, ValueError):
+            confidence_value = 0.0
+        if confidence_value < 0.7:
+            return None
+
+        intent = str(data.get("intent") or "").strip()
+        item = str(data.get("item") or "").strip()
+        date_ref = str(data.get("date_ref") or "").strip().lower()
+        store_name = str(data.get("store_name") or "").strip() or None
+
+        if intent == "planning_query":
+            period = "week" if date_ref == "week" else "tomorrow" if date_ref == "tomorrow" else "today"
+            return await self._planning_summary(user_id=user_id, period=period)
+        if intent == "task_created" and item:
+            title = f"{item} {date_ref}".strip()
+            return await self._create_task(user_id=user_id, title=title)
+        if intent == "planning_note":
+            return await self._store_planning_note(user_id=user_id, text=text)
+        if intent == "add_shopping_item" and item:
+            return await self._add_shopping_item(
+                user_id=user_id,
+                item=ParsedShoppingItem(name=item, store_name=store_name),
+            )
+        if intent == "shopping_summary":
+            return await self._shopping_summary(user_id=user_id)
+        return None
+
     async def _store_planning_note(
         self,
         *,
@@ -239,6 +278,19 @@ class AssistantService:
             unusual_notes=text.strip(),
             next_state=PlanningConversationState.complete,
         )
+        if self._looks_like_activity(text) and not self._looks_like_schedule_note(text):
+            cleaned_title = self._clean_task_title(text)
+            existing_task = await self.task_repository.find_pending_by_title(
+                user_id=user_id,
+                title=cleaned_title,
+            )
+            if existing_task is None:
+                await self.task_repository.create_task(
+                    user_id=user_id,
+                    household_id=household_id,
+                    title=cleaned_title,
+                    due_date=plan_date,
+                )
         plan_text = await self._generate_daily_plan_text(user_id=user_id, plan_date=plan_date)
         return AssistantResponse(
             intent=AssistantIntent.planning_note,
@@ -301,6 +353,12 @@ class AssistantService:
             start = today
             end = today
 
+        if period in {"today", "tomorrow", "day"}:
+            return AssistantResponse(
+                intent=AssistantIntent.planning_note,
+                text=await self._generate_daily_plan_text(user_id=user_id, plan_date=start),
+            )
+
         tasks = await self.task_repository.list_pending_for_user(user_id=user_id, through_date=end)
         household_id = await self._household_id_for_user(user_id=user_id)
 
@@ -311,6 +369,20 @@ class AssistantService:
         else:
             heading = "Today"
         lines = [heading]
+        current = start
+        note_lines = []
+        while current <= end:
+            conversation = await self.planning_repository.get_conversation(
+                user_id=user_id,
+                plan_date=current,
+            )
+            if conversation and conversation.unusual_notes:
+                note_lines.append(f"- {current.isoformat()}: {conversation.unusual_notes}")
+            current += timedelta(days=1)
+        if note_lines:
+            lines.append("")
+            lines.append("Notes")
+            lines.extend(note_lines)
         due_tasks = [task for task in tasks if task.due_date is not None]
         flexible_tasks = [task for task in tasks if task.due_date is None]
         if due_tasks or flexible_tasks:
@@ -699,6 +771,7 @@ class AssistantService:
             r"^(?:add task|create task|remind me to)\s+(.+)$",
             r"^(?:i need to|we need to|need to|i have to|we have to|have to|i should|we should)\s+(.+)$",
             r"^(?:can you remind me to|please remind me to)\s+(.+)$",
+            r"^(?:i want to|we want to|i would like to|we would like to)\s+(.+)$",
         )
         for pattern in patterns:
             match = re.match(pattern, stripped, flags=re.IGNORECASE)
@@ -791,8 +864,14 @@ class AssistantService:
         query_markers = (
             "what do i have to do",
             "what do we have to do",
+            "what to do",
+            "what do i do",
+            "what should be done",
             "what should i do",
             "what should we do",
+            "what needs doing",
+            "what do i need to do",
+            "what do we need to do",
             "what is my plan",
             "what's my plan",
             "what's planned",
@@ -829,17 +908,23 @@ class AssistantService:
     def _parse_planning_note(text: str) -> tuple[str, date | None] | None:
         stripped = text.strip()
         match = re.match(r"^plan\s+(.+)$", stripped, flags=re.IGNORECASE | re.DOTALL)
-        if not match:
-            return None
-        content = match.group(1).strip()
-        # Time references are queries, not notes
-        if re.match(
-            r"^(today|tonight|tomorrow|this week|next week|for today|for tomorrow|for this week)$",
-            content,
-            flags=re.IGNORECASE,
+        if match:
+            content = match.group(1).strip()
+            # Time references are queries, not notes
+            if re.match(
+                r"^(today|tonight|tomorrow|this week|next week|for today|for tomorrow|for this week)$",
+                content,
+                flags=re.IGNORECASE,
+            ):
+                return None
+            return content, None
+        lowered = stripped.lower()
+        if re.search(r"\b(?:go to sleep|sleep|bed|wake up)\b", lowered) and re.search(
+            r"\b(?:at\s*)?([01]?\d|2[0-3])(?::|\.|h)?([0-5]\d)?\b",
+            lowered,
         ):
-            return None
-        return content, None
+            return stripped, None
+        return None
 
     @staticmethod
     def _parse_remove_request(text: str) -> dict[str, str] | None:
@@ -940,6 +1025,12 @@ class AssistantService:
         "organize",
         "study",
         "write",
+        "play",
+        "practice",
+        "watch",
+        "read",
+        "sleep",
+        "nap",
     )
 
     @staticmethod
@@ -957,3 +1048,16 @@ class AssistantService:
                 "comprar ",
             )
         ) and not lowered.startswith(("need to ", "i need to ", "we need to "))
+
+    @staticmethod
+    def _looks_like_activity(text: str) -> bool:
+        lowered = text.lower()
+        return any(verb in lowered for verb in AssistantService._ACTION_VERBS)
+
+    @staticmethod
+    def _looks_like_schedule_note(text: str) -> bool:
+        lowered = text.lower()
+        return bool(
+            re.search(r"\b(?:go to sleep|sleep|bed|wake up)\b", lowered)
+            and re.search(r"\b(?:at\s*)?([01]?\d|2[0-3])(?::|\.|h)?([0-5]\d)?\b", lowered)
+        )
