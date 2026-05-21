@@ -74,9 +74,11 @@ jobs:
           host: ${{ secrets.HETZNER_HOST }}
           username: ${{ secrets.HETZNER_SSH_USER }}
           key: ${{ secrets.HETZNER_SSH_KEY }}
+          passphrase: ${{ secrets.HETZNER_SSH_PASSPHRASE }}
           script: |
             set -e
-            mkdir -p /opt/family-ops
+            sudo mkdir -p /opt/family-ops
+            sudo chown "$USER":"$USER" /opt/family-ops
 
       - name: Copy compose file to server
         uses: appleboy/scp-action@v0.1.7
@@ -84,6 +86,7 @@ jobs:
           host: ${{ secrets.HETZNER_HOST }}
           username: ${{ secrets.HETZNER_SSH_USER }}
           key: ${{ secrets.HETZNER_SSH_KEY }}
+          passphrase: ${{ secrets.HETZNER_SSH_PASSPHRASE }}
           source: "docker-compose.prod.yml"
           target: "/opt/family-ops"
 
@@ -99,10 +102,16 @@ jobs:
           host: ${{ secrets.HETZNER_HOST }}
           username: ${{ secrets.HETZNER_SSH_USER }}
           key: ${{ secrets.HETZNER_SSH_KEY }}
+          passphrase: ${{ secrets.HETZNER_SSH_PASSPHRASE }}
           envs: ENV_FILE,GHCR_TOKEN,GITHUB_ACTOR,IMAGE_NAME,IMAGE_TAG
           script: |
             set -e
             cd /opt/family-ops
+
+            DOCKER="docker"
+            if ! docker info >/dev/null 2>&1; then
+              DOCKER="sudo docker"
+            fi
 
             # Write production .env from secret, then pin the image tag
             printf '%s' "$ENV_FILE" > .env
@@ -113,11 +122,11 @@ jobs:
             echo "IMAGE_TAG=$IMAGE_TAG" >> .env
 
             # Authenticate to GHCR
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            echo "$GHCR_TOKEN" | $DOCKER login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
             # Pull new image and restart (migrations run inside the entrypoint)
-            docker compose -f docker-compose.prod.yml pull app
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            $DOCKER compose -f docker-compose.prod.yml pull app
+            $DOCKER compose -f docker-compose.prod.yml up -d --remove-orphans
 
             # Clean up dangling images
-            docker image prune -f
+            $DOCKER image prune -f
