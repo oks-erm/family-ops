@@ -288,7 +288,22 @@ async def dashboard_page(request: Request) -> str:
       padding: 6px 10px;
       font-size: 12px;
     }
-    .icon-btn { padding: 4px 7px; font-size: 14px; }
+    .icon-btn {
+      width: 34px;
+      height: 34px;
+      display: inline-grid;
+      place-items: center;
+      padding: 0;
+    }
+    .icon-btn svg {
+      width: 17px;
+      height: 17px;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+    }
     .link-btn:hover { color: var(--ink); border-color: #cbd5e1; }
     .rows { display: grid; gap: 6px; }
     .filters {
@@ -614,6 +629,12 @@ async def dashboard_page(request: Request) -> str:
       ...item,
       category: group.category,
     })));
+    const iconSvg = name => {
+      if (name === "edit") {
+        return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5Z"/></svg>`;
+      }
+      return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>`;
+    };
     const collapseButton = target => document.querySelector(`[data-collapse-target="${target}"]`);
     const setCollapseButton = (target, total, expanded) => {
       const button = collapseButton(target);
@@ -750,7 +771,7 @@ async def dashboard_page(request: Request) -> str:
                     ${item.price_store ? `<span>· cheapest at ${escapeHtml(item.price_store)}</span>` : ""}
                     ${item.old_price ? `<span class="old-price">${escapeHtml(item.old_price)}</span>` : ""}
                     ${item.is_promotion === "yes" ? `<span class="promo">promotion</span>` : ""}
-                    <button class="link-btn icon-btn" type="button" data-price-toggle="${escapeHtml(item.id)}" title="${item.price ? 'Edit price' : 'Add price'}">✏</button>
+                    <button class="link-btn icon-btn" type="button" data-price-toggle="${escapeHtml(item.id)}" title="${item.price ? 'Edit price' : 'Add price'}" aria-label="${item.price ? 'Edit price' : 'Add price'}">${iconSvg(item.price ? "edit" : "add")}</button>
                   </div>
                   <form class="price-form" data-price-form="${escapeHtml(item.id)}">
                     <input name="store_name" placeholder="Store" value="${escapeHtml(item.store !== "anywhere" ? item.store : "Lidl")}">
