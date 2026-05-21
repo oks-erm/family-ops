@@ -60,10 +60,23 @@ jobs:
     needs: build-push
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: read
+      packages: read
 
     steps:
       - name: Checkout (for compose file)
         uses: actions/checkout@v4
+
+      - name: Prepare server directory
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: ${{ secrets.HETZNER_SSH_USER }}
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          script: |
+            set -e
+            mkdir -p /opt/family-ops
 
       - name: Copy compose file to server
         uses: appleboy/scp-action@v0.1.7
@@ -72,7 +85,7 @@ jobs:
           username: ${{ secrets.HETZNER_SSH_USER }}
           key: ${{ secrets.HETZNER_SSH_KEY }}
           source: "docker-compose.prod.yml"
-          target: "/opt/family-copilot"
+          target: "/opt/family-ops"
 
       - name: Deploy
         uses: appleboy/ssh-action@v1
@@ -80,20 +93,23 @@ jobs:
           ENV_FILE: ${{ secrets.ENV_FILE }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTOR: ${{ github.actor }}
+          IMAGE_NAME: ${{ needs.build-push.outputs.image_name }}
           IMAGE_TAG: "sha-${{ needs.build-push.outputs.image_tag }}"
         with:
           host: ${{ secrets.HETZNER_HOST }}
           username: ${{ secrets.HETZNER_SSH_USER }}
           key: ${{ secrets.HETZNER_SSH_KEY }}
-          envs: ENV_FILE,GHCR_TOKEN,GITHUB_ACTOR,IMAGE_TAG
+          envs: ENV_FILE,GHCR_TOKEN,GITHUB_ACTOR,IMAGE_NAME,IMAGE_TAG
           script: |
             set -e
-            cd /opt/family-copilot
+            cd /opt/family-ops
 
             # Write production .env from secret, then pin the image tag
             printf '%s' "$ENV_FILE" > .env
-            # Remove any existing IMAGE_TAG line, then append the new one
+            # Remove deploy-controlled image values, then append the current build image.
+            sed -i '/^GHCR_IMAGE=/d' .env
             sed -i '/^IMAGE_TAG=/d' .env
+            echo "GHCR_IMAGE=$IMAGE_NAME" >> .env
             echo "IMAGE_TAG=$IMAGE_TAG" >> .env
 
             # Authenticate to GHCR
