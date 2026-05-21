@@ -1,0 +1,121 @@
+from datetime import UTC, datetime, timedelta
+from urllib.parse import urlencode
+from uuid import UUID
+
+import httpx
+from fastapi import APIRouter, HTTPException, Query
+
+from app.config import get_settings
+from app.db.repositories.calendar import CalendarRepository
+from app.db.repositories.households import HouseholdRepository
+from app.db.repositories.users import UserRepository
+from app.db.session import async_session_factory
+from app.services.calendar_service import CalendarService
+
+router = APIRouter(prefix="/calendar", tags=["calendar"])
+
+GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+
+
+async def _dashboard_context(session):
+    users = await UserRepository(session).list_users()
+    if not users:
+        return None, None
+    dashboard_user = next((user for user in users if user.username == "okserm"), users[0])
+    household = await HouseholdRepository(session).ensure_household_for_user(user=dashboard_user)
+    return dashboard_user, household
+
+
+@router.get("/google/start")
+async def google_calendar_start() -> dict[str, str]:
+    settings = get_settings()
+    if not settings.google_client_id or not settings.google_redirect_uri:
+        raise HTTPException(status_code=400, detail="Google OAuth env vars are not configured.")
+
+    async with async_session_factory() as session:
+        user, _ = await _dashboard_context(session)
+        if user is None:
+            raise HTTPException(status_code=404, detail="No onboarded user found.")
+
+    query = urlencode(
+        {
+            "client_id": settings.google_client_id,
+            "redirect_uri": settings.google_redirect_uri,
+            "response_type": "code",
+            "scope": " ".join(GOOGLE_SCOPES),
+            "access_type": "offline",
+            "prompt": "consent",
+            "state": str(user.id),
+        }
+    )
+    return {"authorization_url": f"https://accounts.google.com/o/oauth2/v2/auth?{query}"}
+
+
+@router.get("/google/callback")
+async def google_calendar_callback(
+    *,
+    code: str = Query(...),
+    state: str = Query(...),
+) -> dict[str, str]:
+    settings = get_settings()
+    if not settings.google_client_id or not settings.google_client_secret or not settings.google_redirect_uri:
+        raise HTTPException(status_code=400, detail="Google OAuth env vars are not configured.")
+
+    async with async_session_factory() as session:
+        user = await UserRepository(session).get_by_id(user_id=UUID(state))
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found for OAuth state.")
+        household = await HouseholdRepository(session).ensure_household_for_user(user=user)
+
+        async with httpx.AsyncClient(timeout=12) as client:
+            response = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": code,
+                    "client_id": settings.google_client_id,
+                    "client_secret": settings.google_client_secret,
+                    "redirect_uri": settings.google_redirect_uri,
+                    "grant_type": "authorization_code",
+                },
+            )
+            response.raise_for_status()
+            token_data = response.json()
+
+        expires_in = int(token_data.get("expires_in") or 0)
+        token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in) if expires_in else None
+        await CalendarRepository(session).upsert_google_connection(
+            user_id=user.id,
+            household_id=household.id,
+            external_account_id=None,
+            access_token=token_data.get("access_token"),
+            refresh_token=token_data.get("refresh_token"),
+            token_expires_at=token_expires_at,
+            scopes=GOOGLE_SCOPES,
+        )
+        return {"status": "connected"}
+
+
+@router.post("/ical")
+async def add_ical_feed(name: str, url: str) -> dict[str, str]:
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="The iCal feed URL must start with http:// or https://.")
+    async with async_session_factory() as session:
+        user, household = await _dashboard_context(session)
+        if user is None or household is None:
+            raise HTTPException(status_code=404, detail="No onboarded user found.")
+        feed = await CalendarRepository(session).add_ical_feed(
+            user_id=user.id,
+            household_id=household.id,
+            name=name,
+            url=url,
+        )
+        return {"id": str(feed.id), "status": "added"}
+
+
+@router.post("/sync")
+async def sync_calendars() -> dict[str, int]:
+    async with async_session_factory() as session:
+        service = CalendarService(session)
+        ical_count = await service.sync_ical_feeds()
+        google_count = await service.sync_google_connections()
+        return {"ical_events": ical_count, "google_events": google_count}
