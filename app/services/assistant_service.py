@@ -11,6 +11,7 @@ from app.db.models import ActivityAction, DailyPlanStatus, PlanningConversationS
 from app.db.repositories.activity import ActivityRepository
 from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.planning import PlanningRepository
+from app.db.repositories.routines import RoutineRepository
 from app.db.repositories.tasks import TaskRepository
 from app.db.repositories.users import UserRepository
 from app.db.repositories.shopping import ShoppingRepository
@@ -18,7 +19,7 @@ from app.services.calendar_service import CalendarService
 from app.services.ai_router import AiRouter
 from app.services.analytics_service import AnalyticsService
 from app.services.finance_service import FinanceService
-from app.services.planning_service import PlanningInput, PlanningService
+from app.services.planning_service import PlannedTaskInput, PlanningInput, PlanningService
 from app.services.shopping_category_service import ShoppingCategoryService
 from app.services.shopping_service import ParsedShoppingItem, ShoppingService
 
@@ -54,6 +55,7 @@ class AssistantService:
         self.activity_repository = ActivityRepository(session)
         self.planning_repository = PlanningRepository(session)
         self.task_repository = TaskRepository(session)
+        self.routine_repository = RoutineRepository(session)
         self.ai_router = AiRouter(settings)
 
     async def handle_text(self, *, user_id: UUID, text: str) -> AssistantResponse:
@@ -64,6 +66,10 @@ class AssistantService:
         planning_query = self._parse_planning_query(text)
         if planning_query is not None:
             return await self._planning_summary(user_id=user_id, period=planning_query)
+
+        routine_update = self._parse_routine_duration_update(text)
+        if routine_update is not None:
+            return await self._update_routine_duration(user_id=user_id, title=routine_update[0], minutes=routine_update[1])
 
         move_request = self._parse_move_request(text)
         if move_request is not None:
@@ -196,10 +202,15 @@ class AssistantService:
                 text="Anything unusual tomorrow? Appointments, errands, low energy, church, workout?",
             )
 
+        existing_notes = conversation.unusual_notes or ""
+        note = text.strip()
+        combined_notes = note
+        if existing_notes and note.casefold() not in existing_notes.casefold():
+            combined_notes = f"{existing_notes}; {note}"
         await self.planning_repository.save_answer(
             conversation=conversation,
             message_text=text,
-            unusual_notes=text.strip(),
+            unusual_notes=combined_notes,
             next_state=PlanningConversationState.complete,
         )
         plan_text = await self._generate_daily_plan_text(user_id=user_id, plan_date=conversation.plan_date)
@@ -437,6 +448,39 @@ class AssistantService:
             metadata={"task_id": str(task.id)},
         )
 
+    async def _update_routine_duration(self, *, user_id: UUID, title: str, minutes: int) -> AssistantResponse:
+        household_id = await self._household_id_for_user(user_id=user_id)
+        await self.routine_repository.ensure_defaults(household_id=household_id)
+        normalized_title = self._normalize_routine_title(title)
+        routine = await self.routine_repository.find_by_title(
+            household_id=household_id,
+            title=normalized_title,
+        )
+        if routine is None:
+            routine = await self.routine_repository.create(
+                household_id=household_id,
+                title=normalized_title,
+                duration_minutes=minutes,
+            )
+        else:
+            routine = await self.routine_repository.update(
+                routine=routine,
+                title=routine.title,
+                duration_minutes=minutes,
+            )
+        await self.activity_repository.log(
+            household_id=household_id,
+            user_id=user_id,
+            action=ActivityAction.updated,
+            entity_type="routine",
+            entity_id=routine.id,
+            summary=f"Updated must task duration: {routine.title} ({minutes} min)",
+        )
+        return AssistantResponse(
+            intent=AssistantIntent.planning_note,
+            text=f"Updated must task: {routine.title} ({minutes} min).",
+        )
+
     async def _generate_daily_plan_text(self, *, user_id: UUID, plan_date: date) -> str:
         user = await UserRepository(self.session).get_by_id(user_id=user_id)
         if user is None:
@@ -450,6 +494,8 @@ class AssistantService:
             user_id=user_id,
             through_date=plan_date,
         )
+        await self.routine_repository.ensure_defaults(household_id=household_id)
+        routines = await self.routine_repository.list_active_for_household(household_id=household_id)
         calendar_events = await CalendarService(self.session).list_events_for_day(
             household_id=household_id,
             day=plan_date,
@@ -461,6 +507,21 @@ class AssistantService:
         current_time = now_in_timezone(user.timezone).time() if plan_date == today else None
 
         planning_service = PlanningService()
+        planned_tasks: list[str | PlannedTaskInput] = []
+        for routine in routines:
+            schedule = routine.schedule or {}
+            planned_tasks.append(
+                PlannedTaskInput(
+                    title=routine.title,
+                    duration_minutes=int(
+                        schedule.get("duration_minutes")
+                        or schedule.get("duration_min")
+                        or 30
+                    ),
+                    must=bool(schedule.get("must", True)),
+                )
+            )
+        planned_tasks.extend(task.title for task in tasks)
         plan = planning_service.build_daily_plan(
             PlanningInput(
                 user_id=user_id,
@@ -468,7 +529,7 @@ class AssistantService:
                 work_start=conversation.work_start if conversation else None,
                 work_end=conversation.work_end if conversation else None,
                 unusual_notes=conversation.unusual_notes if conversation else None,
-                tasks=[task.title for task in tasks],
+                tasks=planned_tasks,
                 calendar_events=calendar_events,
                 current_time=current_time,
             )
@@ -803,7 +864,7 @@ class AssistantService:
         lowered = text.lower().strip()
         if lowered in {"no work", "off", "day off", "none"}:
             return time(hour=0, minute=0)
-        match = re.search(r"\b([01]?\d|2[0-3])(?::|\.|h)?([0-5]\d)?\b", lowered)
+        match = re.search(r"\b(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\b", lowered)
         if not match:
             return None
         hour = int(match.group(1))
@@ -815,7 +876,7 @@ class AssistantService:
         lowered = text.lower()
         if "work" not in lowered and "working" not in lowered:
             return None
-        matches = list(re.finditer(r"\b([01]?\d|2[0-3])(?::|\.|h)?([0-5]\d)?\b", lowered))
+        matches = list(re.finditer(r"\b(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\b", lowered))
         if len(matches) < 2:
             return None
         start_match, end_match = matches[0], matches[1]
@@ -920,11 +981,45 @@ class AssistantService:
             return content, None
         lowered = stripped.lower()
         if re.search(r"\b(?:go to sleep|sleep|bed|wake up)\b", lowered) and re.search(
-            r"\b(?:at\s*)?([01]?\d|2[0-3])(?::|\.|h)?([0-5]\d)?\b",
+            r"\b(?:at\s*)?(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\b",
             lowered,
         ):
             return stripped, None
         return None
+
+    @staticmethod
+    def _parse_routine_duration_update(text: str) -> tuple[str, int] | None:
+        stripped = text.strip()
+        lowered = stripped.lower()
+        if not re.search(r"\b(?:min|mins|minute|minutes)\b", lowered):
+            return None
+        patterns = (
+            r"^(?:change|set|make|update)\s+(.+?)\s+(?:to\s+)?(\d{1,3})\s*(?:min|mins|minute|minutes)\b",
+            r"^(.+?)\s+(\d{1,3})\s*(?:min|mins|minute|minutes)\b",
+        )
+        for pattern in patterns:
+            match = re.match(pattern, stripped, flags=re.IGNORECASE)
+            if not match:
+                continue
+            title = AssistantService._normalize_routine_title(match.group(1))
+            minutes = int(match.group(2))
+            if not title or minutes < 1 or minutes > 360:
+                return None
+            if title in {"read the bible", "exercise"} or any(
+                marker in lowered for marker in ("daily", "routine", "must task")
+            ):
+                return title, minutes
+        return None
+
+    @staticmethod
+    def _normalize_routine_title(title: str) -> str:
+        normalized = title.strip(" .").lower()
+        normalized = re.sub(r"^(?:daily|routine|must task|task)\s+", "", normalized)
+        normalized = normalized.replace("exercice", "exercise")
+        normalized = normalized.replace("workout", "exercise")
+        normalized = normalized.replace("read bible", "read the bible")
+        normalized = normalized.replace("bible reading", "read the bible")
+        return normalized
 
     @staticmethod
     def _parse_remove_request(text: str) -> dict[str, str] | None:
@@ -1059,5 +1154,5 @@ class AssistantService:
         lowered = text.lower()
         return bool(
             re.search(r"\b(?:go to sleep|sleep|bed|wake up)\b", lowered)
-            and re.search(r"\b(?:at\s*)?([01]?\d|2[0-3])(?::|\.|h)?([0-5]\d)?\b", lowered)
+            and re.search(r"\b(?:at\s*)?(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\b", lowered)
         )

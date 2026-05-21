@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import re
 from datetime import date, datetime, time
 from uuid import UUID
 
@@ -12,15 +13,24 @@ class CalendarEventInput:
 
 
 @dataclass(frozen=True)
+class PlannedTaskInput:
+    title: str
+    duration_minutes: int | None = None
+    must: bool = False
+
+
+@dataclass(frozen=True)
 class PlanningInput:
     user_id: UUID
     plan_date: date
     work_start: time | None
     work_end: time | None
     unusual_notes: str | None
-    tasks: list[str]
+    tasks: list[str | PlannedTaskInput]
     calendar_events: list[CalendarEventInput]
     current_time: time | None = None
+    available_start: time | None = None
+    available_end: time | None = None
 
 
 class PlanningService:
@@ -36,7 +46,7 @@ class PlanningService:
             "notes": planning_input.unusual_notes,
             "fixed_events": fixed_events,
             "free_windows": free_windows,
-            "tasks": planning_input.tasks,
+            "tasks": self._serialize_tasks(planning_input.tasks),
             "suggested_tasks": self._suggest_tasks(planning_input.tasks, free_windows),
         }
 
@@ -68,7 +78,8 @@ class PlanningService:
             lines.append("Tasks")
             for task in tasks:
                 title = task["title"] if isinstance(task, dict) else str(task)
-                lines.append(f"- {title}")
+                window = task.get("window") if isinstance(task, dict) else None
+                lines.append(f"- {title}" + (f" ({window})" if window and window != "flexible" else ""))
         elif not fixed_events and not plan.get("notes"):
             lines.append("")
             lines.append("Tasks")
@@ -104,8 +115,13 @@ class PlanningService:
         planning_input: PlanningInput,
         fixed_events: list[dict[str, str]],
     ) -> list[dict[str, str]]:
-        day_start = planning_input.current_time or time(hour=7)
-        day_end = time(hour=22)
+        note_start, note_end = self._available_bounds_from_notes(planning_input.unusual_notes)
+        day_start = planning_input.available_start or note_start or time(hour=7)
+        if planning_input.current_time and planning_input.current_time > day_start:
+            day_start = planning_input.current_time
+        day_end = planning_input.available_end or note_end or time(hour=22)
+        if day_start >= day_end:
+            return []
         busy = [
             (self._parse_hhmm(event["start"]), self._parse_hhmm(event["end"]))
             for event in fixed_events
@@ -124,19 +140,121 @@ class PlanningService:
         return windows
 
     @staticmethod
-    def _suggest_tasks(tasks: list[str], free_windows: list[dict[str, str]]) -> list[dict[str, str]]:
+    def _suggest_tasks(
+        tasks: list[str | PlannedTaskInput],
+        free_windows: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
         suggested = []
-        for index, task in enumerate(tasks[:5]):
-            window = free_windows[index % len(free_windows)] if free_windows else None
+        windows = [
+            {
+                "start": PlanningService._parse_hhmm(window["start"]),
+                "end": PlanningService._parse_hhmm(window["end"]),
+            }
+            for window in free_windows
+        ]
+        sorted_tasks = sorted(
+            tasks,
+            key=lambda task: 0 if isinstance(task, PlannedTaskInput) and task.must else 1,
+        )
+        for task in sorted_tasks[:8]:
+            title, minutes = PlanningService._task_duration(task)
+            slot = PlanningService._reserve_first_slot_that_fits(windows, minutes)
             suggested.append(
                 {
-                    "title": task,
-                    "window": f"{window['start']}-{window['end']}" if window else "flexible",
+                    "title": title,
+                    "window": f"{slot[0].strftime('%H:%M')}-{slot[1].strftime('%H:%M')}" if slot else "flexible",
                 }
             )
         return suggested
 
     @staticmethod
+    def _task_duration(task: str | PlannedTaskInput) -> tuple[str, int]:
+        if isinstance(task, PlannedTaskInput):
+            return task.title, task.duration_minutes or PlanningService._logical_duration(task.title)
+        match = re.search(r"\((\d+)\s*min\)$", task)
+        if match:
+            return task[: match.start()].strip(), int(match.group(1))
+        return task, PlanningService._logical_duration(task)
+
+    @staticmethod
+    def _serialize_tasks(tasks: list[str | PlannedTaskInput]) -> list[dict[str, object]]:
+        serialized = []
+        for task in tasks:
+            if isinstance(task, PlannedTaskInput):
+                serialized.append(
+                    {
+                        "title": task.title,
+                        "duration_minutes": task.duration_minutes,
+                        "must": task.must,
+                    }
+                )
+            else:
+                title, minutes = PlanningService._task_duration(task)
+                serialized.append(
+                    {
+                        "title": title,
+                        "duration_minutes": minutes,
+                        "must": False,
+                    }
+                )
+        return serialized
+
+    @staticmethod
+    def _logical_duration(task: str) -> int:
+        lowered = task.lower()
+        if "exercise" in lowered:
+            return 25
+        if "read" in lowered:
+            return 15
+        if "cook" in lowered:
+            return 45
+        if "clean" in lowered:
+            return 30
+        return 30
+
+    @staticmethod
+    def _reserve_first_slot_that_fits(
+        windows: list[dict[str, time]],
+        minutes: int,
+    ) -> tuple[time, time] | None:
+        for window in windows:
+            start = window["start"]
+            end = window["end"]
+            if PlanningService._minutes_between(start, end) >= minutes:
+                slot_end = PlanningService._add_minutes(start, minutes)
+                window["start"] = slot_end
+                return start, slot_end
+        return None
+
+    @staticmethod
     def _parse_hhmm(value: str) -> time:
         hour, minute = value.split(":", 1)
         return time(hour=int(hour), minute=int(minute))
+
+    @staticmethod
+    def _available_bounds_from_notes(notes: str | None) -> tuple[time | None, time | None]:
+        if not notes:
+            return None, None
+        lowered = notes.lower()
+        wake = None
+        sleep = None
+        for match in re.finditer(
+            r"\b(?P<kind>wake(?:\s+up)?|sleep|go\s+to\s+sleep|bed)\b(?:\s+at)?\s+(?P<hour>2[0-3]|[01]?\d)(?:(?::|\.|h)(?P<minute>[0-5]\d))?\b",
+            lowered,
+        ):
+            parsed = time(hour=int(match.group("hour")), minute=int(match.group("minute") or 0))
+            kind = match.group("kind")
+            if "wake" in kind:
+                wake = parsed
+            else:
+                sleep = parsed
+        return wake, sleep
+
+    @staticmethod
+    def _minutes_between(start: time, end: time) -> int:
+        return (end.hour * 60 + end.minute) - (start.hour * 60 + start.minute)
+
+    @staticmethod
+    def _add_minutes(value: time, minutes: int) -> time:
+        total = value.hour * 60 + value.minute + minutes
+        return time(hour=min(total // 60, 23), minute=total % 60)

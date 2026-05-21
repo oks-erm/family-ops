@@ -11,13 +11,13 @@ from app.config import Settings
 from app.db.models import DailyPlanStatus
 from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.planning import PlanningRepository
-from app.db.repositories.shopping import ShoppingRepository
+from app.db.repositories.routines import RoutineRepository
 from app.db.repositories.tasks import TaskRepository
 from app.db.repositories.users import UserRepository
 from app.db.session import async_session_factory
 from app.services.analytics_service import AnalyticsService
 from app.services.calendar_service import CalendarService
-from app.services.planning_service import PlanningInput, PlanningService
+from app.services.planning_service import PlannedTaskInput, PlanningInput, PlanningService
 from app.services.price_service import PriceService
 from app.services.recommendation_service import RecommendationService
 
@@ -227,7 +227,7 @@ class SchedulerService:
         household_repository = HouseholdRepository(session)
         planning_repository = PlanningRepository(session)
         task_repository = TaskRepository(session)
-        shopping_repository = ShoppingRepository(session)
+        routine_repository = RoutineRepository(session)
         household = await household_repository.ensure_household_for_user(user=user)
         today = self._today(user.timezone)
         existing_plan = await planning_repository.get_daily_plan(user_id=user.id, plan_date=today)
@@ -240,14 +240,28 @@ class SchedulerService:
                 user_id=user.id,
                 through_date=today,
             )
-            shopping_items = await shopping_repository.list_all_pending_for_household(
-                household_id=household.id,
-            )
+            await routine_repository.ensure_defaults(household_id=household.id)
+            routines = await routine_repository.list_active_for_household(household_id=household.id)
             calendar_events = await CalendarService(session).list_events_for_day(
                 household_id=household.id,
                 day=today,
                 timezone=user.timezone,
             )
+            planned_tasks: list[str | PlannedTaskInput] = []
+            for routine in routines:
+                schedule = routine.schedule or {}
+                planned_tasks.append(
+                    PlannedTaskInput(
+                        title=routine.title,
+                        duration_minutes=int(
+                            schedule.get("duration_minutes")
+                            or schedule.get("duration_min")
+                            or 30
+                        ),
+                        must=bool(schedule.get("must", True)),
+                    )
+                )
+            planned_tasks.extend(task.title for task in tasks)
             planning_service = PlanningService()
             plan_payload = planning_service.build_daily_plan(
                 PlanningInput(
@@ -256,10 +270,7 @@ class SchedulerService:
                     work_start=conversation.work_start if conversation else None,
                     work_end=conversation.work_end if conversation else None,
                     unusual_notes=conversation.unusual_notes if conversation else None,
-                    tasks=[task.title for task in tasks],
-                    shopping_items=[
-                        f"{item.name} ({item.store_name_raw or 'anywhere'})" for item in shopping_items
-                    ],
+                    tasks=planned_tasks,
                     calendar_events=calendar_events,
                 )
             )

@@ -5,11 +5,12 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse
 
-from app.db.models import ActivityAction, ShoppingItem
+from app.db.models import ActivityAction, Routine, ShoppingItem
 from app.db.repositories.activity import ActivityRepository
 from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.prices import PriceRepository
 from app.db.repositories.receipts import ReceiptRepository
+from app.db.repositories.routines import RoutineRepository
 from app.db.repositories.users import UserRepository
 from app.db.session import async_session_factory
 from app.services.dashboard_service import DashboardService
@@ -23,6 +24,13 @@ class ManualPriceRequest(BaseModel):
     store_name: str
     price: str
     product_name: str | None = None
+
+
+class RoutineRequest(BaseModel):
+    title: str
+    duration_minutes: int
+    duration_max: int | None = None
+    is_active: bool = True
 
 
 async def _dashboard_context(request: Request, session):
@@ -139,6 +147,117 @@ async def save_manual_price(request: Request, payload: ManualPriceRequest) -> di
             summary=f"Added manual price: {shopping_item.name} at {store_name} for {price} EUR",
         )
         return {"saved": True}
+
+
+@router.get("/api/routines")
+async def routines_data(request: Request) -> dict[str, object]:
+    async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+            raise HTTPException(status_code=401, detail="Dashboard login required.")
+        repository = RoutineRepository(session)
+        await repository.ensure_defaults(household_id=household.id)
+        routines = await repository.list_for_household(household_id=household.id)
+        return {
+            "items": [
+                {
+                    "id": str(routine.id),
+                    "title": routine.title,
+                    "duration_minutes": int(
+                        (routine.schedule or {}).get("duration_minutes")
+                        or (routine.schedule or {}).get("duration_min")
+                        or 30
+                    ),
+                    "duration_max": int(
+                        (routine.schedule or {}).get("duration_max")
+                        or (routine.schedule or {}).get("duration_minutes")
+                        or 30
+                    ),
+                    "is_active": routine.is_active,
+                }
+                for routine in routines
+            ]
+        }
+
+
+@router.post("/api/routines")
+async def create_routine(request: Request, payload: RoutineRequest) -> dict[str, object]:
+    async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+            raise HTTPException(status_code=401, detail="Dashboard login required.")
+        title = payload.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Title is required.")
+        if payload.duration_minutes < 1 or payload.duration_minutes > 360:
+            raise HTTPException(status_code=400, detail="Duration must be between 1 and 360 minutes.")
+        routine = await RoutineRepository(session).create(
+            household_id=household.id,
+            title=title,
+            duration_minutes=payload.duration_minutes,
+            duration_max=payload.duration_max,
+        )
+        await ActivityRepository(session).log(
+            household_id=household.id,
+            user_id=dashboard_user.id,
+            action=ActivityAction.created,
+            entity_type="routine",
+            entity_id=routine.id,
+            summary=f"Added must task: {routine.title}",
+        )
+        return {"saved": True, "id": str(routine.id)}
+
+
+@router.patch("/api/routines/{routine_id}")
+async def update_routine(request: Request, routine_id: UUID, payload: RoutineRequest) -> dict[str, bool]:
+    async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+            raise HTTPException(status_code=401, detail="Dashboard login required.")
+        repository = RoutineRepository(session)
+        routine = await session.get(Routine, routine_id)
+        if routine is None or routine.household_id != household.id:
+            raise HTTPException(status_code=404, detail="Routine not found.")
+        if not payload.title.strip():
+            raise HTTPException(status_code=400, detail="Title is required.")
+        await repository.update(
+            routine=routine,
+            title=payload.title,
+            duration_minutes=payload.duration_minutes,
+            duration_max=payload.duration_max,
+            is_active=payload.is_active,
+        )
+        await ActivityRepository(session).log(
+            household_id=household.id,
+            user_id=dashboard_user.id,
+            action=ActivityAction.updated,
+            entity_type="routine",
+            entity_id=routine.id,
+            summary=f"Updated must task: {routine.title}",
+        )
+        return {"saved": True}
+
+
+@router.delete("/api/routines/{routine_id}")
+async def delete_routine(request: Request, routine_id: UUID) -> dict[str, bool]:
+    async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+            raise HTTPException(status_code=401, detail="Dashboard login required.")
+        routine = await session.get(Routine, routine_id)
+        if routine is None or routine.household_id != household.id:
+            raise HTTPException(status_code=404, detail="Routine not found.")
+        title = routine.title
+        await RoutineRepository(session).delete(routine=routine)
+        await ActivityRepository(session).log(
+            household_id=household.id,
+            user_id=dashboard_user.id,
+            action=ActivityAction.deleted,
+            entity_type="routine",
+            entity_id=routine_id,
+            summary=f"Deleted must task: {title}",
+        )
+        return {"deleted": True}
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -320,6 +439,45 @@ async def dashboard_page(request: Request) -> str:
       background: #fff;
       color: var(--ink);
     }
+    .routine-form, .routine-row {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) 110px 110px auto auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .routine-form {
+      margin-bottom: 16px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .routine-form input, .routine-row input {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 9px;
+      background: #fff;
+      color: var(--ink);
+    }
+    .routine-row {
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .routine-row:last-child { border-bottom: 0; }
+    .check-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .primary-btn {
+      border: 1px solid #cbd5e1;
+      border-radius: 10px;
+      background: #fff;
+      padding: 8px 11px;
+      cursor: pointer;
+      font-weight: 600;
+    }
     .row {
       display: flex;
       align-items: center;
@@ -494,6 +652,7 @@ async def dashboard_page(request: Request) -> str:
       .panel, .metric { border-radius: 16px; }
       .bar-row { grid-template-columns: 1fr; gap: 7px; padding: 8px 0; }
       .filters { grid-template-columns: 1fr; }
+      .routine-form, .routine-row { grid-template-columns: 1fr; }
       .amount { justify-self: start; }
       .row { align-items: start; }
       .price-form { grid-template-columns: 1fr; }
@@ -507,6 +666,7 @@ async def dashboard_page(request: Request) -> str:
         <h1>Family Copilot</h1>
         <nav class="tabs" aria-label="Dashboard views">
           <button class="tab-btn active" type="button" data-view-target="overview-view">Overview</button>
+          <button class="tab-btn" type="button" data-view-target="tasks-view">Tasks</button>
           <button class="tab-btn" type="button" data-view-target="activity-view">Activity Log</button>
         </nav>
       </div>
@@ -578,6 +738,20 @@ async def dashboard_page(request: Request) -> str:
           <div class="rows" id="recommendations"></div>
         </section>
       </div>
+    </section>
+
+    <section class="panel view hidden" id="tasks-view">
+      <div class="section-head">
+        <h2>Must Tasks</h2>
+      </div>
+      <form class="routine-form" id="routine-create">
+        <input name="title" placeholder="Task name" autocomplete="off">
+        <input name="duration_minutes" type="number" min="1" max="360" placeholder="Min min">
+        <input name="duration_max" type="number" min="1" max="360" placeholder="Max min">
+        <label class="check-label"><input name="is_active" type="checkbox" checked> Active</label>
+        <button class="primary-btn" type="submit">Add</button>
+      </form>
+      <div class="rows" id="routines"></div>
     </section>
 
     <section class="panel view hidden" id="activity-view">
@@ -866,6 +1040,27 @@ async def dashboard_page(request: Request) -> str:
       document.querySelector("#activity-next").disabled = data.page >= data.pages;
     }
 
+    async function loadRoutines() {
+      const response = await fetch("/api/routines");
+      const data = await response.json();
+      document.querySelector("#routines").innerHTML = data.items && data.items.length ? data.items.map(item => `
+        <form class="routine-row" data-routine-id="${escapeHtml(item.id)}">
+          <input name="title" value="${escapeHtml(item.title)}" aria-label="Task name">
+          <input name="duration_minutes" type="number" min="1" max="360" value="${escapeHtml(item.duration_minutes)}" aria-label="Minimum minutes">
+          <input name="duration_max" type="number" min="1" max="360" value="${escapeHtml(item.duration_max)}" aria-label="Maximum minutes">
+          <label class="check-label"><input name="is_active" type="checkbox" ${item.is_active ? "checked" : ""}> Active</label>
+          <div>
+            <button class="primary-btn" type="submit">Save</button>
+            <button class="delete-btn" type="button" data-routine-delete="${escapeHtml(item.id)}" aria-label="Delete must task" title="Delete must task">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 7h2v8h-2v-8Zm4 0h2v8h-2v-8ZM6 9h12l-1 12H7L6 9Z" fill="currentColor"/>
+              </svg>
+            </button>
+          </div>
+        </form>
+      `).join("") : `<div class="empty">No must tasks configured.</div>`;
+    }
+
     document.addEventListener("click", async event => {
       const tabButton = event.target.closest("[data-view-target]");
       if (tabButton) {
@@ -874,6 +1069,7 @@ async def dashboard_page(request: Request) -> str:
         document.querySelectorAll(".view").forEach(view => view.classList.add("hidden"));
         document.querySelector(`#${tabButton.dataset.viewTarget}`).classList.remove("hidden");
         if (tabButton.dataset.viewTarget === "activity-view") loadActivity(1);
+        if (tabButton.dataset.viewTarget === "tasks-view") loadRoutines();
         return;
       }
 
@@ -894,6 +1090,20 @@ async def dashboard_page(request: Request) -> str:
       if (priceToggle) {
         const form = document.querySelector(`[data-price-form="${priceToggle.dataset.priceToggle}"]`);
         if (form) form.classList.toggle("open");
+        return;
+      }
+
+      const routineDelete = event.target.closest("[data-routine-delete]");
+      if (routineDelete) {
+        const confirmed = window.confirm("Delete this must task for the household?");
+        if (!confirmed) return;
+        const response = await fetch(`/api/routines/${routineDelete.dataset.routineDelete}`, { method: "DELETE" });
+        if (!response.ok) {
+          toast("Could not delete must task.");
+          return;
+        }
+        toast("Must task deleted.");
+        await loadRoutines();
         return;
       }
 
@@ -918,6 +1128,51 @@ async def dashboard_page(request: Request) -> str:
       if (event.target.id === "activity-filters") {
         event.preventDefault();
         await loadActivity(1);
+        return;
+      }
+      if (event.target.id === "routine-create") {
+        event.preventDefault();
+        const formData = new FormData(event.target);
+        const response = await fetch("/api/routines", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: formData.get("title"),
+            duration_minutes: Number(formData.get("duration_minutes") || 30),
+            duration_max: Number(formData.get("duration_max") || formData.get("duration_minutes") || 30),
+            is_active: formData.get("is_active") === "on",
+          }),
+        });
+        if (!response.ok) {
+          toast("Could not add must task.");
+          return;
+        }
+        event.target.reset();
+        event.target.elements.is_active.checked = true;
+        toast("Must task added.");
+        await loadRoutines();
+        return;
+      }
+      const routineForm = event.target.closest("[data-routine-id]");
+      if (routineForm) {
+        event.preventDefault();
+        const formData = new FormData(routineForm);
+        const response = await fetch(`/api/routines/${routineForm.dataset.routineId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: formData.get("title"),
+            duration_minutes: Number(formData.get("duration_minutes") || 30),
+            duration_max: Number(formData.get("duration_max") || formData.get("duration_minutes") || 30),
+            is_active: formData.get("is_active") === "on",
+          }),
+        });
+        if (!response.ok) {
+          toast("Could not save must task.");
+          return;
+        }
+        toast("Must task saved.");
+        await loadRoutines();
         return;
       }
       const form = event.target.closest("[data-price-form]");
