@@ -1,6 +1,7 @@
+from datetime import date
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse
 
@@ -44,6 +45,35 @@ async def dashboard_data(request: Request) -> dict[str, object]:
             raise HTTPException(status_code=401, detail="Dashboard login required.")
         today = now_in_timezone(dashboard_user.timezone).date()
         return await DashboardService(session).summary(household_id=household.id, today=today)
+
+
+@router.get("/api/activity")
+async def activity_data(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=5, le=100),
+    search: str | None = None,
+    entity_type: str | None = None,
+    action: str | None = None,
+    category: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict[str, object]:
+    async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+            raise HTTPException(status_code=401, detail="Dashboard login required.")
+        return await DashboardService(session).activity_page(
+            household_id=household.id,
+            page=page,
+            page_size=page_size,
+            search=search,
+            entity_type=entity_type,
+            action=action,
+            category=category,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
 
 @router.delete("/api/receipts/{receipt_id}")
@@ -151,7 +181,7 @@ async def dashboard_page(request: Request) -> str:
       font-size: 14px;
       letter-spacing: 0;
     }
-    button, input { font: inherit; }
+    button, input, select { font: inherit; }
     .shell {
       width: min(1180px, calc(100% - 32px));
       margin: 0 auto;
@@ -261,6 +291,20 @@ async def dashboard_page(request: Request) -> str:
     .icon-btn { padding: 4px 7px; font-size: 14px; }
     .link-btn:hover { color: var(--ink); border-color: #cbd5e1; }
     .rows { display: grid; gap: 6px; }
+    .filters {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .filters input, .filters select {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 9px;
+      background: #fff;
+      color: var(--ink);
+    }
     .row {
       display: flex;
       align-items: center;
@@ -434,6 +478,7 @@ async def dashboard_page(request: Request) -> str:
       h1 { font-size: 23px; }
       .panel, .metric { border-radius: 16px; }
       .bar-row { grid-template-columns: 1fr; gap: 7px; padding: 8px 0; }
+      .filters { grid-template-columns: 1fr; }
       .amount { justify-self: start; }
       .row { align-items: start; }
       .price-form { grid-template-columns: 1fr; }
@@ -462,6 +507,13 @@ async def dashboard_page(request: Request) -> str:
             <h2>Spend By Category This Month</h2>
           </div>
           <div id="expense-categories"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h2>Income By Category This Month</h2>
+          </div>
+          <div id="income-categories"></div>
         </section>
 
         <section class="panel">
@@ -506,6 +558,13 @@ async def dashboard_page(request: Request) -> str:
 
         <section class="panel">
           <div class="section-head">
+            <h2>Recent Transactions</h2>
+          </div>
+          <div class="rows" id="transactions"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
             <h2>Recommendations</h2>
           </div>
           <div class="rows" id="recommendations"></div>
@@ -517,7 +576,20 @@ async def dashboard_page(request: Request) -> str:
       <div class="section-head">
         <h2>Activity Log</h2>
       </div>
+      <form class="filters" id="activity-filters">
+        <input name="search" placeholder="Search">
+        <select name="entity_type"><option value="">All types</option></select>
+        <select name="action"><option value="">All actions</option></select>
+        <select name="category"><option value="">All categories</option></select>
+        <input name="start_date" type="date" aria-label="Start date">
+        <input name="end_date" type="date" aria-label="End date">
+      </form>
       <div class="rows" id="activity"></div>
+      <div class="section-foot">
+        <button class="link-btn" type="button" id="activity-prev">Previous</button>
+        <span class="muted" id="activity-page"></span>
+        <button class="link-btn" type="button" id="activity-next">Next</button>
+      </div>
     </section>
   </main>
   <div class="toast" id="toast"></div>
@@ -614,6 +686,20 @@ async def dashboard_page(request: Request) -> str:
         </div>
       `;
     };
+    let activityPage = 1;
+    const renderBars = (rows, emptyText) => {
+      const max = Math.max(...rows.map(x => moneyNumber(x.value)), 1);
+      return rows.length ? rows.map(row => {
+        const width = Math.max(4, moneyNumber(row.value) / max * 100);
+        return `
+          <div class="bar-row">
+            <div class="row-title">${escapeHtml(row.label)}</div>
+            <div class="bar-track"><div class="bar" style="width:${width}%"></div></div>
+            <div class="amount">${escapeHtml(row.value)}</div>
+          </div>
+        `;
+      }).join("") : `<div class="empty">${escapeHtml(emptyText)}</div>`;
+    };
     const toast = message => {
       const el = document.querySelector("#toast");
       el.textContent = message;
@@ -639,17 +725,8 @@ async def dashboard_page(request: Request) -> str:
         metric("Next Month", t.next_month_projection),
       ].join("");
 
-      const maxCategory = Math.max(...data.expense_categories.map(x => moneyNumber(x.value)), 1);
-      document.querySelector("#expense-categories").innerHTML = data.expense_categories.length ? data.expense_categories.map(row => {
-        const width = Math.max(4, moneyNumber(row.value) / maxCategory * 100);
-        return `
-          <div class="bar-row">
-            <div class="row-title">${escapeHtml(row.label)}</div>
-            <div class="bar-track"><div class="bar" style="width:${width}%"></div></div>
-            <div class="amount">${escapeHtml(row.value)}</div>
-          </div>
-        `;
-      }).join("") : `<div class="empty">No expenses logged this month.</div>`;
+      document.querySelector("#expense-categories").innerHTML = renderBars(data.expense_categories, "No expenses logged this month.");
+      document.querySelector("#income-categories").innerHTML = renderBars(data.income_categories || [], "No income logged this month.");
 
       document.querySelector("#cashflow-bars").innerHTML = renderCurrentCashflow(t);
       document.querySelector("#cashflow-line").innerHTML = renderMonthlyCashflow(data.monthly_cashflow);
@@ -721,16 +798,59 @@ async def dashboard_page(request: Request) -> str:
         </div>
       `).join("") : `<div class="empty">No confirmed receipts yet.</div>`;
 
+      document.querySelector("#transactions").innerHTML = data.transactions.length ? data.transactions.map(item => `
+        <div class="row">
+          <div class="row-main">
+            <div class="row-title">${escapeHtml(item.description)}</div>
+            <div class="row-sub">${escapeHtml(item.date)} · ${escapeHtml(item.type)} · ${escapeHtml(item.category)}${item.merchant ? ` · ${escapeHtml(item.merchant)}` : ""}</div>
+          </div>
+          <div class="amount">${item.type === "income" ? "+" : "-"}${escapeHtml(item.amount)}</div>
+        </div>
+      `).join("") : `<div class="empty">No transactions logged this month.</div>`;
+
       document.querySelector("#activity").innerHTML = data.activity.length ? data.activity.map(item => `
         <div class="row">
           <div class="row-main">
             <div class="row-title">${escapeHtml(item.summary)}</div>
-            <div class="row-sub">${escapeHtml(item.actor)} · ${escapeHtml(item.entity_type)} · ${escapeHtml(item.action)}</div>
+            <div class="row-sub">${escapeHtml(item.actor)} · ${escapeHtml(item.entity_type)} · ${escapeHtml(item.action)}${item.category ? ` · ${escapeHtml(item.category)}` : ""}</div>
           </div>
         </div>
       `).join("") : `<div class="empty">No household activity yet.</div>`;
 
       document.querySelector("#status").textContent = "Updated just now";
+    }
+
+    const setSelectOptions = (select, values, label) => {
+      const current = select.value;
+      select.innerHTML = `<option value="">${escapeHtml(label)}</option>` + values.map(value => (
+        `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`
+      )).join("");
+      select.value = current;
+    };
+
+    async function loadActivity(page = activityPage) {
+      activityPage = page;
+      const form = document.querySelector("#activity-filters");
+      const params = new URLSearchParams({ page: String(activityPage), page_size: "20" });
+      new FormData(form).forEach((value, key) => {
+        if (String(value).trim()) params.set(key, String(value).trim());
+      });
+      const response = await fetch(`/api/activity?${params.toString()}`);
+      const data = await response.json();
+      setSelectOptions(form.elements.entity_type, data.entity_types || [], "All types");
+      setSelectOptions(form.elements.action, data.actions || [], "All actions");
+      setSelectOptions(form.elements.category, data.categories || [], "All categories");
+      document.querySelector("#activity").innerHTML = data.items.length ? data.items.map(item => `
+        <div class="row">
+          <div class="row-main">
+            <div class="row-title">${escapeHtml(item.summary)}</div>
+            <div class="row-sub">${escapeHtml(item.actor)} · ${escapeHtml(item.entity_type)} · ${escapeHtml(item.action)}${item.category ? ` · ${escapeHtml(item.category)}` : ""} · ${escapeHtml(new Date(item.date).toLocaleString())}</div>
+          </div>
+        </div>
+      `).join("") : `<div class="empty">No activity matches these filters.</div>`;
+      document.querySelector("#activity-page").textContent = `Page ${data.page} of ${data.pages} · ${data.total} results`;
+      document.querySelector("#activity-prev").disabled = data.page <= 1;
+      document.querySelector("#activity-next").disabled = data.page >= data.pages;
     }
 
     document.addEventListener("click", async event => {
@@ -740,6 +860,7 @@ async def dashboard_page(request: Request) -> str:
         tabButton.classList.add("active");
         document.querySelectorAll(".view").forEach(view => view.classList.add("hidden"));
         document.querySelector(`#${tabButton.dataset.viewTarget}`).classList.remove("hidden");
+        if (tabButton.dataset.viewTarget === "activity-view") loadActivity(1);
         return;
       }
 
@@ -781,6 +902,11 @@ async def dashboard_page(request: Request) -> str:
     });
 
     document.addEventListener("submit", async event => {
+      if (event.target.id === "activity-filters") {
+        event.preventDefault();
+        await loadActivity(1);
+        return;
+      }
       const form = event.target.closest("[data-price-form]");
       if (!form) return;
       event.preventDefault();
@@ -802,6 +928,14 @@ async def dashboard_page(request: Request) -> str:
       toast("Price saved.");
       await loadDashboard();
     });
+
+    document.querySelector("#activity-filters").addEventListener("input", () => {
+      window.clearTimeout(window.activityTimer);
+      window.activityTimer = window.setTimeout(() => loadActivity(1), 250);
+    });
+    document.querySelector("#activity-filters").addEventListener("change", () => loadActivity(1));
+    document.querySelector("#activity-prev").addEventListener("click", () => loadActivity(Math.max(1, activityPage - 1)));
+    document.querySelector("#activity-next").addEventListener("click", () => loadActivity(activityPage + 1));
 
     loadDashboard().catch(() => {
       document.querySelector("#status").textContent = "Could not load";

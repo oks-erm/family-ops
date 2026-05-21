@@ -114,18 +114,23 @@ class AssistantService:
             return await self._mark_purchased(user_id=user_id, item_names=purchased_items)
 
         finance_service = FinanceService(self.session, self.ai_router.settings)
-        finance_transaction = finance_service.parse_manual_transaction(text)
-        if finance_transaction is not None:
+        finance_transactions = finance_service.parse_manual_transactions(text)
+        if finance_transactions:
             user = await UserRepository(self.session).get_by_id(user_id=user_id)
             if user is None:
                 raise RuntimeError("User must exist before finance actions can run.")
             from app.utils.datetime import now_in_timezone
 
-            response_text = await finance_service.add_manual_transaction(
-                user_id=user_id,
-                parsed=finance_transaction,
-                occurred_on=now_in_timezone(user.timezone).date(),
-            )
+            response_lines = []
+            for finance_transaction in finance_transactions:
+                response_lines.append(
+                    await finance_service.add_manual_transaction(
+                        user_id=user_id,
+                        parsed=finance_transaction,
+                        occurred_on=now_in_timezone(user.timezone).date(),
+                    )
+                )
+            response_text = "\n".join(response_lines)
             return AssistantResponse(intent=AssistantIntent.finance_transaction, text=response_text)
 
         expense_query = self._parse_expense_query(text)

@@ -82,6 +82,8 @@ class DashboardService:
                 "pending_items": len(pending_items),
             },
             "expense_categories": self._expense_by_category(month_receipts, month_transactions),
+            "income_categories": self._income_by_category(month_transactions),
+            "transactions": self._recent_transactions(month_transactions),
             "shopping": self._pending_by_category(pending_items, quotes),
             "promotions": self._promotions_for_household_items(
                 receipts=receipts,
@@ -135,6 +137,21 @@ class DashboardService:
         return [
             {"label": category, "value": self._money(amount)}
             for category, amount in sorted(totals.items(), key=lambda item: item[1], reverse=True)
+            if amount != 0
+        ]
+
+    def _income_by_category(self, transactions: list[object]) -> list[dict[str, str]]:
+        totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+        for transaction in transactions:
+            if transaction.transaction_type != TransactionType.income:
+                continue
+            totals[transaction.category or "Income"] += self.finance_repository.amount_as_decimal(
+                transaction.amount
+            )
+        return [
+            {"label": category, "value": self._money(amount)}
+            for category, amount in sorted(totals.items(), key=lambda item: item[1], reverse=True)
+            if amount != 0
         ]
 
     def _pending_by_category(self, pending_items: list[object], quotes: list[object]) -> list[dict[str, object]]:
@@ -223,8 +240,26 @@ class DashboardService:
             for receipt in recent
         ]
 
+    def _recent_transactions(self, transactions: list[object]) -> list[dict[str, str]]:
+        return [
+            {
+                "id": str(transaction.id),
+                "type": transaction.transaction_type.value,
+                "category": transaction.category or "Other",
+                "merchant": transaction.merchant or "",
+                "description": transaction.description,
+                "date": transaction.occurred_on.isoformat(),
+                "amount": self._money(self.finance_repository.amount_as_decimal(transaction.amount)),
+            }
+            for transaction in sorted(
+                transactions,
+                key=lambda transaction: (transaction.occurred_on, transaction.created_at),
+                reverse=True,
+            )[:30]
+        ]
+
     async def _activity(self, *, household_id: UUID) -> list[dict[str, str]]:
-        entries = await self.activity_repository.list_recent(household_id=household_id, limit=20)
+        entries = await self.activity_repository.list_recent(household_id=household_id, limit=10)
         users = await self.user_repository.list_users()
         user_names = {
             user.id: user.username or user.first_name or str(user.telegram_user_id)
@@ -236,10 +271,87 @@ class DashboardService:
                 "entity_type": entry.entity_type,
                 "actor": user_names.get(entry.user_id, "system"),
                 "summary": entry.summary,
+                "category": str(entry.metadata_json.get("category") or ""),
                 "date": entry.created_at.isoformat(),
             }
             for entry in entries
         ]
+
+    async def activity_page(
+        self,
+        *,
+        household_id: UUID,
+        page: int,
+        page_size: int,
+        search: str | None = None,
+        entity_type: str | None = None,
+        action: str | None = None,
+        category: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict[str, object]:
+        entries = await self.activity_repository.list_for_household(household_id=household_id, limit=1000)
+        users = await self.user_repository.list_users()
+        user_names = {
+            user.id: user.username or user.first_name or str(user.telegram_user_id)
+            for user in users
+        }
+        filtered = []
+        search_value = self._normalise(search)
+        entity_value = self._normalise(entity_type)
+        action_value = self._normalise(action)
+        category_value = self._normalise(category)
+
+        for entry in entries:
+            entry_category = str(entry.metadata_json.get("category") or "")
+            created_date = entry.created_at.date()
+            if search_value and search_value not in self._normalise(entry.summary):
+                continue
+            if entity_value and entity_value != self._normalise(entry.entity_type):
+                continue
+            if action_value and action_value != self._normalise(entry.action.value):
+                continue
+            if category_value and category_value != self._normalise(entry_category):
+                continue
+            if start_date and created_date < start_date:
+                continue
+            if end_date and created_date > end_date:
+                continue
+            filtered.append(entry)
+
+        page = max(page, 1)
+        page_size = min(max(page_size, 5), 100)
+        start = (page - 1) * page_size
+        items = filtered[start : start + page_size]
+        categories = sorted(
+            {
+                str(entry.metadata_json.get("category") or "")
+                for entry in entries
+                if entry.metadata_json.get("category")
+            }
+        )
+        entity_types = sorted({entry.entity_type for entry in entries})
+        actions = sorted({entry.action.value for entry in entries})
+        return {
+            "page": page,
+            "page_size": page_size,
+            "total": len(filtered),
+            "pages": (len(filtered) + page_size - 1) // page_size if filtered else 1,
+            "categories": categories,
+            "entity_types": entity_types,
+            "actions": actions,
+            "items": [
+                {
+                    "action": entry.action.value,
+                    "entity_type": entry.entity_type,
+                    "actor": user_names.get(entry.user_id, "system"),
+                    "summary": entry.summary,
+                    "category": str(entry.metadata_json.get("category") or ""),
+                    "date": entry.created_at.isoformat(),
+                }
+                for entry in items
+            ],
+        }
 
     async def _price_quotes(self, *, household_id: UUID) -> list[dict[str, str]]:
         quotes = await self.price_repository.latest_for_household(household_id=household_id, limit=20)

@@ -141,6 +141,22 @@ class FinanceService:
             lines.append(f"...and {len(saved) - 12} more.")
         return "\n".join(lines)
 
+    def parse_manual_transactions(self, text: str) -> list[ParsedFinanceMessage]:
+        parts = [
+            part.strip()
+            for part in re.split(r"[\n;]+", text)
+            if part.strip()
+        ]
+        if len(parts) <= 1:
+            parsed = self.parse_manual_transaction(text)
+            return [parsed] if parsed is not None else []
+        parsed_items = []
+        for part in parts:
+            parsed = self.parse_manual_transaction(part)
+            if parsed is not None:
+                parsed_items.append(parsed)
+        return parsed_items
+
     def parse_manual_transaction(self, text: str) -> ParsedFinanceMessage | None:
         stripped = text.strip()
         match = re.search(r"(.+?)\s+([€¢]?\s*\d+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?\s*(?:eur|€|¢))\s*$", stripped, re.I)
@@ -153,8 +169,24 @@ class FinanceService:
         lowered = description.lower()
         is_income = any(
             token in lowered
-            for token in ("income", "salary", "paid", "paycheck", "wage", "salario", "salário", "ordenado")
+            for token in (
+                "income",
+                "salary",
+                "paid",
+                "payment from",
+                "received",
+                "revenue",
+                "paycheck",
+                "wage",
+                "client paid",
+                "salario",
+                "salário",
+                "ordenado",
+                "recebi",
+            )
         )
+        if any(token in lowered for token in ("expense", "spent", "petrol", "commute", "tax", "iva", "rent")):
+            is_income = False
         transaction_type = TransactionType.income if is_income else TransactionType.expense
         category = self.category_service.category_for(description, is_income=is_income)
         return ParsedFinanceMessage(

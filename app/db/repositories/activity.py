@@ -45,3 +45,12 @@ class ActivityRepository:
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    async def list_for_household(self, *, household_id: UUID, limit: int = 500) -> list[ActivityLog]:
+        result = await self.session.execute(
+            select(ActivityLog)
+            .where(ActivityLog.household_id == household_id)
+            .order_by(ActivityLog.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())

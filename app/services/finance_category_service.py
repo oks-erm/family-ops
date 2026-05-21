@@ -108,7 +108,7 @@ class FinanceCategoryService:
                 "detergente",
                 "lixivia",
             },
-            "Taxes": {"tax", "taxes", "irs", "imposto", "impostos", "financas", "finanças"},
+            "Taxes": {"tax", "taxes", "irs", "iva", "vat", "imposto", "impostos", "financas", "finanças"},
             "Utilities": {
                 "electricity",
                 "water",
