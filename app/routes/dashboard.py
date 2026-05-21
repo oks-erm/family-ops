@@ -46,13 +46,24 @@ async def _dashboard_context(request: Request, session):
 
 
 @router.get("/api/dashboard")
-async def dashboard_data(request: Request) -> dict[str, object]:
+async def dashboard_data(request: Request, month: str | None = None) -> dict[str, object]:
     async with async_session_factory() as session:
         dashboard_user, household = await _dashboard_context(request, session)
         if dashboard_user is None or household is None:
             raise HTTPException(status_code=401, detail="Dashboard login required.")
         today = now_in_timezone(dashboard_user.timezone).date()
-        return await DashboardService(session).summary(household_id=household.id, today=today)
+        selected_month = None
+        if month:
+            try:
+                year, month_number = month.split("-", 1)
+                selected_month = date(int(year), int(month_number), 1)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="Month must be YYYY-MM.") from exc
+        return await DashboardService(session).summary(
+            household_id=household.id,
+            today=today,
+            selected_month=selected_month,
+        )
 
 
 @router.get("/api/activity")
@@ -342,6 +353,21 @@ async def dashboard_page(request: Request) -> str:
       border-radius: 999px;
       padding: 7px 11px;
       white-space: nowrap;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+    }
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .month-control {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--ink);
+      padding: 7px 11px;
       box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
     }
     .grid { display: grid; gap: 14px; }
@@ -643,6 +669,7 @@ async def dashboard_page(request: Request) -> str:
     @media (max-width: 900px) {
       .metrics, .main-grid { grid-template-columns: 1fr; }
       .topbar { align-items: start; flex-direction: column; }
+      .top-actions { justify-content: flex-start; }
       .brand { align-items: start; flex-direction: column; gap: 12px; }
       .status { white-space: normal; }
     }
@@ -670,7 +697,10 @@ async def dashboard_page(request: Request) -> str:
           <button class="tab-btn" type="button" data-view-target="activity-view">Activity Log</button>
         </nav>
       </div>
-      <div class="status" id="status">Loading dashboard</div>
+      <div class="top-actions">
+        <input class="month-control" id="month-filter" type="month" aria-label="Dashboard month">
+        <div class="status" id="status">Loading dashboard</div>
+      </div>
     </header>
 
     <section class="grid metrics" id="metrics"></section>
@@ -815,6 +845,9 @@ async def dashboard_page(request: Request) -> str:
     const renderCurrentCashflow = totals => {
       const income = moneyNumber(totals.income_month);
       const expenses = moneyNumber(totals.this_month);
+      const saved = income - expenses;
+      const savedLabel = saved >= 0 ? "Saved so far" : "Over so far";
+      const savedClass = saved >= 0 ? "var(--green)" : "var(--danger)";
       const max = Math.max(income, expenses, 1);
       const barMaxHeight = 104;
       const incomeHeight = Math.max(3, income / max * barMaxHeight);
@@ -832,6 +865,9 @@ async def dashboard_page(request: Request) -> str:
         <div class="chart-legend">
           <span><span class="legend-dot" style="background:#2563eb"></span>Income</span>
           <span><span class="legend-dot" style="background:#ef4444"></span>Expenses</span>
+        </div>
+        <div class="recommendation" style="margin-top:12px">
+          <strong>${savedLabel}: <span style="color:${savedClass}">${Math.abs(saved).toFixed(2)} EUR</span></strong>
         </div>
       `;
     };
@@ -876,6 +912,10 @@ async def dashboard_page(request: Request) -> str:
       `;
     };
     let activityPage = 1;
+    const currentMonthValue = () => {
+      const now = new Date();
+      return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    };
     const renderBars = (rows, emptyText) => {
       const max = Math.max(...rows.map(x => moneyNumber(x.value)), 1);
       return rows.length ? rows.map(row => {
@@ -899,22 +939,26 @@ async def dashboard_page(request: Request) -> str:
 
     async function loadDashboard() {
       document.querySelector("#status").textContent = "Updating";
-      const response = await fetch("/api/dashboard");
+      const month = document.querySelector("#month-filter").value || currentMonthValue();
+      const response = await fetch(`/api/dashboard?month=${encodeURIComponent(month)}`);
       const data = await response.json();
       if (data.error) {
         document.querySelector(".shell").innerHTML = `<div class="panel">${escapeHtml(data.error)}</div>`;
         return;
       }
 
+      document.querySelector("#month-filter").value = data.period.month;
       const t = data.totals;
       document.querySelector("#metrics").innerHTML = [
-        metric("Expenses Week", t.this_week),
-        metric("Expenses Month", t.this_month),
-        metric("Income Month", t.income_month),
-        metric("Next Month", t.next_month_projection),
+        metric(`Expenses ${data.period.label}`, t.this_month),
+        metric(`Income ${data.period.label}`, t.income_month),
+        metric(data.totals.saved_month_value >= 0 ? "Saved So Far" : "Over So Far", `${Math.abs(moneyNumber(t.saved_month)).toFixed(2)} EUR`),
+        data.period.is_current_month
+          ? metric("Next Month", t.next_month_projection)
+          : metric("Receipts", String(t.receipt_count_month)),
       ].join("");
 
-      document.querySelector("#expense-categories").innerHTML = renderBars(data.expense_categories, "No expenses logged this month.");
+      document.querySelector("#expense-categories").innerHTML = renderBars(data.expense_categories, `No expenses logged for ${data.period.label}.`);
 
       document.querySelector("#cashflow-bars").innerHTML = renderCurrentCashflow(t);
       document.querySelector("#cashflow-line").innerHTML = renderMonthlyCashflow(data.monthly_cashflow);
@@ -1206,6 +1250,8 @@ async def dashboard_page(request: Request) -> str:
     document.querySelector("#activity-filters").addEventListener("change", () => loadActivity(1));
     document.querySelector("#activity-prev").addEventListener("click", () => loadActivity(Math.max(1, activityPage - 1)));
     document.querySelector("#activity-next").addEventListener("click", () => loadActivity(activityPage + 1));
+    document.querySelector("#month-filter").value = currentMonthValue();
+    document.querySelector("#month-filter").addEventListener("change", () => loadDashboard());
 
     loadDashboard().catch(() => {
       document.querySelector("#status").textContent = "Could not load";
