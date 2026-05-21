@@ -39,19 +39,22 @@ class DashboardService:
         month_receipts = [r for r in receipts if self.receipt_repository.effective_receipt_date(r) >= month_start]
         week_receipts = [r for r in receipts if self.receipt_repository.effective_receipt_date(r) >= week_start]
         series_start = self._shift_month(month_start, -5)
-        series_transactions = await self.finance_repository.list_between(
-            household_id=household_id,
-            start_date=series_start,
-            end_date=today,
-        )
+        all_transactions = await self.finance_repository.list_for_household(household_id=household_id)
+        series_transactions = [
+            transaction
+            for transaction in all_transactions
+            if series_start <= self._dashboard_transaction_date(transaction) <= today
+        ]
         month_transactions = [
             transaction
             for transaction in series_transactions
-            if transaction.occurred_on >= month_start
+            if self._dashboard_transaction_date(transaction) >= month_start
         ]
         quotes = await self.price_repository.latest_for_household(household_id=household_id, limit=100)
         week_transactions = [
-            transaction for transaction in month_transactions if transaction.occurred_on >= week_start
+            transaction
+            for transaction in month_transactions
+            if self._dashboard_transaction_date(transaction) >= week_start
         ]
 
         month_total = self._sum_receipts(month_receipts)
@@ -82,7 +85,6 @@ class DashboardService:
                 "pending_items": len(pending_items),
             },
             "expense_categories": self._expense_by_category(month_receipts, month_transactions),
-            "income_categories": self._income_by_category(month_transactions),
             "transactions": self._recent_transactions(month_transactions),
             "shopping": self._pending_by_category(pending_items, quotes),
             "promotions": self._promotions_for_household_items(
@@ -241,6 +243,11 @@ class DashboardService:
         ]
 
     def _recent_transactions(self, transactions: list[object]) -> list[dict[str, str]]:
+        expense_transactions = [
+            transaction
+            for transaction in transactions
+            if transaction.transaction_type == TransactionType.expense
+        ]
         return [
             {
                 "id": str(transaction.id),
@@ -248,12 +255,13 @@ class DashboardService:
                 "category": transaction.category or "Other",
                 "merchant": transaction.merchant or "",
                 "description": transaction.description,
-                "date": transaction.occurred_on.isoformat(),
+                "date": self._dashboard_transaction_date(transaction).isoformat(),
+                "occurred_on": transaction.occurred_on.isoformat(),
                 "amount": self._money(self.finance_repository.amount_as_decimal(transaction.amount)),
             }
             for transaction in sorted(
-                transactions,
-                key=lambda transaction: (transaction.occurred_on, transaction.created_at),
+                expense_transactions,
+                key=lambda transaction: (self._dashboard_transaction_date(transaction), transaction.created_at),
                 reverse=True,
             )[:30]
         ]
@@ -389,7 +397,8 @@ class DashboardService:
                 totals[key]["expenses"] += self.receipt_repository.amount_as_decimal(receipt.total_amount)
 
         for transaction in transactions:
-            key = (transaction.occurred_on.year, transaction.occurred_on.month)
+            transaction_date = self._dashboard_transaction_date(transaction)
+            key = (transaction_date.year, transaction_date.month)
             if key not in totals:
                 continue
             amount = self.finance_repository.amount_as_decimal(transaction.amount)
@@ -445,7 +454,8 @@ class DashboardService:
             if self._normalise(transaction.category) == "taxes":
                 continue
             amount = self.finance_repository.amount_as_decimal(transaction.amount)
-            transaction_month = (transaction.occurred_on.year, transaction.occurred_on.month)
+            transaction_date = self._dashboard_transaction_date(transaction)
+            transaction_month = (transaction_date.year, transaction_date.month)
             if transaction_month < current_month:
                 complete_month_totals[transaction_month] += amount
             elif transaction_month == current_month:
@@ -479,6 +489,17 @@ class DashboardService:
             ),
             Decimal("0"),
         )
+
+    @staticmethod
+    def _dashboard_transaction_date(transaction: object) -> date:
+        occurred_on = transaction.occurred_on
+        created_date = transaction.created_at.date()
+        # Bank screenshots sometimes provide statement dates outside the period the user is
+        # actively importing. For dashboard "this week/month" views, show imported rows in
+        # the period where they were added if their transaction date is outside that period.
+        if occurred_on.year == created_date.year and occurred_on.month == created_date.month:
+            return occurred_on
+        return created_date
 
     @staticmethod
     def _best_quote_for_item(item: object, quotes: list[object]) -> object | None:

@@ -526,13 +526,6 @@ async def dashboard_page(request: Request) -> str:
 
         <section class="panel">
           <div class="section-head">
-            <h2>Income By Category This Month</h2>
-          </div>
-          <div id="income-categories"></div>
-        </section>
-
-        <section class="panel">
-          <div class="section-head">
             <h2>Shopping List</h2>
           </div>
           <div id="categories"></div>
@@ -573,7 +566,7 @@ async def dashboard_page(request: Request) -> str:
 
         <section class="panel">
           <div class="section-head">
-            <h2>Recent Transactions</h2>
+            <h2>Expense Transactions This Month</h2>
           </div>
           <div class="rows" id="transactions"></div>
         </section>
@@ -747,7 +740,6 @@ async def dashboard_page(request: Request) -> str:
       ].join("");
 
       document.querySelector("#expense-categories").innerHTML = renderBars(data.expense_categories, "No expenses logged this month.");
-      document.querySelector("#income-categories").innerHTML = renderBars(data.income_categories || [], "No income logged this month.");
 
       document.querySelector("#cashflow-bars").innerHTML = renderCurrentCashflow(t);
       document.querySelector("#cashflow-line").innerHTML = renderMonthlyCashflow(data.monthly_cashflow);
@@ -823,11 +815,11 @@ async def dashboard_page(request: Request) -> str:
         <div class="row">
           <div class="row-main">
             <div class="row-title">${escapeHtml(item.description)}</div>
-            <div class="row-sub">${escapeHtml(item.date)} · ${escapeHtml(item.type)} · ${escapeHtml(item.category)}${item.merchant ? ` · ${escapeHtml(item.merchant)}` : ""}</div>
+            <div class="row-sub">${escapeHtml(item.date)} · ${escapeHtml(item.category)}${item.merchant ? ` · ${escapeHtml(item.merchant)}` : ""}</div>
           </div>
-          <div class="amount">${item.type === "income" ? "+" : "-"}${escapeHtml(item.amount)}</div>
+          <div class="amount">-${escapeHtml(item.amount)}</div>
         </div>
-      `).join("") : `<div class="empty">No transactions logged this month.</div>`;
+      `).join("") : `<div class="empty">No expense transactions logged this month.</div>`;
 
       document.querySelector("#activity").innerHTML = data.activity.length ? data.activity.map(item => `
         <div class="row">

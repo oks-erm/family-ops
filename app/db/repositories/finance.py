@@ -65,6 +65,20 @@ class FinanceRepository:
         )
         return list(result.scalars().all())
 
+    async def list_for_household(
+        self,
+        *,
+        household_id: UUID,
+        limit: int = 2000,
+    ) -> list[FinancialTransaction]:
+        result = await self.session.execute(
+            select(FinancialTransaction)
+            .where(FinancialTransaction.household_id == household_id)
+            .order_by(FinancialTransaction.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     @staticmethod
     def amount_as_decimal(value: str | None) -> Decimal:
         if not value:
