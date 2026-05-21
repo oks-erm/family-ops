@@ -73,6 +73,47 @@ class TaskRepository:
         result = await self.session.execute(select(Task).where(Task.id == task_id, Task.user_id == user_id))
         return result.scalar_one_or_none()
 
+    async def find_pending_by_title(self, *, user_id: UUID, title: str) -> Task | None:
+        normalized = title.strip().lower()
+        result = await self.session.execute(
+            select(Task)
+            .where(
+                Task.user_id == user_id,
+                Task.status == TaskStatus.pending,
+            )
+            .order_by(Task.due_date.nulls_last(), Task.created_at.desc())
+        )
+        for task in result.scalars().all():
+            task_title = task.title.strip().lower()
+            if task_title == normalized or normalized in task_title or task_title in normalized:
+                return task
+        return None
+
+    async def remove_pending_by_title(self, *, user_id: UUID, title: str) -> Task | None:
+        task = await self.find_pending_by_title(user_id=user_id, title=title)
+        if task is None:
+            return None
+        task.status = TaskStatus.skipped
+        await self.session.commit()
+        await self.session.refresh(task)
+        return task
+
+    async def move_pending_by_title(
+        self,
+        *,
+        user_id: UUID,
+        title: str,
+        due_date: date,
+    ) -> Task | None:
+        task = await self.find_pending_by_title(user_id=user_id, title=title)
+        if task is None:
+            return None
+        task.due_date = due_date
+        task.moved_count += 1
+        await self.session.commit()
+        await self.session.refresh(task)
+        return task
+
     async def apply_action(
         self,
         *,

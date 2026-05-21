@@ -78,6 +78,28 @@ class ShoppingRepository:
                 await self.session.refresh(item)
         return matched
 
+    async def remove_pending_items_by_names(
+        self,
+        *,
+        household_id: UUID,
+        item_names: list[str],
+    ) -> list[ShoppingItem]:
+        pending_items = await self._list_all_pending(household_id=household_id)
+        normalized_targets = [self._normalize_name(name) for name in item_names if name.strip()]
+        matched: list[ShoppingItem] = []
+
+        for item in pending_items:
+            item_name = self.normalizer.normalize(item.name)
+            if any(self._names_match(item_name, target) for target in normalized_targets):
+                item.status = ShoppingItemStatus.skipped
+                matched.append(item)
+
+        if matched:
+            await self.session.commit()
+            for item in matched:
+                await self.session.refresh(item)
+        return matched
+
     async def _list_all_pending(self, *, household_id: UUID) -> list[ShoppingItem]:
         result = await self.session.execute(
             select(ShoppingItem)

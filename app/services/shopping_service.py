@@ -23,9 +23,24 @@ class ShoppingService:
     def parse_add_item(self, text: str) -> ParsedShoppingItem | None:
         normalized = text.strip()
         lowered = normalized.lower()
-        for prefix in ("need ", "buy ", "preciso de ", "precisamos de ", "comprar "):
+        for blocked_prefix in ("need to ", "i need to ", "we need to ", "preciso de fazer ", "precisamos de fazer "):
+            if lowered.startswith(blocked_prefix):
+                return None
+        for prefix in (
+            "need ",
+            "i need ",
+            "we need ",
+            "buy ",
+            "add to shopping list ",
+            "add shopping ",
+            "preciso de ",
+            "precisamos de ",
+            "comprar ",
+        ):
             if lowered.startswith(prefix):
                 remainder = normalized[len(prefix) :].strip()
+                if not self._looks_like_shopping_item(remainder):
+                    return None
                 remainder_lower = remainder.lower()
                 store_separator = self._store_separator(remainder_lower)
                 if store_separator is not None:
@@ -139,3 +154,93 @@ class ShoppingService:
             "intermarché": "Intermarché",
         }
         return names.get(store, store.title())
+
+    @classmethod
+    def _looks_like_shopping_item(cls, text: str) -> bool:
+        lowered = text.lower().strip()
+        if any(action in lowered for action in cls._action_markers()):
+            return False
+        if cls._trailing_store(text) is not None:
+            return True
+        if any(marker in lowered for marker in (" from ", " de ", " do ", " da ", " no ", " na ", " anywhere")):
+            return True
+        if lowered.startswith(("some ", "more ")):
+            return True
+        return any(token in lowered for token in cls._grocery_tokens())
+
+    @staticmethod
+    def _action_markers() -> tuple[str, ...]:
+        return (
+            "cook ",
+            "make ",
+            "prepare ",
+            "clean ",
+            "call ",
+            "email ",
+            "book ",
+            "pay ",
+            "go to ",
+            "workout",
+            "exercise",
+            "finish ",
+            "fix ",
+            "organize ",
+            "wash ",
+        )
+
+    @staticmethod
+    def _grocery_tokens() -> tuple[str, ...]:
+        return (
+            "egg",
+            "milk",
+            "bread",
+            "rice",
+            "pasta",
+            "sauce",
+            "tomato",
+            "broccoli",
+            "avocado",
+            "lentil",
+            "bean",
+            "cheese",
+            "yogurt",
+            "butter",
+            "chicken",
+            "beef",
+            "fish",
+            "salmon",
+            "tuna",
+            "ham",
+            "fruit",
+            "apple",
+            "banana",
+            "orange",
+            "vegetable",
+            "potato",
+            "onion",
+            "garlic",
+            "carrot",
+            "nuts",
+            "cashew",
+            "walnut",
+            "oat",
+            "water",
+            "tonic",
+            "coffee",
+            "tea",
+            "shampoo",
+            "soap",
+            "toothpaste",
+            "detergent",
+            "cleaner",
+            "paper",
+            "caju",
+            "noz",
+            "nozes",
+            "aveia",
+            "queijo",
+            "ovos",
+            "leite",
+            "arroz",
+            "massa",
+        )

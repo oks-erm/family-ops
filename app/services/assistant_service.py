@@ -32,6 +32,8 @@ class AssistantIntent(StrEnum):
     finance_transaction = "finance_transaction"
     planning_note = "planning_note"
     task_created = "task_created"
+    item_removed = "item_removed"
+    item_moved = "item_moved"
     unknown = "unknown"
 
 
@@ -58,6 +60,37 @@ class AssistantService:
         active_conversation = await self.planning_repository.get_active_conversation(user_id=user_id)
         if active_conversation is not None:
             return await self._handle_planning_answer(user_id=user_id, text=text)
+
+        planning_query = self._parse_planning_query(text)
+        if planning_query is not None:
+            return await self._planning_summary(user_id=user_id, period=planning_query)
+
+        move_request = self._parse_move_request(text)
+        if move_request is not None:
+            return await self._move_item(user_id=user_id, request=move_request)
+
+        remove_request = self._parse_remove_request(text)
+        if remove_request is not None:
+            return await self._remove_item(user_id=user_id, request=remove_request)
+
+        work_hours = self._parse_work_hours(text)
+        if work_hours is not None:
+            work_start, work_end, plan_date = work_hours
+            return await self._update_work_hours(
+                user_id=user_id,
+                text=text,
+                work_start=work_start,
+                work_end=work_end,
+                plan_date=plan_date,
+            )
+
+        planning_note = self._parse_planning_note(text)
+        if planning_note is not None:
+            return await self._store_planning_note(
+                user_id=user_id,
+                text=planning_note[0],
+                explicit_date=planning_note[1],
+            )
 
         task_title = self._parse_task_creation(text)
         if task_title is not None:
@@ -100,24 +133,6 @@ class AssistantService:
             period, store_name = expense_query
             return await self._expense_summary(user_id=user_id, period=period, store_name=store_name)
 
-        planning_query = self._parse_planning_query(text)
-        if planning_query is not None:
-            return await self._planning_summary(user_id=user_id, period=planning_query)
-
-        work_hours = self._parse_work_hours(text)
-        if work_hours is not None:
-            work_start, work_end = work_hours
-            return await self._update_tomorrow_work_hours(
-                user_id=user_id,
-                text=text,
-                work_start=work_start,
-                work_end=work_end,
-            )
-
-        planning_note = self._parse_planning_note(text)
-        if planning_note is not None:
-            return await self._store_planning_note(user_id=user_id, text=planning_note)
-
         ai_result = await self.ai_router.classify_light_intent(text=text)
         ai_intent = (ai_result.data or {}).get("intent")
         if ai_intent == AssistantIntent.planning_note:
@@ -129,8 +144,9 @@ class AssistantService:
         return AssistantResponse(
             intent=AssistantIntent.unknown,
             text=(
-                "I can handle shopping, tasks, receipts, and planning notes now. Try: "
-                "'Need eggs from Lidl', 'Task: call dentist', or 'Tomorrow I work 9-17'."
+                "I can handle shopping, tasks, receipts, and plans. Try: "
+                "'Need eggs from Lidl', 'I need to call dentist tomorrow', "
+                "'plan tomorrow', or 'plan cook dinner today'."
             ),
         )
 
@@ -187,19 +203,21 @@ class AssistantService:
             text="Saved. Draft plan:\n\n" + plan_text,
         )
 
-    async def _store_planning_note(self, *, user_id: UUID, text: str) -> AssistantResponse:
+    async def _store_planning_note(
+        self,
+        *,
+        user_id: UUID,
+        text: str,
+        explicit_date: date | None = None,
+    ) -> AssistantResponse:
         user = await UserRepository(self.session).get_by_id(user_id=user_id)
         if user is None:
             raise RuntimeError("User must exist before assistant actions can run.")
         from app.utils.datetime import now_in_timezone
 
         household_id = await self._household_id_for_user(user_id=user_id)
-        lowered = text.lower()
         today = now_in_timezone(user.timezone).date()
-        if any(w in lowered for w in ("today", "tonight", "this evening")):
-            plan_date = today
-        else:
-            plan_date = today + timedelta(days=1)
+        plan_date = explicit_date or self._date_from_text(text, user.timezone) or today
         conversation = await self.planning_repository.get_conversation(
             user_id=user_id,
             plan_date=plan_date,
@@ -219,22 +237,23 @@ class AssistantService:
         plan_text = await self._generate_daily_plan_text(user_id=user_id, plan_date=plan_date)
         return AssistantResponse(
             intent=AssistantIntent.planning_note,
-            text="Stored as a planning note for tomorrow.\n\n" + plan_text,
+            text=f"Stored as a planning note for {plan_date.isoformat()}.\n\n" + plan_text,
         )
 
-    async def _update_tomorrow_work_hours(
+    async def _update_work_hours(
         self,
         *,
         user_id: UUID,
         text: str,
         work_start: time,
         work_end: time,
+        plan_date: date | None,
     ) -> AssistantResponse:
         user = await UserRepository(self.session).get_by_id(user_id=user_id)
         if user is None:
             raise RuntimeError("User must exist before assistant actions can run.")
         household_id = await self._household_id_for_user(user_id=user_id)
-        plan_date = self._tomorrow_for_user_timezone(user.timezone)
+        plan_date = plan_date or self._date_from_text(text, user.timezone) or self._tomorrow_for_user_timezone(user.timezone)
         conversation = await self.planning_repository.get_conversation(
             user_id=user_id,
             plan_date=plan_date,
@@ -257,7 +276,7 @@ class AssistantService:
         plan_text = await self._generate_daily_plan_text(user_id=user_id, plan_date=plan_date)
         return AssistantResponse(
             intent=AssistantIntent.planning_note,
-            text="Updated tomorrow's work hours.\n\n" + plan_text,
+            text=f"Updated work hours for {plan_date.isoformat()}.\n\n" + plan_text,
         )
 
     async def _planning_summary(self, *, user_id: UUID, period: str) -> AssistantResponse:
@@ -354,9 +373,6 @@ class AssistantService:
             user_id=user_id,
             through_date=plan_date,
         )
-        shopping_items = await self.shopping_repository.list_all_pending_for_household(
-            household_id=household_id,
-        )
         calendar_events = await CalendarService(self.session).list_events_for_day(
             household_id=household_id,
             day=plan_date,
@@ -376,9 +392,6 @@ class AssistantService:
                 work_end=conversation.work_end if conversation else None,
                 unusual_notes=conversation.unusual_notes if conversation else None,
                 tasks=[task.title for task in tasks],
-                shopping_items=[
-                    f"{item.name} ({item.store_name_raw or 'anywhere'})" for item in shopping_items
-                ],
                 calendar_events=calendar_events,
                 current_time=current_time,
             )
@@ -537,6 +550,111 @@ class AssistantService:
             text=f"Marked as bought: {item_text}.",
         )
 
+    async def _remove_item(self, *, user_id: UUID, request: dict[str, str]) -> AssistantResponse:
+        name = request["name"]
+        target = request["target"]
+        household_id = await self._household_id_for_user(user_id=user_id)
+
+        if target in {"shopping", "any"}:
+            removed_items = await self.shopping_repository.remove_pending_items_by_names(
+                household_id=household_id,
+                item_names=[name],
+            )
+            if removed_items:
+                item_text = ", ".join(item.name for item in removed_items)
+                return AssistantResponse(
+                    intent=AssistantIntent.item_removed,
+                    text=f"Removed from shopping list: {item_text}.",
+                )
+
+        if target in {"task", "plan", "any"}:
+            removed_task = await self.task_repository.remove_pending_by_title(
+                user_id=user_id,
+                title=name,
+            )
+            if removed_task is not None:
+                return AssistantResponse(
+                    intent=AssistantIntent.item_removed,
+                    text=f"Removed from tasks: {removed_task.title}.",
+                )
+
+        return AssistantResponse(
+            intent=AssistantIntent.unknown,
+            text=f"I could not find '{name}' in the pending shopping list or tasks.",
+        )
+
+    async def _move_item(self, *, user_id: UUID, request: dict[str, str]) -> AssistantResponse:
+        user = await UserRepository(self.session).get_by_id(user_id=user_id)
+        if user is None:
+            raise RuntimeError("User must exist before assistant actions can run.")
+        household_id = await self._household_id_for_user(user_id=user_id)
+        name = request["name"]
+        target = request["target"]
+        due_date = self._date_from_text(request.get("date_text", ""), user.timezone)
+
+        if target == "tomorrow":
+            moved = await self.task_repository.move_pending_by_title(
+                user_id=user_id,
+                title=name,
+                due_date=due_date or self._tomorrow_for_user_timezone(user.timezone),
+            )
+            if moved is None:
+                return AssistantResponse(
+                    intent=AssistantIntent.unknown,
+                    text=f"I could not find a pending task called '{name}' to move.",
+                )
+            return AssistantResponse(
+                intent=AssistantIntent.item_moved,
+                text=f"Moved task to {moved.due_date.isoformat()}: {moved.title}.",
+            )
+
+        if target in {"task", "plan"}:
+            removed_items = await self.shopping_repository.remove_pending_items_by_names(
+                household_id=household_id,
+                item_names=[name],
+            )
+            if not removed_items:
+                return AssistantResponse(
+                    intent=AssistantIntent.unknown,
+                    text=f"I could not find '{name}' on the shopping list to move.",
+                )
+            created = await self.task_repository.create_task(
+                user_id=user_id,
+                household_id=household_id,
+                title=removed_items[0].name,
+                due_date=due_date,
+            )
+            return AssistantResponse(
+                intent=AssistantIntent.item_moved,
+                text=f"Moved from shopping list to tasks: {created.title}.",
+            )
+
+        if target == "shopping":
+            removed_task = await self.task_repository.remove_pending_by_title(
+                user_id=user_id,
+                title=name,
+            )
+            if removed_task is None:
+                return AssistantResponse(
+                    intent=AssistantIntent.unknown,
+                    text=f"I could not find a pending task called '{name}' to move.",
+                )
+            saved = await self.shopping_repository.add_item(
+                user_id=user_id,
+                household_id=household_id,
+                name=removed_task.title,
+                store_name=None,
+            )
+            return AssistantResponse(
+                intent=AssistantIntent.item_moved,
+                text=f"Moved from tasks to shopping list: {saved.name}.",
+            )
+
+        return AssistantResponse(
+            intent=AssistantIntent.unknown,
+            text="I can move an item to tomorrow, to tasks, to plan, or to shopping.",
+        )
+
     async def _expense_summary(
         self,
         *,
@@ -566,15 +684,24 @@ class AssistantService:
     @staticmethod
     def _parse_task_creation(text: str) -> str | None:
         stripped = text.strip()
+        lowered = stripped.lower()
+        if AssistantService._looks_like_shopping_request(stripped):
+            return None
+        if AssistantService._parse_planning_query(stripped) is not None:
+            return None
         patterns = (
             r"^(?:task|todo|to do):\s+(.+)$",
             r"^(?:add task|create task|remind me to)\s+(.+)$",
-            r"^(?:i need to|we need to|need to)\s+(.+)$",
+            r"^(?:i need to|we need to|need to|i have to|we have to|have to|i should|we should)\s+(.+)$",
+            r"^(?:can you remind me to|please remind me to)\s+(.+)$",
         )
         for pattern in patterns:
             match = re.match(pattern, stripped, flags=re.IGNORECASE)
             if match:
                 return match.group(1).strip(" .")
+        if any(verb in lowered for verb in AssistantService._ACTION_VERBS):
+            if any(ref in lowered for ref in ("today", "tomorrow", "tonight", "this week", "next week")):
+                return stripped
         return None
 
     @staticmethod
@@ -606,7 +733,7 @@ class AssistantService:
         return time(hour=hour, minute=minute)
 
     @staticmethod
-    def _parse_work_hours(text: str) -> tuple[time, time] | None:
+    def _parse_work_hours(text: str) -> tuple[time, time, date | None] | None:
         lowered = text.lower()
         if "work" not in lowered and "working" not in lowered:
             return None
@@ -616,7 +743,7 @@ class AssistantService:
         start_match, end_match = matches[0], matches[1]
         start = time(hour=int(start_match.group(1)), minute=int(start_match.group(2) or 0))
         end = time(hour=int(end_match.group(1)), minute=int(end_match.group(2) or 0))
-        return start, end
+        return start, end, None
 
     @staticmethod
     def _tomorrow_for_user_timezone(timezone: str) -> date:
@@ -694,7 +821,7 @@ class AssistantService:
         )
 
     @staticmethod
-    def _parse_planning_note(text: str) -> str | None:
+    def _parse_planning_note(text: str) -> tuple[str, date | None] | None:
         stripped = text.strip()
         match = re.match(r"^plan\s+(.+)$", stripped, flags=re.IGNORECASE | re.DOTALL)
         if not match:
@@ -707,4 +834,121 @@ class AssistantService:
             flags=re.IGNORECASE,
         ):
             return None
-        return content
+        return content, None
+
+    @staticmethod
+    def _parse_remove_request(text: str) -> dict[str, str] | None:
+        stripped = text.strip()
+        patterns = (
+            r"^(?:remove|delete|drop)\s+(.+?)\s+from\s+(shopping list|shopping|tasks?|plan)$",
+            r"^(?:remove|delete|drop)\s+(.+)$",
+        )
+        for pattern in patterns:
+            match = re.match(pattern, stripped, flags=re.IGNORECASE)
+            if not match:
+                continue
+            target = "any"
+            if len(match.groups()) >= 2 and match.group(2):
+                raw_target = match.group(2).lower()
+                if "shop" in raw_target:
+                    target = "shopping"
+                elif "task" in raw_target:
+                    target = "task"
+                elif "plan" in raw_target:
+                    target = "plan"
+            return {"name": match.group(1).strip(" ."), "target": target}
+        return None
+
+    @staticmethod
+    def _parse_move_request(text: str) -> dict[str, str] | None:
+        stripped = text.strip()
+        lowered = stripped.lower()
+        match = re.match(
+            r"^(?:move|change|reschedule)\s+(.+?)\s+(?:to|for)\s+(tomorrow|today|tonight|this week|next week)$",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return {
+                "name": match.group(1).strip(" ."),
+                "target": "tomorrow" if "tomorrow" in match.group(2).lower() else "tomorrow",
+                "date_text": match.group(2),
+            }
+        match = re.match(
+            r"^(?:move|change)\s+(.+?)\s+from\s+(?:shopping list|shopping)\s+to\s+(tasks?|plan)(?:\s+(today|tomorrow))?$",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return {
+                "name": match.group(1).strip(" ."),
+                "target": "task" if "task" in match.group(2).lower() else "plan",
+                "date_text": match.group(3) or "",
+            }
+        match = re.match(
+            r"^(?:move|change)\s+(.+?)\s+from\s+(?:tasks?|plan)\s+to\s+(?:shopping list|shopping)$",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return {"name": match.group(1).strip(" ."), "target": "shopping", "date_text": ""}
+        if lowered.startswith("move ") and " tomorrow" in lowered:
+            return {
+                "name": re.sub(r"\s+(?:to|for)?\s*tomorrow$", "", stripped[5:], flags=re.IGNORECASE).strip(" ."),
+                "target": "tomorrow",
+                "date_text": "tomorrow",
+            }
+        return None
+
+    @staticmethod
+    def _date_from_text(text: str, timezone: str) -> date | None:
+        from app.utils.datetime import now_in_timezone
+
+        lowered = text.lower()
+        today = now_in_timezone(timezone).date()
+        if any(ref in lowered for ref in ("today", "tonight", "this evening")):
+            return today
+        if "tomorrow" in lowered:
+            return today + timedelta(days=1)
+        return None
+
+    _ACTION_VERBS = (
+        "cook",
+        "clean",
+        "call",
+        "email",
+        "send",
+        "book",
+        "schedule",
+        "pay",
+        "finish",
+        "start",
+        "prepare",
+        "workout",
+        "exercise",
+        "go to",
+        "pick up",
+        "drop off",
+        "wash",
+        "fold",
+        "fix",
+        "organize",
+        "study",
+        "write",
+    )
+
+    @staticmethod
+    def _looks_like_shopping_request(text: str) -> bool:
+        lowered = text.lower().strip()
+        return lowered.startswith(
+            (
+                "need ",
+                "i need ",
+                "we need ",
+                "buy ",
+                "add ",
+                "preciso de ",
+                "precisamos de ",
+                "comprar ",
+            )
+        ) and not lowered.startswith(("need to ", "i need to ", "we need to "))

@@ -19,7 +19,6 @@ class PlanningInput:
     work_end: time | None
     unusual_notes: str | None
     tasks: list[str]
-    shopping_items: list[str]
     calendar_events: list[CalendarEventInput]
     current_time: time | None = None
 
@@ -38,7 +37,6 @@ class PlanningService:
             "fixed_events": fixed_events,
             "free_windows": free_windows,
             "suggested_tasks": self._suggest_tasks(planning_input.tasks, free_windows),
-            "shopping": planning_input.shopping_items,
         }
 
     def render_plan_message(self, plan: dict[str, object]) -> str:
