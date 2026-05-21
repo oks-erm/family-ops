@@ -283,10 +283,15 @@ class AssistantService:
                 household_id=household_id,
                 plan_date=plan_date,
             )
+        existing_notes = conversation.unusual_notes or ""
+        note = text.strip()
+        combined_notes = note
+        if existing_notes and note.casefold() not in existing_notes.casefold():
+            combined_notes = f"{existing_notes}; {note}"
         await self.planning_repository.save_answer(
             conversation=conversation,
             message_text=text,
-            unusual_notes=text.strip(),
+            unusual_notes=combined_notes,
             next_state=PlanningConversationState.complete,
         )
         if self._looks_like_activity(text) and not self._looks_like_schedule_note(text):

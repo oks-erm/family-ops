@@ -699,6 +699,13 @@ async def dashboard_page(request: Request) -> str:
           <div class="rows" id="promotions"></div>
           <div class="section-foot"><button class="link-btn" type="button" data-collapse-target="promotions">Show all</button></div>
         </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h2>Recommendations</h2>
+          </div>
+          <div class="rows" id="recommendations"></div>
+        </section>
       </div>
 
       <div class="grid">
@@ -729,13 +736,7 @@ async def dashboard_page(request: Request) -> str:
             <h2>Expense Transactions This Month</h2>
           </div>
           <div class="rows" id="transactions"></div>
-        </section>
-
-        <section class="panel">
-          <div class="section-head">
-            <h2>Recommendations</h2>
-          </div>
-          <div class="rows" id="recommendations"></div>
+          <div class="section-foot"><button class="link-btn" type="button" data-collapse-target="transactions">Show all</button></div>
         </section>
       </div>
     </section>
@@ -985,8 +986,9 @@ async def dashboard_page(request: Request) -> str:
         </div>
       `).join("") : `<div class="empty">No confirmed receipts yet.</div>`;
 
-      document.querySelector("#transactions").innerHTML = data.transactions.length ? data.transactions.map(item => `
-        <div class="row">
+      setCollapseButton("transactions", data.transactions.length, false);
+      document.querySelector("#transactions").innerHTML = data.transactions.length ? data.transactions.map((item, index) => `
+        <div class="row ${index >= 6 ? "hidden-row" : ""}" data-collapsible-row="transactions">
           <div class="row-main">
             <div class="row-title">${escapeHtml(item.description)}</div>
             <div class="row-sub">${escapeHtml(item.date)} · ${escapeHtml(item.category)}${item.merchant ? ` · ${escapeHtml(item.merchant)}` : ""}</div>
