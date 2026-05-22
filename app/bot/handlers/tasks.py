@@ -4,6 +4,8 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
 from app.config import get_settings
+from app.db.models import ActivityAction
+from app.db.repositories.activity import ActivityRepository
 from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.tasks import TaskRepository
 from app.db.repositories.users import UserRepository
@@ -49,6 +51,16 @@ async def handle_task_action(callback: CallbackQuery) -> None:
             action=action,
             today=today,
         )
+        if task is not None:
+            action_text = {"done": "completed", "skip": "skipped", "move": "moved to tomorrow"}[action]
+            await ActivityRepository(session).log(
+                household_id=household.id,
+                user_id=user.id,
+                action=ActivityAction.updated,
+                entity_type="task",
+                entity_id=task.id,
+                summary=f"Marked task {action_text}: {task.title}",
+            )
 
     if task is None:
         await callback.answer("Task not found.")

@@ -191,21 +191,27 @@ class AssistantService:
                     intent=AssistantIntent.planning_note,
                     text="Please send the finish time as HH:MM, for example 17:30.",
                 )
-            await self.planning_repository.save_answer(
+            conversation = await self.planning_repository.save_answer(
                 conversation=conversation,
                 message_text=text,
                 work_end=parsed_time,
                 next_state=PlanningConversationState.awaiting_unusual_notes,
             )
+            plan_text = await self._generate_daily_plan_text(user_id=user_id, plan_date=conversation.plan_date)
             return AssistantResponse(
                 intent=AssistantIntent.planning_note,
-                text="Anything unusual tomorrow? Appointments, errands, low energy, church, workout?",
+                text=(
+                    "Saved work block. Draft plan:\n\n"
+                    + plan_text
+                    + "\n\nAnything unusual tomorrow? Appointments, errands, low energy, church, workout?"
+                ),
             )
 
         existing_notes = conversation.unusual_notes or ""
         note = text.strip()
-        combined_notes = note
-        if existing_notes and note.casefold() not in existing_notes.casefold():
+        no_notes = note.casefold() in {"no", "nothing", "none", "nope", "nothing unusual"}
+        combined_notes = existing_notes if no_notes else note
+        if existing_notes and not no_notes and note.casefold() not in existing_notes.casefold():
             combined_notes = f"{existing_notes}; {note}"
         await self.planning_repository.save_answer(
             conversation=conversation,
@@ -704,6 +710,15 @@ class AssistantService:
                 item_names=[name],
             )
             if removed_items:
+                for item in removed_items:
+                    await self.activity_repository.log(
+                        household_id=household_id,
+                        user_id=user_id,
+                        action=ActivityAction.deleted,
+                        entity_type="shopping_item",
+                        entity_id=item.id,
+                        summary=f"Removed shopping item: {item.name}",
+                    )
                 item_text = ", ".join(item.name for item in removed_items)
                 return AssistantResponse(
                     intent=AssistantIntent.item_removed,
@@ -716,6 +731,14 @@ class AssistantService:
                 title=name,
             )
             if removed_task is not None:
+                await self.activity_repository.log(
+                    household_id=household_id,
+                    user_id=user_id,
+                    action=ActivityAction.deleted,
+                    entity_type="task",
+                    entity_id=removed_task.id,
+                    summary=f"Removed task: {removed_task.title}",
+                )
                 return AssistantResponse(
                     intent=AssistantIntent.item_removed,
                     text=f"Removed from tasks: {removed_task.title}.",
@@ -746,6 +769,14 @@ class AssistantService:
                     intent=AssistantIntent.unknown,
                     text=f"I could not find a pending task called '{name}' to move.",
                 )
+            await self.activity_repository.log(
+                household_id=household_id,
+                user_id=user_id,
+                action=ActivityAction.updated,
+                entity_type="task",
+                entity_id=moved.id,
+                summary=f"Rescheduled task to {moved.due_date.isoformat()}: {moved.title}",
+            )
             return AssistantResponse(
                 intent=AssistantIntent.item_moved,
                 text=f"Moved task to {moved.due_date.isoformat()}: {moved.title}.",
@@ -767,6 +798,14 @@ class AssistantService:
                 title=removed_items[0].name,
                 due_date=due_date,
             )
+            await self.activity_repository.log(
+                household_id=household_id,
+                user_id=user_id,
+                action=ActivityAction.updated,
+                entity_type="task",
+                entity_id=created.id,
+                summary=f"Moved shopping item to tasks: {created.title}",
+            )
             return AssistantResponse(
                 intent=AssistantIntent.item_moved,
                 text=f"Moved from shopping list to tasks: {created.title}.",
@@ -787,6 +826,14 @@ class AssistantService:
                 household_id=household_id,
                 name=removed_task.title,
                 store_name=None,
+            )
+            await self.activity_repository.log(
+                household_id=household_id,
+                user_id=user_id,
+                action=ActivityAction.updated,
+                entity_type="shopping_item",
+                entity_id=saved.id,
+                summary=f"Moved task to shopping list: {saved.name}",
             )
             return AssistantResponse(
                 intent=AssistantIntent.item_moved,

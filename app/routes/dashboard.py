@@ -1,3 +1,4 @@
+from calendar import monthrange
 from datetime import date
 from uuid import UUID
 
@@ -46,23 +47,54 @@ async def _dashboard_context(request: Request, session):
 
 
 @router.get("/api/dashboard")
-async def dashboard_data(request: Request, month: str | None = None) -> dict[str, object]:
+async def dashboard_data(
+    request: Request,
+    month: str | None = None,
+    scope: str = "month",
+    start_month: str | None = None,
+    end_month: str | None = None,
+    year: int | None = None,
+) -> dict[str, object]:
     async with async_session_factory() as session:
         dashboard_user, household = await _dashboard_context(request, session)
         if dashboard_user is None or household is None:
             raise HTTPException(status_code=401, detail="Dashboard login required.")
         today = now_in_timezone(dashboard_user.timezone).date()
         selected_month = None
-        if month:
+        period_start = None
+        period_end = None
+        period_label = None
+
+        def parse_month(value: str) -> date:
             try:
-                year, month_number = month.split("-", 1)
-                selected_month = date(int(year), int(month_number), 1)
+                parsed_year, parsed_month = value.split("-", 1)
+                return date(int(parsed_year), int(parsed_month), 1)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail="Month must be YYYY-MM.") from exc
+
+        if scope == "year":
+            selected_year = year or today.year
+            period_start = date(selected_year, 1, 1)
+            period_end = date(selected_year, 12, 31)
+            period_label = str(selected_year)
+        elif scope == "range":
+            if not start_month or not end_month:
+                raise HTTPException(status_code=400, detail="Range requires start_month and end_month.")
+            period_start = parse_month(start_month)
+            end_start = parse_month(end_month)
+            period_end = date(end_start.year, end_start.month, monthrange(end_start.year, end_start.month)[1])
+            if period_start > period_end:
+                raise HTTPException(status_code=400, detail="Start month must be before end month.")
+            period_label = f"{period_start.strftime('%b %Y')} - {end_start.strftime('%b %Y')}"
+        elif month:
+            selected_month = parse_month(month)
         return await DashboardService(session).summary(
             household_id=household.id,
             today=today,
             selected_month=selected_month,
+            period_start=period_start,
+            period_end=period_end,
+            period_label=period_label,
         )
 
 
@@ -370,7 +402,22 @@ async def dashboard_page(request: Request) -> str:
       padding: 7px 11px;
       box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
     }
+    .period-range { display: none; gap: 8px; align-items: center; }
+    .period-range.open { display: flex; }
+    .activity-pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 11px;
+      font-weight: 650;
+      background: #eef2ff;
+      color: #2563eb;
+    }
+    .activity-pill.shopping { background: #dcfce7; color: #15803d; }
+    .activity-pill.task, .activity-pill.routine { background: #dbeafe; color: #2563eb; }
+    .activity-pill.finance, .activity-pill.receipt { background: #fef3c7; color: #a16207; }
     .grid { display: grid; gap: 14px; }
+    .hidden { display: none !important; }
     .tabs { display: flex; gap: 8px; }
     .tab-btn {
       border: 1px solid var(--line);
@@ -698,7 +745,17 @@ async def dashboard_page(request: Request) -> str:
         </nav>
       </div>
       <div class="top-actions">
+        <select class="month-control" id="scope-filter" aria-label="Dashboard period type">
+          <option value="month">Month</option>
+          <option value="range">Range</option>
+          <option value="year">Year</option>
+        </select>
         <input class="month-control" id="month-filter" type="month" aria-label="Dashboard month">
+        <div class="period-range" id="range-controls">
+          <input class="month-control" id="start-month-filter" type="month" aria-label="Start month">
+          <input class="month-control" id="end-month-filter" type="month" aria-label="End month">
+        </div>
+        <input class="month-control hidden" id="year-filter" type="number" min="2000" max="2100" aria-label="Dashboard year">
         <div class="status" id="status">Loading dashboard</div>
       </div>
     </header>
@@ -775,6 +832,7 @@ async def dashboard_page(request: Request) -> str:
       <div class="section-head">
         <h2>Must Tasks</h2>
       </div>
+      <section class="grid metrics" id="task-metrics"></section>
       <form class="routine-form" id="routine-create">
         <input name="title" placeholder="Task name" autocomplete="off">
         <input name="duration_minutes" type="number" min="1" max="360" placeholder="Min min">
@@ -845,9 +903,6 @@ async def dashboard_page(request: Request) -> str:
     const renderCurrentCashflow = totals => {
       const income = moneyNumber(totals.income_month);
       const expenses = moneyNumber(totals.this_month);
-      const saved = income - expenses;
-      const savedLabel = saved >= 0 ? "Saved so far" : "Over so far";
-      const savedClass = saved >= 0 ? "var(--green)" : "var(--danger)";
       const max = Math.max(income, expenses, 1);
       const barMaxHeight = 104;
       const incomeHeight = Math.max(3, income / max * barMaxHeight);
@@ -865,9 +920,6 @@ async def dashboard_page(request: Request) -> str:
         <div class="chart-legend">
           <span><span class="legend-dot" style="background:#2563eb"></span>Income</span>
           <span><span class="legend-dot" style="background:#ef4444"></span>Expenses</span>
-        </div>
-        <div class="recommendation" style="margin-top:12px">
-          <strong>${savedLabel}: <span style="color:${savedClass}">${Math.abs(saved).toFixed(2)} EUR</span></strong>
         </div>
       `;
     };
@@ -916,6 +968,19 @@ async def dashboard_page(request: Request) -> str:
       const now = new Date();
       return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
     };
+    const dashboardQuery = () => {
+      const scope = document.querySelector("#scope-filter").value;
+      const params = new URLSearchParams({ scope });
+      if (scope === "year") {
+        params.set("year", document.querySelector("#year-filter").value || String(new Date().getFullYear()));
+      } else if (scope === "range") {
+        params.set("start_month", document.querySelector("#start-month-filter").value || currentMonthValue());
+        params.set("end_month", document.querySelector("#end-month-filter").value || currentMonthValue());
+      } else {
+        params.set("month", document.querySelector("#month-filter").value || currentMonthValue());
+      }
+      return params.toString();
+    };
     const renderBars = (rows, emptyText) => {
       const max = Math.max(...rows.map(x => moneyNumber(x.value)), 1);
       return rows.length ? rows.map(row => {
@@ -939,8 +1004,7 @@ async def dashboard_page(request: Request) -> str:
 
     async function loadDashboard() {
       document.querySelector("#status").textContent = "Updating";
-      const month = document.querySelector("#month-filter").value || currentMonthValue();
-      const response = await fetch(`/api/dashboard?month=${encodeURIComponent(month)}`);
+      const response = await fetch(`/api/dashboard?${dashboardQuery()}`);
       const data = await response.json();
       if (data.error) {
         document.querySelector(".shell").innerHTML = `<div class="panel">${escapeHtml(data.error)}</div>`;
@@ -954,8 +1018,14 @@ async def dashboard_page(request: Request) -> str:
         metric(`Income ${data.period.label}`, t.income_month),
         metric(data.totals.saved_month_value >= 0 ? "Saved So Far" : "Over So Far", `${Math.abs(moneyNumber(t.saved_month)).toFixed(2)} EUR`),
         data.period.is_current_month
-          ? metric("Next Month", t.next_month_projection)
+          ? metric("Next Month (Projection)", t.next_month_projection)
           : metric("Receipts", String(t.receipt_count_month)),
+      ].join("");
+      document.querySelector("#task-metrics").innerHTML = [
+        metric("Completion", `${data.task_stats.completion_rate}%`),
+        metric("Done", String(data.task_stats.done)),
+        metric("Skipped", String(data.task_stats.skipped)),
+        metric("Moved", String(data.task_stats.moved)),
       ].join("");
 
       document.querySelector("#expense-categories").innerHTML = renderBars(data.expense_categories, `No expenses logged for ${data.period.label}.`);
@@ -1045,7 +1115,7 @@ async def dashboard_page(request: Request) -> str:
         <div class="row">
           <div class="row-main">
             <div class="row-title">${escapeHtml(item.summary)}</div>
-            <div class="row-sub">${escapeHtml(item.actor)} · ${escapeHtml(item.entity_type)} · ${escapeHtml(item.action)}${item.category ? ` · ${escapeHtml(item.category)}` : ""}</div>
+            <div class="row-sub">${escapeHtml(item.actor)} · <span class="activity-pill ${escapeHtml(item.activity_class || "")}">${escapeHtml(item.entity_type)}</span> · ${escapeHtml(item.action)}${item.category ? ` · ${escapeHtml(item.category)}` : ""}</div>
           </div>
         </div>
       `).join("") : `<div class="empty">No household activity yet.</div>`;
@@ -1077,7 +1147,7 @@ async def dashboard_page(request: Request) -> str:
         <div class="row">
           <div class="row-main">
             <div class="row-title">${escapeHtml(item.summary)}</div>
-            <div class="row-sub">${escapeHtml(item.actor)} · ${escapeHtml(item.entity_type)} · ${escapeHtml(item.action)}${item.category ? ` · ${escapeHtml(item.category)}` : ""} · ${escapeHtml(new Date(item.date).toLocaleString())}</div>
+            <div class="row-sub">${escapeHtml(item.actor)} · <span class="activity-pill ${escapeHtml(item.activity_class || "")}">${escapeHtml(item.entity_type)}</span> · ${escapeHtml(item.action)}${item.category ? ` · ${escapeHtml(item.category)}` : ""} · ${escapeHtml(new Date(item.date).toLocaleString())}</div>
           </div>
         </div>
       `).join("") : `<div class="empty">No activity matches these filters.</div>`;
@@ -1114,6 +1184,7 @@ async def dashboard_page(request: Request) -> str:
         tabButton.classList.add("active");
         document.querySelectorAll(".view").forEach(view => view.classList.add("hidden"));
         document.querySelector(`#${tabButton.dataset.viewTarget}`).classList.remove("hidden");
+        document.querySelector("#metrics").classList.toggle("hidden", tabButton.dataset.viewTarget !== "overview-view");
         if (tabButton.dataset.viewTarget === "activity-view") loadActivity(1);
         if (tabButton.dataset.viewTarget === "tasks-view") loadRoutines();
         return;
@@ -1251,7 +1322,22 @@ async def dashboard_page(request: Request) -> str:
     document.querySelector("#activity-prev").addEventListener("click", () => loadActivity(Math.max(1, activityPage - 1)));
     document.querySelector("#activity-next").addEventListener("click", () => loadActivity(activityPage + 1));
     document.querySelector("#month-filter").value = currentMonthValue();
-    document.querySelector("#month-filter").addEventListener("change", () => loadDashboard());
+    document.querySelector("#start-month-filter").value = currentMonthValue();
+    document.querySelector("#end-month-filter").value = currentMonthValue();
+    document.querySelector("#year-filter").value = String(new Date().getFullYear());
+    const updatePeriodControls = () => {
+      const scope = document.querySelector("#scope-filter").value;
+      document.querySelector("#month-filter").classList.toggle("hidden", scope !== "month");
+      document.querySelector("#range-controls").classList.toggle("open", scope === "range");
+      document.querySelector("#year-filter").classList.toggle("hidden", scope !== "year");
+    };
+    ["scope-filter", "month-filter", "start-month-filter", "end-month-filter", "year-filter"].forEach(id => {
+      document.querySelector(`#${id}`).addEventListener("change", () => {
+        updatePeriodControls();
+        loadDashboard();
+      });
+    });
+    updatePeriodControls();
 
     loadDashboard().catch(() => {
       document.querySelector("#status").textContent = "Could not load";

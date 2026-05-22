@@ -79,7 +79,10 @@ class PlanningService:
             for task in tasks:
                 title = task["title"] if isinstance(task, dict) else str(task)
                 window = task.get("window") if isinstance(task, dict) else None
-                lines.append(f"- {title}" + (f" ({window})" if window and window != "flexible" else ""))
+                if window == "alternative":
+                    lines.append(f"  or {title}")
+                else:
+                    lines.append(f"- {title}" + (f" ({window})" if window and window != "flexible" else ""))
         elif not fixed_events and not plan.get("notes"):
             lines.append("")
             lines.append("Tasks")
@@ -116,10 +119,10 @@ class PlanningService:
         fixed_events: list[dict[str, str]],
     ) -> list[dict[str, str]]:
         note_start, note_end = self._available_bounds_from_notes(planning_input.unusual_notes)
-        day_start = planning_input.available_start or note_start or time(hour=7)
+        day_start = planning_input.available_start or note_start or time(hour=8)
         if planning_input.current_time and planning_input.current_time > day_start:
             day_start = planning_input.current_time
-        day_end = planning_input.available_end or note_end or time(hour=22)
+        day_end = planning_input.available_end or note_end or time(hour=23, minute=30)
         if day_start >= day_end:
             return []
         busy = [
@@ -156,8 +159,18 @@ class PlanningService:
             tasks,
             key=lambda task: 0 if isinstance(task, PlannedTaskInput) and task.must else 1,
         )
+        previous_category = None
         for task in sorted_tasks[:8]:
             title, minutes = PlanningService._task_duration(task)
+            category = PlanningService._task_category(title)
+            if previous_category == category and category in {"physical", "errand"}:
+                suggested.append(
+                    {
+                        "title": title,
+                        "window": "alternative",
+                    }
+                )
+                continue
             slot = PlanningService._reserve_first_slot_that_fits(windows, minutes)
             suggested.append(
                 {
@@ -165,6 +178,7 @@ class PlanningService:
                     "window": f"{slot[0].strftime('%H:%M')}-{slot[1].strftime('%H:%M')}" if slot else "flexible",
                 }
             )
+            previous_category = category
         return suggested
 
     @staticmethod
@@ -211,6 +225,17 @@ class PlanningService:
         if "clean" in lowered:
             return 30
         return 30
+
+    @staticmethod
+    def _task_category(task: str) -> str:
+        lowered = task.lower()
+        if any(word in lowered for word in ("exercise", "workout", "climb", "run", "gym", "walk")):
+            return "physical"
+        if any(word in lowered for word in ("shop", "buy", "pick up", "drop off", "errand")):
+            return "errand"
+        if any(word in lowered for word in ("read", "study", "write", "call", "email")):
+            return "quiet"
+        return "general"
 
     @staticmethod
     def _reserve_first_slot_that_fits(

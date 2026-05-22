@@ -4,9 +4,10 @@ from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import TransactionType
+from app.db.models import TaskCompletion, TaskStatus, TransactionType
 from app.db.repositories.activity import ActivityRepository
 from app.db.repositories.finance import FinanceRepository
 from app.db.repositories.prices import PriceRepository
@@ -34,18 +35,21 @@ class DashboardService:
         household_id: UUID,
         today: date,
         selected_month: date | None = None,
+        period_start: date | None = None,
+        period_end: date | None = None,
+        period_label: str | None = None,
     ) -> dict[str, object]:
         receipts = await self.receipt_repository.list_receipts_for_household(household_id=household_id)
         pending_items = await self.shopping_repository.list_all_pending_for_household(
             household_id=household_id,
         )
-        month_start = (selected_month or today).replace(day=1)
-        month_end = date(
+        month_start = period_start or (selected_month or today).replace(day=1)
+        month_end = period_end or date(
             month_start.year,
             month_start.month,
             monthrange(month_start.year, month_start.month)[1],
         )
-        period_end = min(month_end, today) if month_start <= today.replace(day=1) else month_end
+        bounded_period_end = min(month_end, today) if month_start <= today else month_end
         week_start = today - timedelta(days=today.weekday())
 
         month_receipts = [
@@ -58,12 +62,14 @@ class DashboardService:
             for r in receipts
             if week_start <= self.receipt_repository.effective_receipt_date(r) <= today
         ]
-        series_start = self._shift_month(month_start, -5)
+        is_custom_period = period_start is not None or period_end is not None
+        series_start = month_start if is_custom_period else self._shift_month(month_start, -5)
+        series_end = month_end if is_custom_period else month_start
         all_transactions = await self.finance_repository.list_for_household(household_id=household_id)
         series_transactions = [
             transaction
             for transaction in all_transactions
-            if series_start <= self._dashboard_transaction_date(transaction) <= period_end
+            if series_start <= self._dashboard_transaction_date(transaction) <= bounded_period_end
         ]
         month_transactions = [
             transaction
@@ -108,11 +114,14 @@ class DashboardService:
             },
             "period": {
                 "month": month_start.strftime("%Y-%m"),
-                "label": month_start.strftime("%B %Y"),
-                "is_current_month": month_start == today.replace(day=1),
+                "start": month_start.isoformat(),
+                "end": month_end.isoformat(),
+                "label": period_label or month_start.strftime("%B %Y"),
+                "is_current_month": month_start == today.replace(day=1) and month_end.month == today.month,
             },
             "expense_categories": self._expense_by_category(month_receipts, month_transactions),
             "transactions": self._recent_transactions(month_transactions),
+            "task_stats": await self._task_stats(household_id=household_id, start=month_start, end=month_end),
             "shopping": self._pending_by_category(pending_items, quotes),
             "promotions": self._promotions_for_household_items(
                 receipts=receipts,
@@ -123,6 +132,7 @@ class DashboardService:
                 receipts=receipts,
                 transactions=series_transactions,
                 start_month=series_start,
+                end_month=series_end,
                 today=today,
             ),
             "activity": await self._activity(household_id=household_id),
@@ -308,9 +318,32 @@ class DashboardService:
                 "summary": entry.summary,
                 "category": str(entry.metadata_json.get("category") or ""),
                 "date": entry.created_at.isoformat(),
+                "activity_class": self._activity_class(entry.entity_type),
             }
             for entry in entries
         ]
+
+    async def _task_stats(self, *, household_id: UUID, start: date, end: date) -> dict[str, object]:
+        result = await self.session.execute(
+            select(TaskCompletion).where(
+                TaskCompletion.household_id == household_id,
+                TaskCompletion.completed_on >= start,
+                TaskCompletion.completed_on <= end,
+            )
+        )
+        completions = list(result.scalars().all())
+        done = sum(1 for completion in completions if completion.status == TaskStatus.done)
+        skipped = sum(1 for completion in completions if completion.status == TaskStatus.skipped)
+        moved = sum(1 for completion in completions if completion.status == TaskStatus.moved)
+        total = done + skipped + moved
+        completion_rate = round(done / total * 100) if total else 0
+        return {
+            "done": done,
+            "skipped": skipped,
+            "moved": moved,
+            "total": total,
+            "completion_rate": completion_rate,
+        }
 
     async def activity_page(
         self,
@@ -383,6 +416,7 @@ class DashboardService:
                     "summary": entry.summary,
                     "category": str(entry.metadata_json.get("category") or ""),
                     "date": entry.created_at.isoformat(),
+                    "activity_class": self._activity_class(entry.entity_type),
                 }
                 for entry in items
             ],
@@ -409,9 +443,11 @@ class DashboardService:
         receipts: list[object],
         transactions: list[object],
         start_month: date,
+        end_month: date,
         today: date,
     ) -> list[dict[str, object]]:
-        months = [self._shift_month(start_month, offset) for offset in range(6)]
+        month_count = max(1, min(24, (end_month.year - start_month.year) * 12 + end_month.month - start_month.month + 1))
+        months = [self._shift_month(start_month, offset) for offset in range(month_count)]
         totals: dict[tuple[int, int], dict[str, Decimal]] = {
             (month.year, month.month): {"income": Decimal("0"), "expenses": Decimal("0")}
             for month in months
@@ -519,7 +555,29 @@ class DashboardService:
 
     @staticmethod
     def _dashboard_transaction_date(transaction: object) -> date:
-        return transaction.occurred_on
+        occurred_on = transaction.occurred_on
+        created_date = transaction.created_at.date()
+        # Bank screenshots sometimes parse statement dates that are outside the period the
+        # user is importing. Keep those rows visible in the import month instead of hiding
+        # them from the dashboard total the user just checked.
+        if occurred_on.year == created_date.year and occurred_on.month == created_date.month:
+            return occurred_on
+        return created_date
+
+    @staticmethod
+    def _activity_class(entity_type: str) -> str:
+        normalized = DashboardService._normalise(entity_type)
+        if "shopping" in normalized:
+            return "shopping"
+        if "task" in normalized:
+            return "task"
+        if "routine" in normalized:
+            return "routine"
+        if "receipt" in normalized:
+            return "receipt"
+        if "transaction" in normalized or "finance" in normalized:
+            return "finance"
+        return ""
 
     @staticmethod
     def _best_quote_for_item(item: object, quotes: list[object]) -> object | None:
