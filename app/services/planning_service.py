@@ -111,7 +111,52 @@ class PlanningService:
                     "location": event.location or "",
                 }
             )
+        events.extend(self._fixed_events_from_notes(planning_input.unusual_notes))
         return sorted(events, key=lambda event: event["start"])
+
+    @staticmethod
+    def _fixed_events_from_notes(notes: str | None) -> list[dict[str, str]]:
+        if not notes:
+            return []
+        events = []
+        for part in notes.split(";"):
+            text = part.strip()
+            if not text:
+                continue
+            match = re.search(
+                r"(?P<title>.+?)\s+(?:from|between)\s+(?P<start>2[0-3]|[01]?\d)(?:(?::|\.|h)(?P<start_min>[0-5]\d))?\s+(?:to|and|-)\s+(?P<end>2[0-3]|[01]?\d)(?:(?::|\.|h)(?P<end_min>[0-5]\d))?",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if not match:
+                continue
+            title = re.sub(
+                r"^(?:change of plans[:,]?\s*)?(?:today|tomorrow|tonight)\s+(?:is|there is|there's|i have|we have)?\s*",
+                "",
+                match.group("title").strip(" ."),
+                flags=re.IGNORECASE,
+            )
+            title = re.sub(
+                r"^(?:is|there is|there's|i have|we have|a|an)\s+",
+                "",
+                title,
+                flags=re.IGNORECASE,
+            ).strip(" .")
+            if not title:
+                title = "Fixed event"
+            start = time(hour=int(match.group("start")), minute=int(match.group("start_min") or 0))
+            end = time(hour=int(match.group("end")), minute=int(match.group("end_min") or 0))
+            if start >= end:
+                continue
+            events.append(
+                {
+                    "title": title[:80],
+                    "start": start.strftime("%H:%M"),
+                    "end": end.strftime("%H:%M"),
+                    "source": "note",
+                }
+            )
+        return events
 
     def _free_windows(
         self,

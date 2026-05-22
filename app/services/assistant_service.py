@@ -59,6 +59,10 @@ class AssistantService:
         self.ai_router = AiRouter(settings)
 
     async def handle_text(self, *, user_id: UUID, text: str) -> AssistantResponse:
+        conversational_response = self._parse_conversational(text)
+        if conversational_response is not None:
+            return conversational_response
+
         sleep_window = self._parse_sleep_window_update(text)
         if sleep_window is not None:
             return await self._update_sleep_window(
@@ -75,6 +79,14 @@ class AssistantService:
         planning_query = self._parse_planning_query(text)
         if planning_query is not None:
             return await self._planning_summary(user_id=user_id, period=planning_query)
+
+        fixed_event = self._parse_fixed_event_note(text)
+        if fixed_event is not None:
+            return await self._store_planning_note(
+                user_id=user_id,
+                text=fixed_event[0],
+                explicit_date=fixed_event[1],
+            )
 
         routine_update = self._parse_routine_duration_update(text)
         if routine_update is not None:
@@ -1126,6 +1138,63 @@ class AssistantService:
             lowered,
         ):
             return stripped, None
+        return None
+
+    @staticmethod
+    def _parse_fixed_event_note(text: str) -> tuple[str, date | None] | None:
+        stripped = text.strip()
+        lowered = stripped.lower()
+        if not re.search(r"\b(from|between)\b", lowered):
+            return None
+        if not re.search(
+            r"\b(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\s+(?:to|and|-)\s+(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\b",
+            lowered,
+        ):
+            return None
+        event_markers = (
+            "change of plans",
+            "today is",
+            "tomorrow is",
+            "tonight is",
+            "i have",
+            "we have",
+            "there is",
+            "there's",
+            "appointment",
+            "wedding",
+            "event",
+            "dinner",
+            "meeting",
+            "church",
+            "party",
+        )
+        if not any(marker in lowered for marker in event_markers):
+            return None
+        return stripped, AssistantService._date_from_text(stripped, "Europe/Lisbon")
+
+    @staticmethod
+    def _parse_conversational(text: str) -> AssistantResponse | None:
+        lowered = re.sub(r"\s+", " ", text.lower().strip(" ?!."))
+        if lowered in {"hi", "hello", "hey", "hiya", "good morning", "good evening", "good afternoon"}:
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text="Hi. I can help with plans, tasks, shopping, receipts, and expenses.",
+            )
+        if lowered in {"how are you", "how are you doing", "how's it going", "how are u"}:
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text="I am running normally. Send me a plan change, task, shopping item, receipt, or expense.",
+            )
+        if lowered in {"what are you", "who are you", "what is this", "what can you do", "help", "what do you do"}:
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text=(
+                    "I am your household assistant. I can plan your day, update changed plans, "
+                    "track tasks, manage shopping, read receipts, and summarize expenses."
+                ),
+            )
+        if lowered in {"thanks", "thank you", "thx"}:
+            return AssistantResponse(intent=AssistantIntent.unknown, text="You are welcome.")
         return None
 
     @staticmethod
