@@ -1222,10 +1222,8 @@ class AssistantService:
     def _parse_fixed_event_note(text: str) -> tuple[str, date | None] | None:
         stripped = text.strip()
         lowered = stripped.lower()
-        if not re.search(r"\b(from|between)\b", lowered):
-            return None
         if not re.search(
-            r"\b(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\s+(?:to|and|-)\s+(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\b",
+            r"\b(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\s*(?:to|and|-)\s*(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\b",
             lowered,
         ):
             return None

@@ -124,14 +124,14 @@ class PlanningService:
             if not text:
                 continue
             match = re.search(
-                r"(?P<title>.+?)\s+(?:from|between)\s+(?P<start>2[0-3]|[01]?\d)(?:(?::|\.|h)(?P<start_min>[0-5]\d))?\s+(?:to|and|-)\s+(?P<end>2[0-3]|[01]?\d)(?:(?::|\.|h)(?P<end_min>[0-5]\d))?",
+                r"(?P<title>.+?)(?:\s+(?:from|between))?\s+(?P<start>2[0-3]|[01]?\d)(?:(?::|\.|h)(?P<start_min>[0-5]\d))?\s*(?:to|and|-)\s*(?P<end>2[0-3]|[01]?\d)(?:(?::|\.|h)(?P<end_min>[0-5]\d))?",
                 text,
                 flags=re.IGNORECASE,
             )
             if not match:
                 continue
             title = re.sub(
-                r"^(?:change of plans[:,]?\s*)?(?:today|tomorrow|tonight)\s+(?:is|there is|there's|i have|we have)?\s*",
+                r"^(?:change of plans[:,]?\s*)?(?:today|tomorrow|tonight)?\s*(?:is|there is|there's|i have|we have)?\s*",
                 "",
                 match.group("title").strip(" ."),
                 flags=re.IGNORECASE,
