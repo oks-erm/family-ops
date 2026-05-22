@@ -276,26 +276,103 @@ class AssistantService:
             return None
 
         intent = str(data.get("intent") or "").strip()
-        item = str(data.get("item") or "").strip()
+        item = str(data.get("item") or data.get("title") or "").strip()
         date_ref = str(data.get("date_ref") or "").strip().lower()
         store_name = str(data.get("store_name") or "").strip() or None
+        target = str(data.get("target") or "any").strip().lower()
+        source = str(data.get("source") or "").strip().lower()
+        reply = str(data.get("reply") or "").strip()
+        start_time = self._parse_ai_time(data.get("start_time"))
+        end_time = self._parse_ai_time(data.get("end_time"))
+        plan_date = await self._date_from_ai_ref(user_id=user_id, date_ref=date_ref)
 
+        if intent in {"smalltalk", "capability_question", "clarify"} and reply:
+            return AssistantResponse(intent=AssistantIntent.unknown, text=reply)
         if intent == "planning_query":
             period = "week" if date_ref == "week" else "tomorrow" if date_ref == "tomorrow" else "today"
             return await self._planning_summary(user_id=user_id, period=period)
+        if intent == "work_hours_update" and start_time is not None and end_time is not None:
+            return await self._update_work_hours(
+                user_id=user_id,
+                text=text,
+                work_start=start_time,
+                work_end=end_time,
+                plan_date=plan_date,
+            )
+        if intent == "sleep_window_update" and start_time is not None:
+            kind = str(data.get("kind") or "").strip().lower()
+            return await self._update_sleep_window(
+                user_id=user_id,
+                kind="wake" if kind == "wake" else "sleep",
+                value=start_time,
+                plan_date=plan_date,
+            )
+        if intent == "fixed_event" and item and start_time is not None and end_time is not None:
+            note = f"{item} from {start_time.strftime('%H:%M')} to {end_time.strftime('%H:%M')}"
+            return await self._store_planning_note(user_id=user_id, text=note, explicit_date=plan_date)
         if intent == "task_created" and item:
-            title = f"{item} {date_ref}".strip()
+            normalized_date_ref = "today" if date_ref == "tonight" else date_ref
+            title = f"{item} {normalized_date_ref}".strip() if normalized_date_ref in {"today", "tomorrow"} else item
             return await self._create_task(user_id=user_id, title=title)
+        if intent == "mark_task_done" and item:
+            return await self._mark_task_done(user_id=user_id, title=item, completed_on=plan_date)
         if intent == "planning_note":
-            return await self._store_planning_note(user_id=user_id, text=text)
+            return await self._store_planning_note(user_id=user_id, text=text, explicit_date=plan_date)
         if intent == "add_shopping_item" and item:
             return await self._add_shopping_item(
                 user_id=user_id,
                 item=ParsedShoppingItem(name=item, store_name=store_name),
             )
+        if intent == "mark_shopping_purchased" and item:
+            return await self._mark_purchased(user_id=user_id, item_names=[item])
+        if intent == "going_to_store" and (store_name or item):
+            return await self._list_store_items(user_id=user_id, store_name=store_name or item)
+        if intent == "remove_item" and item:
+            return await self._remove_item(user_id=user_id, request={"name": item, "target": target or "any"})
+        if intent == "move_item" and item:
+            if target in {"shopping", "task", "plan"}:
+                move_target = target
+            elif source in {"shopping", "task", "plan"}:
+                move_target = "task" if source == "shopping" else "shopping"
+            else:
+                move_target = "tomorrow" if date_ref == "tomorrow" else "today" if date_ref == "today" else "task"
+            return await self._move_item(
+                user_id=user_id,
+                request={"name": item, "target": move_target},
+            )
         if intent == "shopping_summary":
             return await self._shopping_summary(user_id=user_id)
+        if intent == "expense_query":
+            period = "this month" if date_ref not in {"today", "week"} else "this week"
+            return await self._expense_summary(user_id=user_id, period=period, store_name=store_name)
+        if intent in {"unknown", "clarify"} and reply:
+            return AssistantResponse(intent=AssistantIntent.unknown, text=reply)
         return None
+
+    async def _date_from_ai_ref(self, *, user_id: UUID, date_ref: str) -> date | None:
+        if not date_ref:
+            return None
+        user = await UserRepository(self.session).get_by_id(user_id=user_id)
+        if user is None:
+            return None
+        from app.utils.datetime import now_in_timezone
+
+        today = now_in_timezone(user.timezone).date()
+        normalized = date_ref.strip().lower()
+        if normalized in {"today", "tonight"}:
+            return today
+        if normalized == "tomorrow":
+            return today + timedelta(days=1)
+        return None
+
+    @staticmethod
+    def _parse_ai_time(value: object) -> time | None:
+        if value is None:
+            return None
+        match = re.search(r"\b(2[0-3]|[01]?\d)(?::([0-5]\d))?\b", str(value).strip())
+        if not match:
+            return None
+        return time(hour=int(match.group(1)), minute=int(match.group(2) or 0))
 
     async def _store_planning_note(
         self,

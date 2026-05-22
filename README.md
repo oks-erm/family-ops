@@ -71,9 +71,10 @@ pgAdmin runs at `http://localhost:5050`.
 
 The app is designed to avoid paid AI calls by default:
 
-- Deterministic parsing runs first and is free.
-- Light optional AI can use local Ollama or Gemini Flash-Lite.
+- Deterministic parsing handles high-confidence commands and is free.
+- Light optional AI can use local Ollama or Gemini Flash-Lite for conversational intent routing.
 - OpenAI is reserved for heavy tasks, such as receipt extraction or complex planning, and is not used by the current shopping intake.
+- The Telegram assistant executes AI output through local services; the model classifies intent or asks a clarification instead of writing directly to the database.
 
 Useful settings:
 
