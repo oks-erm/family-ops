@@ -72,6 +72,14 @@ class AssistantService:
                 plan_date=sleep_window[2],
             )
 
+        completion_request = self._parse_task_completion(text)
+        if completion_request is not None:
+            return await self._mark_task_done(
+                user_id=user_id,
+                title=completion_request[0],
+                completed_on=completion_request[1],
+            )
+
         active_conversation = await self.planning_repository.get_active_conversation(user_id=user_id)
         if active_conversation is not None:
             return await self._handle_planning_answer(user_id=user_id, text=text)
@@ -556,6 +564,69 @@ class AssistantService:
             text=f"Updated must task: {routine.title} ({minutes} min).",
         )
 
+    async def _mark_task_done(
+        self,
+        *,
+        user_id: UUID,
+        title: str,
+        completed_on: date | None,
+    ) -> AssistantResponse:
+        user = await UserRepository(self.session).get_by_id(user_id=user_id)
+        if user is None:
+            raise RuntimeError("User must exist before assistant actions can run.")
+        from app.utils.datetime import now_in_timezone
+
+        day = completed_on or now_in_timezone(user.timezone).date()
+        household_id = await self._household_id_for_user(user_id=user_id)
+        cleaned_title = self._clean_task_title(title)
+        task = await self.task_repository.mark_pending_by_title_done(
+            user_id=user_id,
+            household_id=household_id,
+            title=cleaned_title,
+            completed_on=day,
+        )
+        if task is None:
+            await self.routine_repository.ensure_defaults(household_id=household_id)
+            routine = await self.routine_repository.find_by_title(
+                household_id=household_id,
+                title=self._normalize_routine_title(cleaned_title),
+            )
+            if routine is not None:
+                existing_completed = await self.task_repository.list_completed_for_user_on_date(
+                    user_id=user_id,
+                    day=day,
+                )
+                for completed_task in existing_completed:
+                    if completed_task.title.strip().casefold() == routine.title.strip().casefold():
+                        task = completed_task
+                        break
+                if task is None:
+                    task = await self.task_repository.create_completed_task(
+                        user_id=user_id,
+                        household_id=household_id,
+                        title=routine.title,
+                        completed_on=day,
+                        category="routine",
+                    )
+        if task is None:
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text=f"I could not find a pending task or must task matching '{cleaned_title}'.",
+            )
+        await self.activity_repository.log(
+            household_id=household_id,
+            user_id=user_id,
+            action=ActivityAction.updated,
+            entity_type="task",
+            entity_id=task.id,
+            summary=f"Marked task done: {task.title}",
+        )
+        plan_text = await self._generate_daily_plan_text(user_id=user_id, plan_date=day)
+        return AssistantResponse(
+            intent=AssistantIntent.planning_note,
+            text=f"Marked done: {task.title}.\n\nUpdated plan:\n\n" + plan_text,
+        )
+
     async def _generate_daily_plan_text(self, *, user_id: UUID, plan_date: date) -> str:
         user = await UserRepository(self.session).get_by_id(user_id=user_id)
         if user is None:
@@ -571,6 +642,11 @@ class AssistantService:
         )
         await self.routine_repository.ensure_defaults(household_id=household_id)
         routines = await self.routine_repository.list_active_for_household(household_id=household_id)
+        completed_tasks = await self.task_repository.list_completed_for_user_on_date(
+            user_id=user_id,
+            day=plan_date,
+        )
+        completed_titles = {task.title.strip().casefold() for task in completed_tasks}
         calendar_events = await CalendarService(self.session).list_events_for_day(
             household_id=household_id,
             day=plan_date,
@@ -584,6 +660,8 @@ class AssistantService:
         planning_service = PlanningService()
         planned_tasks: list[str | PlannedTaskInput] = []
         for routine in routines:
+            if routine.title.strip().casefold() in completed_titles:
+                continue
             schedule = routine.schedule or {}
             planned_tasks.append(
                 PlannedTaskInput(
@@ -1173,6 +1251,48 @@ class AssistantService:
         return stripped, AssistantService._date_from_text(stripped, "Europe/Lisbon")
 
     @staticmethod
+    def _parse_task_completion(text: str) -> tuple[str, date | None] | None:
+        stripped = text.strip()
+        lowered = stripped.lower()
+        completion_markers = (
+            "already",
+            "done",
+            "finished",
+            "completed",
+            "did",
+            "i read",
+            "we read",
+            "i exercised",
+            "we exercised",
+            "tick",
+            "mark",
+        )
+        if not any(marker in lowered for marker in completion_markers):
+            return None
+        patterns = (
+            r"^(?:i|we)\s+already\s+(.+?)(?:\s+(today|tomorrow|yesterday))?$",
+            r"^(?:i|we)\s+(?:finished|completed|did)\s+(.+?)(?:\s+(today|tomorrow|yesterday))?$",
+            r"^(?:done|finished|completed)\s+(.+?)(?:\s+(today|tomorrow|yesterday))?$",
+            r"^(?:mark|tick)\s+(.+?)\s+(?:as\s+)?(?:done|completed)(?:\s+(today|tomorrow|yesterday))?$",
+            r"^(?:i|we)\s+read\s+(.+?)(?:\s+(today|tomorrow|yesterday))?$",
+            r"^(?:i|we)\s+exercised(?:\s+(today|tomorrow|yesterday))?$",
+        )
+        for pattern in patterns:
+            match = re.match(pattern, stripped, flags=re.IGNORECASE)
+            if not match:
+                continue
+            if "exercised" in pattern:
+                title = "exercise"
+            else:
+                title = match.group(1).strip(" .")
+            if title.lower().startswith(("the ", "a ", "an ")):
+                title = title.split(" ", 1)[1]
+            title = AssistantService._normalize_routine_title(title)
+            date_ref = AssistantService._date_from_text(stripped, "Europe/Lisbon")
+            return title, date_ref
+        return None
+
+    @staticmethod
     def _parse_conversational(text: str) -> AssistantResponse | None:
         lowered = re.sub(r"\s+", " ", text.lower().strip(" ?!."))
         if lowered in {"hi", "hello", "hey", "hiya", "good morning", "good evening", "good afternoon"}:
@@ -1227,6 +1347,8 @@ class AssistantService:
         normalized = re.sub(r"^(?:daily|routine|must task|task)\s+", "", normalized)
         normalized = normalized.replace("exercice", "exercise")
         normalized = normalized.replace("workout", "exercise")
+        if normalized in {"bible", "the bible"}:
+            normalized = "read the bible"
         normalized = normalized.replace("read bible", "read the bible")
         normalized = normalized.replace("bible reading", "read the bible")
         return normalized

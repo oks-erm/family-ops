@@ -89,6 +89,76 @@ class TaskRepository:
                 return task
         return None
 
+    async def list_completed_for_user_on_date(self, *, user_id: UUID, day: date) -> list[Task]:
+        result = await self.session.execute(
+            select(Task)
+            .where(
+                Task.user_id == user_id,
+                Task.status == TaskStatus.done,
+                Task.due_date == day,
+            )
+            .order_by(Task.updated_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def mark_pending_by_title_done(
+        self,
+        *,
+        user_id: UUID,
+        household_id: UUID,
+        title: str,
+        completed_on: date,
+    ) -> Task | None:
+        task = await self.find_pending_by_title(user_id=user_id, title=title)
+        if task is None:
+            return None
+        task.status = TaskStatus.done
+        task.due_date = task.due_date or completed_on
+        self.session.add(
+            TaskCompletion(
+                task_id=task.id,
+                user_id=user_id,
+                household_id=household_id,
+                completed_on=completed_on,
+                status=TaskStatus.done,
+            )
+        )
+        await self.session.commit()
+        await self.session.refresh(task)
+        return task
+
+    async def create_completed_task(
+        self,
+        *,
+        user_id: UUID,
+        household_id: UUID,
+        title: str,
+        completed_on: date,
+        category: str | None = None,
+    ) -> Task:
+        task = Task(
+            user_id=user_id,
+            household_id=household_id,
+            title=title,
+            category=category,
+            due_date=completed_on,
+            status=TaskStatus.done,
+        )
+        self.session.add(task)
+        await self.session.flush()
+        self.session.add(
+            TaskCompletion(
+                task_id=task.id,
+                user_id=user_id,
+                household_id=household_id,
+                completed_on=completed_on,
+                status=TaskStatus.done,
+            )
+        )
+        await self.session.commit()
+        await self.session.refresh(task)
+        return task
+
     async def remove_pending_by_title(self, *, user_id: UUID, title: str) -> Task | None:
         task = await self.find_pending_by_title(user_id=user_id, title=title)
         if task is None:
