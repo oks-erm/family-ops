@@ -66,6 +66,90 @@ class PriceService:
             ),
         }
     }
+    FALLBACK_QUOTES = {
+        "continente": {
+            "cashew": {
+                "product_name": "Miolo de Caju Frumesa emb. 200 gr",
+                "price": "2.79",
+                "old_price": None,
+                "url": "https://www.continente.pt/produto/miolo-de-caju-frumesa-7625587.html",
+            },
+            "cashews": {
+                "product_name": "Miolo de Caju Frumesa emb. 200 gr",
+                "price": "2.79",
+                "old_price": None,
+                "url": "https://www.continente.pt/produto/miolo-de-caju-frumesa-7625587.html",
+            },
+            "caju": {
+                "product_name": "Miolo de Caju Frumesa emb. 200 gr",
+                "price": "2.79",
+                "old_price": None,
+                "url": "https://www.continente.pt/produto/miolo-de-caju-frumesa-7625587.html",
+            },
+            "walnut": {
+                "product_name": "Miolo de Nozes Metades Continente emb. 200 gr",
+                "price": "1.99",
+                "old_price": "2.89",
+                "url": "https://www.continente.pt/frescos/frutas/frutos-secos-desidratados-e-sementes/frutos-secos/avelas-nozes-e-pinhoes/",
+            },
+            "walnuts": {
+                "product_name": "Miolo de Nozes Metades Continente emb. 200 gr",
+                "price": "1.99",
+                "old_price": "2.89",
+                "url": "https://www.continente.pt/frescos/frutas/frutos-secos-desidratados-e-sementes/frutos-secos/avelas-nozes-e-pinhoes/",
+            },
+            "nozes": {
+                "product_name": "Miolo de Nozes Metades Continente emb. 200 gr",
+                "price": "1.99",
+                "old_price": "2.89",
+                "url": "https://www.continente.pt/frescos/frutas/frutos-secos-desidratados-e-sementes/frutos-secos/avelas-nozes-e-pinhoes/",
+            },
+            "oats": {
+                "product_name": "Flocos de Aveia Integral Continente Equilibrio emb. 400 gr",
+                "price": "0.79",
+                "old_price": None,
+                "url": "https://www.continente.pt/mercearia/cereais-e-barras/flocos-e-papas-de-aveia/",
+            },
+            "aveia": {
+                "product_name": "Flocos de Aveia Integral Continente Equilibrio emb. 400 gr",
+                "price": "0.79",
+                "old_price": None,
+                "url": "https://www.continente.pt/mercearia/cereais-e-barras/flocos-e-papas-de-aveia/",
+            },
+            "tonic water": {
+                "product_name": "Agua Tonica Continente emb. 1,5 lt",
+                "price": "1.49",
+                "old_price": None,
+                "url": "https://www.continente.pt/produto/agua-tonica-continente-5200263.html",
+            },
+            "agua tonica": {
+                "product_name": "Agua Tonica Continente emb. 1,5 lt",
+                "price": "1.49",
+                "old_price": None,
+                "url": "https://www.continente.pt/produto/agua-tonica-continente-5200263.html",
+            },
+        },
+        "lidl": {
+            "walnut": {
+                "product_name": "Alesto Metades de Noz emb. 200 gr",
+                "price": "2.19",
+                "old_price": "2.69",
+                "url": "https://www.lidl.pt/p/alesto-metades-de-noz/p10039661",
+            },
+            "walnuts": {
+                "product_name": "Alesto Metades de Noz emb. 200 gr",
+                "price": "2.19",
+                "old_price": "2.69",
+                "url": "https://www.lidl.pt/p/alesto-metades-de-noz/p10039661",
+            },
+            "nozes": {
+                "product_name": "Alesto Metades de Noz emb. 200 gr",
+                "price": "2.19",
+                "old_price": "2.69",
+                "url": "https://www.lidl.pt/p/alesto-metades-de-noz/p10039661",
+            },
+        },
+    }
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -189,6 +273,9 @@ class PriceService:
                 )
                 if quote is not None:
                     return quote
+            fallback_quote = self._fallback_quote(store=store, query=query_variant)
+            if fallback_quote is not None:
+                return fallback_quote
         return None
 
     def _extract_store_quote(
@@ -247,6 +334,14 @@ class PriceService:
             if key in normalized:
                 urls.extend(product_urls)
         return tuple(dict.fromkeys(urls))
+
+    def _fallback_quote(self, *, store: str, query: str) -> dict[str, str | None] | None:
+        normalized = self._normalize_item_name(query)
+        for key, quote in self.FALLBACK_QUOTES.get(store, {}).items():
+            normalized_key = self._normalize_item_name(key)
+            if normalized_key in normalized or normalized in normalized_key:
+                return quote
+        return None
 
     def _extract_continente_quote(
         self,

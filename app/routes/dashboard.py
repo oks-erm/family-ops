@@ -15,6 +15,7 @@ from app.db.repositories.routines import RoutineRepository
 from app.db.repositories.users import UserRepository
 from app.db.session import async_session_factory
 from app.services.dashboard_service import DashboardService
+from app.services.price_service import PriceService
 from app.utils.datetime import now_in_timezone
 
 router = APIRouter()
@@ -190,6 +191,24 @@ async def save_manual_price(request: Request, payload: ManualPriceRequest) -> di
             summary=f"Added manual price: {shopping_item.name} at {store_name} for {price} EUR",
         )
         return {"saved": True}
+
+
+@router.post("/api/shopping/prices/refresh")
+async def refresh_prices(request: Request) -> dict[str, object]:
+    async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+            raise HTTPException(status_code=401, detail="Dashboard login required.")
+        count = await PriceService(session).refresh_shopping_prices(household_id=household.id)
+        await ActivityRepository(session).log(
+            household_id=household.id,
+            user_id=dashboard_user.id,
+            action=ActivityAction.updated,
+            entity_type="shopping_price_quote",
+            entity_id=None,
+            summary=f"Checked shopping prices: {count} quote(s) saved",
+        )
+        return {"saved": count}
 
 
 @router.get("/api/routines")
@@ -774,6 +793,7 @@ async def dashboard_page(request: Request) -> str:
         <section class="panel">
           <div class="section-head">
             <h2>Shopping List</h2>
+            <button class="link-btn" type="button" id="refresh-prices">Check prices</button>
           </div>
           <div id="categories"></div>
           <div class="section-foot"><button class="link-btn" type="button" data-collapse-target="categories">Show all</button></div>
@@ -1207,6 +1227,23 @@ async def dashboard_page(request: Request) -> str:
       if (priceToggle) {
         const form = document.querySelector(`[data-price-form="${priceToggle.dataset.priceToggle}"]`);
         if (form) form.classList.toggle("open");
+        return;
+      }
+
+      const refreshPrices = event.target.closest("#refresh-prices");
+      if (refreshPrices) {
+        refreshPrices.disabled = true;
+        refreshPrices.textContent = "Checking";
+        const response = await fetch("/api/shopping/prices/refresh", { method: "POST" });
+        if (!response.ok) {
+          toast("Could not check prices.");
+        } else {
+          const result = await response.json();
+          toast(`Saved ${result.saved} price quote(s).`);
+          await loadDashboard();
+        }
+        refreshPrices.disabled = false;
+        refreshPrices.textContent = "Check prices";
         return;
       }
 

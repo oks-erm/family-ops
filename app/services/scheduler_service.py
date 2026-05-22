@@ -57,7 +57,7 @@ class SchedulerService:
         )
         self.scheduler.add_job(
             self.refresh_prices,
-            CronTrigger(day_of_week="mon", hour=7, minute=30, timezone=ZoneInfo(self.settings.default_timezone)),
+            CronTrigger(hour=7, minute=30, timezone=ZoneInfo(self.settings.default_timezone)),
             id="refresh_prices",
             replace_existing=True,
         )
