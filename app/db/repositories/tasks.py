@@ -75,6 +75,7 @@ class TaskRepository:
 
     async def find_pending_by_title(self, *, user_id: UUID, title: str) -> Task | None:
         normalized = title.strip().lower()
+        canonical = self._canonical_title(title)
         result = await self.session.execute(
             select(Task)
             .where(
@@ -85,9 +86,31 @@ class TaskRepository:
         )
         for task in result.scalars().all():
             task_title = task.title.strip().lower()
-            if task_title == normalized or normalized in task_title or task_title in normalized:
+            task_canonical = self._canonical_title(task.title)
+            if (
+                task_title == normalized
+                or normalized in task_title
+                or task_title in normalized
+                or task_canonical == canonical
+                or canonical in task_canonical
+                or task_canonical in canonical
+            ):
                 return task
         return None
+
+    @staticmethod
+    def _canonical_title(title: str) -> str:
+        words = []
+        for raw_word in title.strip().lower().split():
+            word = raw_word.strip(" .")
+            if word in {"the", "a", "an", "to"}:
+                continue
+            if word.endswith("ing") and len(word) > 5:
+                word = word[:-3]
+                if word.endswith("is"):
+                    word += "e"
+            words.append(word)
+        return " ".join(words)
 
     async def list_completed_for_user_on_date(self, *, user_id: UUID, day: date) -> list[Task]:
         result = await self.session.execute(
@@ -183,6 +206,26 @@ class TaskRepository:
         await self.session.commit()
         await self.session.refresh(task)
         return task
+
+    async def apply_action_by_title(
+        self,
+        *,
+        user_id: UUID,
+        household_id: UUID,
+        title: str,
+        action: str,
+        today: date,
+    ) -> Task | None:
+        task = await self.find_pending_by_title(user_id=user_id, title=title)
+        if task is None:
+            return None
+        return await self.apply_action(
+            task_id=task.id,
+            user_id=user_id,
+            household_id=household_id,
+            action=action,
+            today=today,
+        )
 
     async def apply_action(
         self,

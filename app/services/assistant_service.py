@@ -80,6 +80,15 @@ class AssistantService:
                 completed_on=completion_request[1],
             )
 
+        task_action_request = self._parse_task_action(text)
+        if task_action_request is not None:
+            return await self._apply_task_action_by_title(
+                user_id=user_id,
+                title=task_action_request[0],
+                action=task_action_request[1],
+                action_date=task_action_request[2],
+            )
+
         active_conversation = await self.planning_repository.get_active_conversation(user_id=user_id)
         if active_conversation is not None:
             return await self._handle_planning_answer(user_id=user_id, text=text)
@@ -702,6 +711,60 @@ class AssistantService:
         return AssistantResponse(
             intent=AssistantIntent.planning_note,
             text=f"Marked done: {task.title}.\n\nUpdated plan:\n\n" + plan_text,
+        )
+
+    async def _apply_task_action_by_title(
+        self,
+        *,
+        user_id: UUID,
+        title: str,
+        action: str,
+        action_date: date | None,
+    ) -> AssistantResponse:
+        user = await UserRepository(self.session).get_by_id(user_id=user_id)
+        if user is None:
+            raise RuntimeError("User must exist before assistant actions can run.")
+        from app.utils.datetime import now_in_timezone
+
+        day = action_date or now_in_timezone(user.timezone).date()
+        household_id = await self._household_id_for_user(user_id=user_id)
+        cleaned_title = self._clean_task_title(title)
+        task = await self.task_repository.apply_action_by_title(
+            user_id=user_id,
+            household_id=household_id,
+            title=cleaned_title,
+            action=action,
+            today=day,
+        )
+        if task is None and action == "done":
+            return await self._mark_task_done(
+                user_id=user_id,
+                title=cleaned_title,
+                completed_on=day,
+            )
+        if task is None:
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text=f"I could not find a pending task matching '{cleaned_title}'.",
+            )
+        action_text = {
+            "done": "Marked done",
+            "skip": "Skipped",
+            "move": "Moved to tomorrow",
+        }[action]
+        await self.activity_repository.log(
+            household_id=household_id,
+            user_id=user_id,
+            action=ActivityAction.updated,
+            entity_type="task",
+            entity_id=task.id,
+            summary=f"{action_text}: {task.title}",
+        )
+        plan_date = day + timedelta(days=1) if action == "move" else day
+        plan_text = await self._generate_daily_plan_text(user_id=user_id, plan_date=plan_date)
+        return AssistantResponse(
+            intent=AssistantIntent.planning_note,
+            text=f"{action_text}: {task.title}.\n\nUpdated plan:\n\n" + plan_text,
         )
 
     async def _generate_daily_plan_text(self, *, user_id: UUID, plan_date: date) -> str:
@@ -1365,6 +1428,26 @@ class AssistantService:
             title = AssistantService._normalize_routine_title(title)
             date_ref = AssistantService._date_from_text(stripped, "Europe/Lisbon")
             return title, date_ref
+        return None
+
+    @staticmethod
+    def _parse_task_action(text: str) -> tuple[str, str, date | None] | None:
+        stripped = text.strip()
+        patterns = (
+            ("skip", r"^(?:skip|skipped)\s+(.+?)(?:\s+(today|tomorrow|yesterday))?$"),
+            ("move", r"^(?:move|reschedule)\s+(.+?)\s+(?:to|for)\s+tomorrow$"),
+            ("move", r"^move\s+(.+?)\s+tomorrow$"),
+        )
+        for action, pattern in patterns:
+            match = re.match(pattern, stripped, flags=re.IGNORECASE)
+            if not match:
+                continue
+            title = match.group(1).strip(" .")
+            if title.lower().startswith(("the ", "a ", "an ")):
+                title = title.split(" ", 1)[1]
+            title = AssistantService._normalize_routine_title(title)
+            date_ref = AssistantService._date_from_text(stripped, "Europe/Lisbon")
+            return title, action, date_ref
         return None
 
     @staticmethod

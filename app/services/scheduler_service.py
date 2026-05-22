@@ -235,12 +235,32 @@ class SchedulerService:
             return
 
         conversation = await planning_repository.get_conversation(user_id=user.id, plan_date=today)
+        await routine_repository.ensure_defaults(household_id=household.id)
+        routines = await routine_repository.list_active_for_household(household_id=household.id)
+        completed_today = await task_repository.list_completed_for_user_on_date(
+            user_id=user.id,
+            day=today,
+        )
+        completed_titles = {task.title.strip().casefold() for task in completed_today}
+        for routine in routines:
+            if routine.title.strip().casefold() in completed_titles:
+                continue
+            existing_task = await task_repository.find_pending_by_title(
+                user_id=user.id,
+                title=routine.title,
+            )
+            if existing_task is None:
+                await task_repository.create_task(
+                    user_id=user.id,
+                    household_id=household.id,
+                    title=routine.title,
+                    due_date=today,
+                    category="routine",
+                )
         tasks = await task_repository.list_pending_for_user(
             user_id=user.id,
             through_date=today,
         )
-        await routine_repository.ensure_defaults(household_id=household.id)
-        routines = await routine_repository.list_active_for_household(household_id=household.id)
         calendar_events = await CalendarService(session).list_events_for_day(
             household_id=household.id,
             day=today,
@@ -260,7 +280,7 @@ class SchedulerService:
                     must=bool(schedule.get("must", True)),
                 )
             )
-        planned_tasks.extend(task.title for task in tasks)
+        planned_tasks.extend(task.title for task in tasks if task.category != "routine")
         planning_service = PlanningService()
         plan_payload = planning_service.build_daily_plan(
             PlanningInput(
@@ -289,7 +309,11 @@ class SchedulerService:
             chat_id=user.telegram_chat_id,
             text=planning_service.render_plan_message(existing_plan.plan),
         )
-        for task in tasks[:8]:
+        actionable_tasks = await task_repository.list_pending_for_user(
+            user_id=user.id,
+            through_date=today,
+        )
+        for task in actionable_tasks[:8]:
             await self.bot.send_message(
                 chat_id=user.telegram_chat_id,
                 text=task.title,
