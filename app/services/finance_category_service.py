@@ -12,10 +12,47 @@ class FinanceCategoryService:
             if tokens & {"salary", "wage", "pay", "paid", "income", "salario", "ordenado"}:
                 return "Income"
             return "Income"
+        merchant_category = self._merchant_category(normalized)
+        if merchant_category is not None:
+            return merchant_category
         for category, terms in self._expense_terms().items():
             if tokens & terms or any(term in normalized for term in terms if " " in term):
                 return category
         return "Other"
+
+    @staticmethod
+    def categories() -> list[str]:
+        return [
+            "Food",
+            "Eat Out",
+            "Commute",
+            "Sport",
+            "Entertainment",
+            "Health",
+            "Beauty",
+            "House Chemicals",
+            "Subscriptions",
+            "PayPal",
+            "Taxes",
+            "Utilities",
+            "Other",
+        ]
+
+    @staticmethod
+    def _merchant_category(normalized: str) -> str | None:
+        merchant_rules = {
+            "minimi": "Food",
+            "mini mi": "Food",
+            "mini mercado": "Food",
+            "heroku": "Subscriptions",
+            "paypal": "PayPal",
+            "fidelidade": "Health",
+            "the pra": "Health",
+        }
+        for marker, category in merchant_rules.items():
+            if marker in normalized:
+                return category
+        return None
 
     @staticmethod
     def _expense_terms() -> dict[str, set[str]]:

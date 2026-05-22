@@ -3,11 +3,12 @@ from datetime import date
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 from app.db.models import ActivityAction, Routine, ShoppingItem
 from app.db.repositories.activity import ActivityRepository
+from app.db.repositories.finance import FinanceRepository
 from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.prices import PriceRepository
 from app.db.repositories.receipts import ReceiptRepository
@@ -15,6 +16,7 @@ from app.db.repositories.routines import RoutineRepository
 from app.db.repositories.users import UserRepository
 from app.db.session import async_session_factory
 from app.services.dashboard_service import DashboardService
+from app.services.finance_category_service import FinanceCategoryService
 from app.services.price_service import PriceService
 from app.utils.datetime import now_in_timezone
 
@@ -33,6 +35,10 @@ class RoutineRequest(BaseModel):
     duration_minutes: int
     duration_max: int | None = None
     is_active: bool = True
+
+
+class TransactionCategoryRequest(BaseModel):
+    category: str
 
 
 async def _dashboard_context(request: Request, session):
@@ -149,6 +155,39 @@ async def delete_receipt(request: Request, receipt_id: UUID) -> dict[str, bool]:
             summary="Deleted receipt and extracted items from dashboard.",
         )
         return {"deleted": True}
+
+
+@router.patch("/api/transactions/{transaction_id}/category")
+async def update_transaction_category(
+    request: Request,
+    transaction_id: UUID,
+    payload: TransactionCategoryRequest,
+) -> dict[str, object]:
+    category = payload.category.strip()
+    allowed_categories = set(FinanceCategoryService.categories())
+    if category not in allowed_categories:
+        raise HTTPException(status_code=400, detail="Unsupported category.")
+    async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+            raise HTTPException(status_code=401, detail="Dashboard login required.")
+        transaction = await FinanceRepository(session).update_category(
+            transaction_id=transaction_id,
+            household_id=household.id,
+            category=category,
+        )
+        if transaction is None:
+            raise HTTPException(status_code=404, detail="Transaction not found.")
+        await ActivityRepository(session).log(
+            household_id=household.id,
+            user_id=dashboard_user.id,
+            action=ActivityAction.updated,
+            entity_type="financial_transaction",
+            entity_id=transaction.id,
+            summary=f"Changed transaction category: {transaction.description} -> {category}",
+            metadata={"category": category},
+        )
+        return {"updated": True, "category": category}
 
 
 @router.post("/api/shopping/prices")
@@ -591,6 +630,22 @@ async def dashboard_page(request: Request) -> str:
       margin-top: 2px;
     }
     .amount { font-weight: 650; white-space: nowrap; }
+    .transaction-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .category-select {
+      min-width: 128px;
+      border: 1px solid #d8dde6;
+      background: #fff;
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 7px 28px 7px 11px;
+      font-size: 12px;
+    }
     .bar-row {
       display: grid;
       grid-template-columns: minmax(90px, 150px) minmax(120px, 1fr) 88px;
@@ -1014,6 +1069,9 @@ async def dashboard_page(request: Request) -> str:
         `;
       }).join("") : `<div class="empty">${escapeHtml(emptyText)}</div>`;
     };
+    const renderCategoryOptions = (categories, selected) => categories.map(category => (
+      `<option value="${escapeHtml(category)}" ${category === selected ? "selected" : ""}>${escapeHtml(category)}</option>`
+    )).join("");
     const toast = message => {
       const el = document.querySelector("#toast");
       el.textContent = message;
@@ -1127,7 +1185,12 @@ async def dashboard_page(request: Request) -> str:
             <div class="row-title">${escapeHtml(item.description)}</div>
             <div class="row-sub">${escapeHtml(item.date)} · ${escapeHtml(item.category)}${item.merchant ? ` · ${escapeHtml(item.merchant)}` : ""}</div>
           </div>
-          <div class="amount">-${escapeHtml(item.amount)}</div>
+          <div class="transaction-actions">
+            <select class="category-select" data-transaction-category="${escapeHtml(item.id)}" aria-label="Expense category">
+              ${renderCategoryOptions(data.finance_categories || [], item.category)}
+            </select>
+            <div class="amount">-${escapeHtml(item.amount)}</div>
+          </div>
         </div>
       `).join("") : `<div class="empty">No expense transactions logged this month.</div>`;
 
@@ -1275,6 +1338,24 @@ async def dashboard_page(request: Request) -> str:
         return;
       }
       toast("Receipt deleted.");
+      await loadDashboard();
+    });
+
+    document.addEventListener("change", async event => {
+      const categorySelect = event.target.closest("[data-transaction-category]");
+      if (!categorySelect) return;
+      categorySelect.disabled = true;
+      const response = await fetch(`/api/transactions/${categorySelect.dataset.transactionCategory}/category`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category: categorySelect.value }),
+      });
+      if (!response.ok) {
+        categorySelect.disabled = false;
+        toast("Could not update category.");
+        return;
+      }
+      toast("Category updated.");
       await loadDashboard();
     });
 

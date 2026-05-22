@@ -205,7 +205,15 @@ class FinanceService:
         raw_type = str(item.get("transaction_type") or "").lower()
         transaction_type = TransactionType.income if raw_type == "income" else TransactionType.expense
         category = str(item.get("category") or "").strip()
-        if not category:
+        suggested_category = self.category_service.category_for(
+            description,
+            is_income=transaction_type == TransactionType.income,
+        )
+        if not category or category == "Other":
+            category = suggested_category
+        elif suggested_category != "Other":
+            category = suggested_category
+        if category not in self.category_service.categories() and category != "Income":
             category = self.category_service.category_for(
                 description,
                 is_income=transaction_type == TransactionType.income,

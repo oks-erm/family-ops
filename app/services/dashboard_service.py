@@ -14,6 +14,7 @@ from app.db.repositories.prices import PriceRepository
 from app.db.repositories.receipts import ReceiptRepository
 from app.db.repositories.shopping import ShoppingRepository
 from app.db.repositories.users import UserRepository
+from app.services.finance_category_service import FinanceCategoryService
 from app.services.recommendation_service import RecommendationService
 from app.services.shopping_category_service import ShoppingCategoryService
 
@@ -66,6 +67,7 @@ class DashboardService:
         series_start = month_start if is_custom_period else self._shift_month(month_start, -5)
         series_end = month_end if is_custom_period else month_start
         all_transactions = await self.finance_repository.list_for_household(household_id=household_id)
+        await self._recategorize_known_other_transactions(all_transactions)
         series_transactions = [
             transaction
             for transaction in all_transactions
@@ -121,6 +123,7 @@ class DashboardService:
             },
             "expense_categories": self._expense_by_category(month_receipts, month_transactions),
             "transactions": self._recent_transactions(month_transactions),
+            "finance_categories": FinanceCategoryService.categories(),
             "task_stats": await self._task_stats(household_id=household_id, start=month_start, end=month_end),
             "shopping": self._pending_by_category(pending_items, quotes),
             "promotions": self._promotions_for_household_items(
@@ -147,6 +150,27 @@ class DashboardService:
             (self.receipt_repository.amount_as_decimal(receipt.total_amount) for receipt in receipts),
             Decimal("0"),
         )
+
+    async def _recategorize_known_other_transactions(self, transactions: list[object]) -> None:
+        category_service = FinanceCategoryService()
+        changed = False
+        for transaction in transactions:
+            if transaction.transaction_type != TransactionType.expense:
+                continue
+            if transaction.category and transaction.category != "Other":
+                continue
+            text = " ".join(
+                part
+                for part in (transaction.description, transaction.merchant)
+                if part
+            )
+            category = category_service.category_for(text)
+            if category == "Other":
+                continue
+            transaction.category = category
+            changed = True
+        if changed:
+            await self.session.commit()
 
     def _by_store(self, receipts: list[object]) -> list[dict[str, str]]:
         totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))

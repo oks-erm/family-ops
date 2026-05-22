@@ -79,6 +79,27 @@ class FinanceRepository:
         )
         return list(result.scalars().all())
 
+    async def update_category(
+        self,
+        *,
+        transaction_id: UUID,
+        household_id: UUID,
+        category: str,
+    ) -> FinancialTransaction | None:
+        result = await self.session.execute(
+            select(FinancialTransaction).where(
+                FinancialTransaction.id == transaction_id,
+                FinancialTransaction.household_id == household_id,
+            )
+        )
+        transaction = result.scalar_one_or_none()
+        if transaction is None:
+            return None
+        transaction.category = category
+        await self.session.commit()
+        await self.session.refresh(transaction)
+        return transaction
+
     @staticmethod
     def amount_as_decimal(value: str | None) -> Decimal:
         if not value:
