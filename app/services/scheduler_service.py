@@ -234,65 +234,60 @@ class SchedulerService:
         if existing_plan is not None and existing_plan.status != DailyPlanStatus.draft:
             return
 
-        if existing_plan is None:
-            conversation = await planning_repository.get_conversation(user_id=user.id, plan_date=today)
-            tasks = await task_repository.list_pending_for_user(
-                user_id=user.id,
-                through_date=today,
-            )
-            await routine_repository.ensure_defaults(household_id=household.id)
-            routines = await routine_repository.list_active_for_household(household_id=household.id)
-            calendar_events = await CalendarService(session).list_events_for_day(
-                household_id=household.id,
-                day=today,
-                timezone=user.timezone,
-            )
-            planned_tasks: list[str | PlannedTaskInput] = []
-            for routine in routines:
-                schedule = routine.schedule or {}
-                planned_tasks.append(
-                    PlannedTaskInput(
-                        title=routine.title,
-                        duration_minutes=int(
-                            schedule.get("duration_minutes")
-                            or schedule.get("duration_min")
-                            or 30
-                        ),
-                        must=bool(schedule.get("must", True)),
-                    )
-                )
-            planned_tasks.extend(task.title for task in tasks)
-            planning_service = PlanningService()
-            plan_payload = planning_service.build_daily_plan(
-                PlanningInput(
-                    user_id=user.id,
-                    plan_date=today,
-                    work_start=conversation.work_start if conversation else None,
-                    work_end=conversation.work_end if conversation else None,
-                    unusual_notes=conversation.unusual_notes if conversation else None,
-                    tasks=planned_tasks,
-                    calendar_events=calendar_events,
+        conversation = await planning_repository.get_conversation(user_id=user.id, plan_date=today)
+        tasks = await task_repository.list_pending_for_user(
+            user_id=user.id,
+            through_date=today,
+        )
+        await routine_repository.ensure_defaults(household_id=household.id)
+        routines = await routine_repository.list_active_for_household(household_id=household.id)
+        calendar_events = await CalendarService(session).list_events_for_day(
+            household_id=household.id,
+            day=today,
+            timezone=user.timezone,
+        )
+        planned_tasks: list[str | PlannedTaskInput] = []
+        for routine in routines:
+            schedule = routine.schedule or {}
+            planned_tasks.append(
+                PlannedTaskInput(
+                    title=routine.title,
+                    duration_minutes=int(
+                        schedule.get("duration_minutes")
+                        or schedule.get("duration_min")
+                        or 30
+                    ),
+                    must=bool(schedule.get("must", True)),
                 )
             )
-            existing_plan = await planning_repository.upsert_daily_plan(
+        planned_tasks.extend(task.title for task in tasks)
+        planning_service = PlanningService()
+        plan_payload = planning_service.build_daily_plan(
+            PlanningInput(
                 user_id=user.id,
-                household_id=household.id,
                 plan_date=today,
                 work_start=conversation.work_start if conversation else None,
                 work_end=conversation.work_end if conversation else None,
                 unusual_notes=conversation.unusual_notes if conversation else None,
-                plan=plan_payload,
-                status=DailyPlanStatus.draft,
+                tasks=planned_tasks,
+                calendar_events=calendar_events,
             )
+        )
+        existing_plan = await planning_repository.upsert_daily_plan(
+            user_id=user.id,
+            household_id=household.id,
+            plan_date=today,
+            work_start=conversation.work_start if conversation else None,
+            work_end=conversation.work_end if conversation else None,
+            unusual_notes=conversation.unusual_notes if conversation else None,
+            plan=plan_payload,
+            status=DailyPlanStatus.draft,
+        )
 
         planning_service = PlanningService()
         await self.bot.send_message(
             chat_id=user.telegram_chat_id,
             text=planning_service.render_plan_message(existing_plan.plan),
-        )
-        tasks = await task_repository.list_pending_for_user(
-            user_id=user.id,
-            through_date=today,
         )
         for task in tasks[:8]:
             await self.bot.send_message(

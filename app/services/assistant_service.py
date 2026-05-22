@@ -59,6 +59,15 @@ class AssistantService:
         self.ai_router = AiRouter(settings)
 
     async def handle_text(self, *, user_id: UUID, text: str) -> AssistantResponse:
+        sleep_window = self._parse_sleep_window_update(text)
+        if sleep_window is not None:
+            return await self._update_sleep_window(
+                user_id=user_id,
+                kind=sleep_window[0],
+                value=sleep_window[1],
+                plan_date=sleep_window[2],
+            )
+
         active_conversation = await self.planning_repository.get_active_conversation(user_id=user_id)
         if active_conversation is not None:
             return await self._handle_planning_answer(user_id=user_id, text=text)
@@ -165,6 +174,10 @@ class AssistantService:
         conversation = await self.planning_repository.get_active_conversation(user_id=user_id)
         if conversation is None:
             return AssistantResponse(intent=AssistantIntent.unknown, text="No active planning flow.")
+
+        planning_query = self._parse_planning_query(text)
+        if planning_query is not None:
+            return await self._planning_summary(user_id=user_id, period=planning_query)
 
         if conversation.state == PlanningConversationState.awaiting_work_start:
             parsed_time = self._parse_time_answer(text)
@@ -356,6 +369,45 @@ class AssistantService:
         return AssistantResponse(
             intent=AssistantIntent.planning_note,
             text=f"Updated work hours for {plan_date.isoformat()}.\n\n" + plan_text,
+        )
+
+    async def _update_sleep_window(
+        self,
+        *,
+        user_id: UUID,
+        kind: str,
+        value: time,
+        plan_date: date | None,
+    ) -> AssistantResponse:
+        user = await UserRepository(self.session).get_by_id(user_id=user_id)
+        if user is None:
+            raise RuntimeError("User must exist before assistant actions can run.")
+        household_id = await self._household_id_for_user(user_id=user_id)
+        from app.utils.datetime import now_in_timezone
+
+        plan_date = plan_date or now_in_timezone(user.timezone).date()
+        conversation = await self.planning_repository.get_conversation(
+            user_id=user_id,
+            plan_date=plan_date,
+        )
+        if conversation is None:
+            conversation = await self.planning_repository.start_conversation(
+                user_id=user_id,
+                household_id=household_id,
+                plan_date=plan_date,
+            )
+        note = f"{'wake up' if kind == 'wake' else 'go to sleep'} at {value.strftime('%H:%M')}"
+        existing_notes = self._replace_sleep_note(conversation.unusual_notes or "", kind, note)
+        await self.planning_repository.save_answer(
+            conversation=conversation,
+            message_text=note,
+            unusual_notes=existing_notes,
+            next_state=PlanningConversationState.complete,
+        )
+        plan_text = await self._generate_daily_plan_text(user_id=user_id, plan_date=plan_date)
+        return AssistantResponse(
+            intent=AssistantIntent.planning_note,
+            text=f"Updated {kind} time for {plan_date.isoformat()}.\n\n" + plan_text,
         )
 
     async def _planning_summary(self, *, user_id: UUID, period: str) -> AssistantResponse:
@@ -935,6 +987,43 @@ class AssistantService:
         start = time(hour=int(start_match.group(1)), minute=int(start_match.group(2) or 0))
         end = time(hour=int(end_match.group(1)), minute=int(end_match.group(2) or 0))
         return start, end, None
+
+    @staticmethod
+    def _parse_sleep_window_update(text: str) -> tuple[str, time, date | None] | None:
+        lowered = text.lower()
+        if not re.search(r"\b(wake(?:\s+up)?|sleep|bed)\b", lowered):
+            return None
+        match = re.search(
+            r"\b(?P<kind>wake(?:\s+up)?|sleep|go\s+to\s+sleep|bed)\b(?:\s+at|\s+around|\s+by)?\s+(?P<hour>2[0-3]|[01]?\d)(?:(?::|\.|h)(?P<minute>[0-5]\d))?\b",
+            lowered,
+        )
+        if not match:
+            return None
+        kind = "wake" if "wake" in match.group("kind") else "sleep"
+        parsed_time = time(
+            hour=int(match.group("hour")),
+            minute=int(match.group("minute") or 0),
+        )
+        date_ref = AssistantService._date_from_text(text, "Europe/Lisbon")
+        return kind, parsed_time, date_ref
+
+    @staticmethod
+    def _replace_sleep_note(existing_notes: str, kind: str, note: str) -> str:
+        parts = [
+            part.strip()
+            for part in existing_notes.split(";")
+            if part.strip()
+        ]
+        if kind == "wake":
+            parts = [part for part in parts if not re.search(r"\bwake(?:\s+up)?\b", part, flags=re.IGNORECASE)]
+        else:
+            parts = [
+                part
+                for part in parts
+                if not re.search(r"\b(?:sleep|go\s+to\s+sleep|bed)\b", part, flags=re.IGNORECASE)
+            ]
+        parts.append(note)
+        return "; ".join(parts)
 
     @staticmethod
     def _tomorrow_for_user_timezone(timezone: str) -> date:
