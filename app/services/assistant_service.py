@@ -124,7 +124,7 @@ class AssistantService:
         if purchased_items:
             return await self._mark_purchased(user_id=user_id, item_names=purchased_items)
 
-        active_conversation = await self.planning_repository.get_active_conversation(user_id=user_id)
+        active_conversation = await self._current_active_planning_conversation(user_id=user_id)
         if active_conversation is not None:
             return await self._handle_planning_answer(user_id=user_id, text=text)
 
@@ -217,7 +217,7 @@ class AssistantService:
         )
 
     async def _handle_planning_answer(self, *, user_id: UUID, text: str) -> AssistantResponse:
-        conversation = await self.planning_repository.get_active_conversation(user_id=user_id)
+        conversation = await self._current_active_planning_conversation(user_id=user_id)
         if conversation is None:
             return AssistantResponse(intent=AssistantIntent.unknown, text="No active planning flow.")
 
@@ -228,9 +228,18 @@ class AssistantService:
         if conversation.state == PlanningConversationState.awaiting_work_start:
             parsed_time = self._parse_time_answer(text)
             if parsed_time is None:
+                semantic_response = await self._semantic_response_during_planning_prompt(
+                    user_id=user_id,
+                    text=text,
+                )
+                if semantic_response is not None:
+                    return semantic_response
                 return AssistantResponse(
                     intent=AssistantIntent.planning_note,
-                    text="Please send the start time as HH:MM, for example 09:00.",
+                    text=(
+                        "I am still missing tomorrow's work start time. "
+                        "Send it when ready, for example 09:00."
+                    ),
                 )
             await self.planning_repository.save_answer(
                 conversation=conversation,
@@ -246,9 +255,18 @@ class AssistantService:
         if conversation.state == PlanningConversationState.awaiting_work_end:
             parsed_time = self._parse_time_answer(text)
             if parsed_time is None:
+                semantic_response = await self._semantic_response_during_planning_prompt(
+                    user_id=user_id,
+                    text=text,
+                )
+                if semantic_response is not None:
+                    return semantic_response
                 return AssistantResponse(
                     intent=AssistantIntent.planning_note,
-                    text="Please send the finish time as HH:MM, for example 17:30.",
+                    text=(
+                        "I am still missing tomorrow's work finish time. "
+                        "Send it when ready, for example 17:30."
+                    ),
                 )
             conversation = await self.planning_repository.save_answer(
                 conversation=conversation,
@@ -269,6 +287,14 @@ class AssistantService:
         existing_notes = conversation.unusual_notes or ""
         note = text.strip()
         no_notes = note.casefold() in {"no", "nothing", "none", "nope", "nothing unusual"}
+        if not no_notes:
+            semantic_response = await self._semantic_response_during_planning_prompt(
+                user_id=user_id,
+                text=text,
+                allow_planning_note=False,
+            )
+            if semantic_response is not None:
+                return semantic_response
         combined_notes = existing_notes if no_notes else note
         if existing_notes and not no_notes and note.casefold() not in existing_notes.casefold():
             combined_notes = f"{existing_notes}; {note}"
@@ -283,6 +309,60 @@ class AssistantService:
             intent=AssistantIntent.planning_note,
             text="Saved. Draft plan:\n\n" + plan_text,
         )
+
+    async def _current_active_planning_conversation(self, *, user_id: UUID):
+        conversation = await self.planning_repository.get_active_conversation(user_id=user_id)
+        if conversation is None:
+            return None
+        user = await UserRepository(self.session).get_by_id(user_id=user_id)
+        if user is None:
+            return conversation
+        from app.utils.datetime import now_in_timezone
+
+        today = now_in_timezone(user.timezone).date()
+        if conversation.plan_date <= today:
+            conversation.state = PlanningConversationState.complete
+            await self.session.commit()
+            return None
+        return conversation
+
+    async def _semantic_response_during_planning_prompt(
+        self,
+        *,
+        user_id: UUID,
+        text: str,
+        allow_planning_note: bool = True,
+    ) -> AssistantResponse | None:
+        ai_result = await self.ai_router.classify_light_intent(text=text)
+        intent = ""
+        if ai_result.data:
+            intent = str(ai_result.data.get("intent") or "").strip()
+        if not allow_planning_note and intent == "planning_note":
+            return None
+        if intent in {
+            "add_shopping_item",
+            "going_to_store",
+            "shopping_summary",
+            "mark_shopping_purchased",
+            "task_created",
+            "planning_query",
+            "fixed_event",
+            "work_hours_update",
+            "sleep_window_update",
+            "mark_task_done",
+            "remove_item",
+            "move_item",
+            "expense_query",
+            "smalltalk",
+            "capability_question",
+            "clarify",
+        }:
+            return await self._handle_ai_classification(
+                user_id=user_id,
+                text=text,
+                data=ai_result.data,
+            )
+        return None
 
     async def _handle_ai_classification(
         self,
@@ -1272,12 +1352,14 @@ class AssistantService:
         lowered = stripped.lower()
         if AssistantService._looks_like_shopping_request(stripped):
             return None
+        if lowered.startswith(("need ", "i need ", "we need ", "need to ", "i need to ", "we need to ")):
+            return None
         if AssistantService._parse_planning_query(stripped) is not None:
             return None
         patterns = (
             r"^(?:task|todo|to do):\s+(.+)$",
+            r"^(?:task|todo|to do)\s+(.+)$",
             r"^(?:add task|create task|remind me to)\s+(.+)$",
-            r"^(?:i need to|we need to|need to|i have to|we have to|have to|i should|we should)\s+(.+)$",
             r"^(?:can you remind me to|please remind me to)\s+(.+)$",
             r"^(?:i want to|we want to|i would like to|we would like to)\s+(.+)$",
         )

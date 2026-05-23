@@ -23,6 +23,12 @@ class ShoppingService:
     def parse_add_item(self, text: str) -> ParsedShoppingItem | None:
         normalized = text.strip()
         lowered = normalized.lower()
+        for prefix in ("need to buy ", "i need to buy ", "we need to buy "):
+            if lowered.startswith(prefix):
+                remainder = normalized[len(prefix) :].strip()
+                if not self._looks_like_shopping_item(remainder):
+                    return None
+                return self._parse_item_remainder(remainder)
         for blocked_prefix in ("need to ", "i need to ", "we need to ", "preciso de fazer ", "precisamos de fazer "):
             if lowered.startswith(blocked_prefix):
                 return None
@@ -41,24 +47,27 @@ class ShoppingService:
                 remainder = normalized[len(prefix) :].strip()
                 if not self._looks_like_shopping_item(remainder):
                     return None
-                remainder_lower = remainder.lower()
-                store_separator = self._store_separator(remainder_lower)
-                if store_separator is not None:
-                    split_at, separator = store_separator
-                    item = remainder[:split_at]
-                    store = remainder[split_at + len(separator) :]
-                    if store.strip().lower() in {"anywhere", "qualquer sitio", "qualquer sítio", "qualquer loja"}:
-                        return ParsedShoppingItem(name=item.strip(), store_name=None)
-                    return ParsedShoppingItem(name=item.strip(), store_name=store.strip())
-                anywhere_suffix = self._anywhere_suffix(remainder_lower)
-                if anywhere_suffix is not None:
-                    return ParsedShoppingItem(name=remainder[: -len(anywhere_suffix)].strip(), store_name=None)
-                trailing_store = self._trailing_store(remainder)
-                if trailing_store is not None:
-                    item_name, store_name = trailing_store
-                    return ParsedShoppingItem(name=item_name, store_name=store_name)
-                return ParsedShoppingItem(name=remainder, store_name=None)
+                return self._parse_item_remainder(remainder)
         return None
+
+    def _parse_item_remainder(self, remainder: str) -> ParsedShoppingItem:
+        remainder_lower = remainder.lower()
+        store_separator = self._store_separator(remainder_lower)
+        if store_separator is not None:
+            split_at, separator = store_separator
+            item = remainder[:split_at]
+            store = remainder[split_at + len(separator) :]
+            if store.strip().lower() in {"anywhere", "qualquer sitio", "qualquer sítio", "qualquer loja"}:
+                return ParsedShoppingItem(name=item.strip(), store_name=None)
+            return ParsedShoppingItem(name=item.strip(), store_name=store.strip())
+        anywhere_suffix = self._anywhere_suffix(remainder_lower)
+        if anywhere_suffix is not None:
+            return ParsedShoppingItem(name=remainder[: -len(anywhere_suffix)].strip(), store_name=None)
+        trailing_store = self._trailing_store(remainder)
+        if trailing_store is not None:
+            item_name, store_name = trailing_store
+            return ParsedShoppingItem(name=item_name, store_name=store_name)
+        return ParsedShoppingItem(name=remainder, store_name=None)
 
     def parse_store_visit(self, text: str) -> str | None:
         normalized = text.strip()
