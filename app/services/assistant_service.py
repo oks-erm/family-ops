@@ -107,6 +107,23 @@ class AssistantService:
                 plan_date=remove_event_request[1],
             )
 
+        shopping_items = self.shopping_service.parse_add_items(text)
+        if shopping_items:
+            if len(shopping_items) == 1:
+                return await self._add_shopping_item(user_id=user_id, item=shopping_items[0])
+            return await self._add_shopping_items(user_id=user_id, items=shopping_items)
+
+        store_name = self.shopping_service.parse_store_visit(text)
+        if store_name is not None:
+            return await self._list_store_items(user_id=user_id, store_name=store_name)
+
+        if self._is_shopping_summary_query(text):
+            return await self._shopping_summary(user_id=user_id)
+
+        purchased_items = self.shopping_service.parse_purchased_items(text)
+        if purchased_items:
+            return await self._mark_purchased(user_id=user_id, item_names=purchased_items)
+
         active_conversation = await self.planning_repository.get_active_conversation(user_id=user_id)
         if active_conversation is not None:
             return await self._handle_planning_answer(user_id=user_id, text=text)
@@ -156,23 +173,6 @@ class AssistantService:
         task_title = self._parse_task_creation(text)
         if task_title is not None:
             return await self._create_task(user_id=user_id, title=task_title)
-
-        shopping_items = self.shopping_service.parse_add_items(text)
-        if shopping_items:
-            if len(shopping_items) == 1:
-                return await self._add_shopping_item(user_id=user_id, item=shopping_items[0])
-            return await self._add_shopping_items(user_id=user_id, items=shopping_items)
-
-        store_name = self.shopping_service.parse_store_visit(text)
-        if store_name is not None:
-            return await self._list_store_items(user_id=user_id, store_name=store_name)
-
-        if self._is_shopping_summary_query(text):
-            return await self._shopping_summary(user_id=user_id)
-
-        purchased_items = self.shopping_service.parse_purchased_items(text)
-        if purchased_items:
-            return await self._mark_purchased(user_id=user_id, item_names=purchased_items)
 
         finance_service = FinanceService(self.session, self.ai_router.settings)
         finance_transactions = finance_service.parse_manual_transactions(text)
