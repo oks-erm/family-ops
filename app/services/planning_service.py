@@ -43,7 +43,7 @@ class PlanningService:
                 "start": planning_input.work_start.strftime("%H:%M") if planning_input.work_start else None,
                 "end": planning_input.work_end.strftime("%H:%M") if planning_input.work_end else None,
             },
-            "notes": planning_input.unusual_notes,
+            "notes": self._display_notes(planning_input.unusual_notes),
             "fixed_events": fixed_events,
             "free_windows": free_windows,
             "tasks": self._serialize_tasks(planning_input.tasks),
@@ -112,7 +112,33 @@ class PlanningService:
                 }
             )
         events.extend(self._fixed_events_from_notes(planning_input.unusual_notes))
-        return sorted(events, key=lambda event: event["start"])
+        deduped = {}
+        for event in events:
+            key = (
+                event["title"].strip().casefold(),
+                event["start"],
+                event["end"],
+            )
+            deduped[key] = event
+        return sorted(deduped.values(), key=lambda event: event["start"])
+
+    @classmethod
+    def _display_notes(cls, notes: str | None) -> str | None:
+        if not notes:
+            return None
+        display_parts = []
+        for part in notes.split(";"):
+            text = part.strip()
+            if not text:
+                continue
+            if text.casefold() in {"today", "tonight", "tomorrow", "this week", "next week"}:
+                continue
+            if cls._fixed_events_from_notes(text):
+                continue
+            if cls._available_bounds_from_notes(text) != (None, None):
+                continue
+            display_parts.append(text)
+        return "; ".join(display_parts) or None
 
     @staticmethod
     def _fixed_events_from_notes(notes: str | None) -> list[dict[str, str]]:

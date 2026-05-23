@@ -42,7 +42,7 @@ class AssistantIntent(StrEnum):
 class AssistantResponse:
     intent: AssistantIntent
     text: str
-    metadata: dict[str, str] | None = None
+    metadata: dict[str, object] | None = None
 
 
 class AssistantService:
@@ -89,6 +89,24 @@ class AssistantService:
                 action_date=task_action_request[2],
             )
 
+        fixed_event = self._parse_fixed_event_note(text)
+        if fixed_event is not None and (
+            fixed_event[1] is not None or text.strip().lower().startswith("change of plans")
+        ):
+            return await self._store_planning_note(
+                user_id=user_id,
+                text=fixed_event[0],
+                explicit_date=fixed_event[1],
+            )
+
+        remove_event_request = self._parse_remove_event_request(text)
+        if remove_event_request is not None:
+            return await self._remove_planning_event(
+                user_id=user_id,
+                title=remove_event_request[0],
+                plan_date=remove_event_request[1],
+            )
+
         active_conversation = await self.planning_repository.get_active_conversation(user_id=user_id)
         if active_conversation is not None:
             return await self._handle_planning_answer(user_id=user_id, text=text)
@@ -97,7 +115,6 @@ class AssistantService:
         if planning_query is not None:
             return await self._planning_summary(user_id=user_id, period=planning_query)
 
-        fixed_event = self._parse_fixed_event_note(text)
         if fixed_event is not None:
             return await self._store_planning_note(
                 user_id=user_id,
@@ -410,6 +427,16 @@ class AssistantService:
             )
         existing_notes = conversation.unusual_notes or ""
         note = text.strip()
+        duplicate_event = self._find_duplicate_fixed_event(existing_notes=existing_notes, note=note)
+        if duplicate_event is not None:
+            title, start, end = duplicate_event
+            return AssistantResponse(
+                intent=AssistantIntent.planning_note,
+                text=(
+                    f"{title} {start}-{end} is already in the plan for {plan_date.isoformat()}. "
+                    "I did not add a duplicate."
+                ),
+            )
         combined_notes = note
         if existing_notes and note.casefold() not in existing_notes.casefold():
             combined_notes = f"{existing_notes}; {note}"
@@ -436,6 +463,56 @@ class AssistantService:
         return AssistantResponse(
             intent=AssistantIntent.planning_note,
             text=f"Stored as a planning note for {plan_date.isoformat()}.\n\n" + plan_text,
+        )
+
+    async def _remove_planning_event(
+        self,
+        *,
+        user_id: UUID,
+        title: str,
+        plan_date: date | None,
+    ) -> AssistantResponse:
+        user = await UserRepository(self.session).get_by_id(user_id=user_id)
+        if user is None:
+            raise RuntimeError("User must exist before assistant actions can run.")
+        from app.utils.datetime import now_in_timezone
+
+        day = plan_date or now_in_timezone(user.timezone).date()
+        conversation = await self.planning_repository.get_conversation(user_id=user_id, plan_date=day)
+        if conversation is None or not conversation.unusual_notes:
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text=f"I could not find '{title}' in the plan for {day.isoformat()}.",
+            )
+        parts = [part.strip() for part in conversation.unusual_notes.split(";") if part.strip()]
+        remaining = []
+        removed = []
+        target = self._normalize_event_title(title)
+        for part in parts:
+            event = PlanningService._fixed_events_from_notes(part)
+            event_title = self._normalize_event_title(event[0]["title"]) if event else ""
+            if event and (target in event_title or event_title in target):
+                removed.append(part)
+                continue
+            if target in self._normalize_event_title(part):
+                removed.append(part)
+                continue
+            remaining.append(part)
+        if not removed:
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text=f"I could not find '{title}' in the plan for {day.isoformat()}.",
+            )
+        await self.planning_repository.save_answer(
+            conversation=conversation,
+            message_text=f"Removed event: {title}",
+            unusual_notes="; ".join(remaining),
+            next_state=PlanningConversationState.complete,
+        )
+        plan_text = await self._generate_daily_plan_text(user_id=user_id, plan_date=day)
+        return AssistantResponse(
+            intent=AssistantIntent.planning_note,
+            text=f"Removed from {day.isoformat()}: {title}.\n\n" + plan_text,
         )
 
     async def _update_work_hours(
@@ -534,9 +611,16 @@ class AssistantService:
             end = today
 
         if period in {"today", "tomorrow", "day"}:
+            action_tasks = await self._actionable_tasks_for_day(user_id=user_id, day=start)
             return AssistantResponse(
                 intent=AssistantIntent.planning_note,
                 text=await self._generate_daily_plan_text(user_id=user_id, plan_date=start),
+                metadata={
+                    "task_actions": [
+                        {"id": str(task.id), "title": task.title}
+                        for task in action_tasks[:8]
+                    ]
+                },
             )
 
         tasks = await self.task_repository.list_pending_for_user(user_id=user_id, through_date=end)
@@ -597,6 +681,35 @@ class AssistantService:
             lines.extend(calendar_lines[:12])
 
         return AssistantResponse(intent=AssistantIntent.planning_note, text="\n".join(lines))
+
+    async def _actionable_tasks_for_day(self, *, user_id: UUID, day: date) -> list[object]:
+        user = await UserRepository(self.session).get_by_id(user_id=user_id)
+        if user is None:
+            raise RuntimeError("User must exist before planning can run.")
+        household_id = await self._household_id_for_user(user_id=user_id)
+        await self.routine_repository.ensure_defaults(household_id=household_id)
+        completed_tasks = await self.task_repository.list_completed_for_user_on_date(
+            user_id=user_id,
+            day=day,
+        )
+        completed_titles = {task.title.strip().casefold() for task in completed_tasks}
+        routines = await self.routine_repository.list_active_for_household(household_id=household_id)
+        for routine in routines:
+            if routine.title.strip().casefold() in completed_titles:
+                continue
+            existing_task = await self.task_repository.find_pending_by_title(
+                user_id=user_id,
+                title=routine.title,
+            )
+            if existing_task is None:
+                await self.task_repository.create_task(
+                    user_id=user_id,
+                    household_id=household_id,
+                    title=routine.title,
+                    due_date=day,
+                    category="routine",
+                )
+        return await self.task_repository.list_pending_for_user(user_id=user_id, through_date=day)
 
     async def _create_task(self, *, user_id: UUID, title: str) -> AssistantResponse:
         user = await UserRepository(self.session).get_by_id(user_id=user_id)
@@ -1359,6 +1472,31 @@ class AssistantService:
         return None
 
     @staticmethod
+    def _parse_remove_event_request(text: str) -> tuple[str, date | None] | None:
+        stripped = text.strip()
+        lowered = stripped.lower()
+        if not any(word in lowered for word in ("remove", "delete", "cancel")):
+            return None
+        if not any(word in lowered for word in ("event", "plan", "wedding", "meeting", "appointment", "church", "party")):
+            return None
+        match = re.match(
+            r"^(?:remove|delete|cancel)\s+(.+?)(?:\s+from\s+(?:the\s+)?(?:plan|events?))?(?:\s+(today|tomorrow|tonight))?$",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        title = re.sub(
+            r"\b(?:event|appointment|from plan|from the plan)\b",
+            "",
+            match.group(1),
+            flags=re.IGNORECASE,
+        ).strip(" .")
+        if not title:
+            return None
+        return title, AssistantService._date_from_text(stripped, "Europe/Lisbon")
+
+    @staticmethod
     def _parse_fixed_event_note(text: str) -> tuple[str, date | None] | None:
         stripped = text.strip()
         lowered = stripped.lower()
@@ -1387,6 +1525,40 @@ class AssistantService:
         if not any(marker in lowered for marker in event_markers):
             return None
         return stripped, AssistantService._date_from_text(stripped, "Europe/Lisbon")
+
+    @staticmethod
+    def _find_duplicate_fixed_event(
+        *,
+        existing_notes: str,
+        note: str,
+    ) -> tuple[str, str, str] | None:
+        new_events = PlanningService._fixed_events_from_notes(note)
+        existing_events = PlanningService._fixed_events_from_notes(existing_notes)
+        for new_event in new_events:
+            new_key = (
+                AssistantService._normalize_event_title(new_event["title"]),
+                new_event["start"],
+                new_event["end"],
+            )
+            for existing_event in existing_events:
+                existing_key = (
+                    AssistantService._normalize_event_title(existing_event["title"]),
+                    existing_event["start"],
+                    existing_event["end"],
+                )
+                if new_key == existing_key:
+                    return new_event["title"], new_event["start"], new_event["end"]
+        return None
+
+    @staticmethod
+    def _normalize_event_title(title: str) -> str:
+        normalized = re.sub(r"[^a-z0-9 ]+", " ", title.lower())
+        words = [
+            word
+            for word in normalized.split()
+            if word not in {"the", "a", "an", "today", "tomorrow", "tonight", "event"}
+        ]
+        return " ".join(words)
 
     @staticmethod
     def _parse_task_completion(text: str) -> tuple[str, date | None] | None:

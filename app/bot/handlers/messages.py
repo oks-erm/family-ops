@@ -35,10 +35,19 @@ async def handle_text_message(message: Message) -> None:
         )
 
     if response.intent == AssistantIntent.task_created and response.metadata:
+        task_id = str(response.metadata["task_id"])
         await message.answer(
             response.text,
-            reply_markup=task_action_keyboard(response.metadata["task_id"]),
+            reply_markup=task_action_keyboard(task_id),
         )
         return
 
     await message.answer(response.text)
+    if response.metadata and isinstance(response.metadata.get("task_actions"), list):
+        for item in response.metadata["task_actions"]:
+            if not isinstance(item, dict) or not item.get("id") or not item.get("title"):
+                continue
+            await message.answer(
+                str(item["title"]),
+                reply_markup=task_action_keyboard(str(item["id"])),
+            )
