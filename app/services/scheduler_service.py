@@ -8,7 +8,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.bot.keyboards import task_action_keyboard
 from app.config import Settings
-from app.db.models import DailyPlanStatus
+from app.db.models import DailyPlanStatus, PlanningConversationState
 from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.planning import PlanningRepository
 from app.db.repositories.routines import RoutineRepository
@@ -105,25 +105,46 @@ class SchedulerService:
                 try:
                     household = await household_repository.ensure_household_for_user(user=user)
                     plan_date = self._today(user.timezone) + timedelta(days=1)
-                    existing_plan = await planning_repository.get_daily_plan(
-                        user_id=user.id,
-                        plan_date=plan_date,
-                    )
                     existing_conversation = await planning_repository.get_conversation(
                         user_id=user.id,
                         plan_date=plan_date,
                     )
-                    if existing_plan is not None or existing_conversation is not None:
+                    conversation = existing_conversation
+                    if conversation is None:
+                        conversation = await planning_repository.start_conversation(
+                            user_id=user.id,
+                            household_id=household.id,
+                            plan_date=plan_date,
+                        )
+                    prompt_key = None
+                    prompt_text = None
+                    next_state = None
+                    if conversation.work_start is None:
+                        prompt_key = f"scheduled_prompt:work_start:{plan_date.isoformat()}"
+                        prompt_text = "What time do you start work tomorrow?"
+                        next_state = PlanningConversationState.awaiting_work_start
+                    elif conversation.work_end is None:
+                        prompt_key = f"scheduled_prompt:work_end:{plan_date.isoformat()}"
+                        prompt_text = "What time do you finish work tomorrow?"
+                        next_state = PlanningConversationState.awaiting_work_end
+                    elif not conversation.unusual_notes:
+                        prompt_key = f"scheduled_prompt:unusual:{plan_date.isoformat()}"
+                        prompt_text = (
+                            "Anything unusual tomorrow? Appointments, errands, low energy, "
+                            "church, workout?"
+                        )
+                        next_state = PlanningConversationState.awaiting_unusual_notes
+                    if prompt_text is None or prompt_key is None or next_state is None:
                         continue
-                    await planning_repository.start_conversation(
-                        user_id=user.id,
-                        household_id=household.id,
-                        plan_date=plan_date,
-                    )
-                    await self.bot.send_message(
-                        chat_id=user.telegram_chat_id,
-                        text="What time do you start work tomorrow?",
-                    )
+                    if self._prompt_was_sent(conversation.raw_notes or [], prompt_key):
+                        continue
+                    conversation.state = next_state
+                    conversation.raw_notes = [
+                        *(conversation.raw_notes or []),
+                        {"state": "scheduled", "text": prompt_key},
+                    ]
+                    await session.commit()
+                    await self.bot.send_message(chat_id=user.telegram_chat_id, text=prompt_text)
                 except Exception:
                     logger.exception("Failed to send evening planning prompt to user %s", user.id)
 
@@ -364,3 +385,12 @@ class SchedulerService:
         now = datetime.now(ZoneInfo(timezone))
         hour, minute = SchedulerService._parse_time(hhmm)
         return now.hour == hour and now.minute == minute
+
+    @staticmethod
+    def _prompt_was_sent(raw_notes: list[object], prompt_key: str) -> bool:
+        for note in raw_notes:
+            if not isinstance(note, dict):
+                continue
+            if note.get("text") == prompt_key:
+                return True
+        return False
