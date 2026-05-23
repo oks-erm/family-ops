@@ -100,6 +100,22 @@ class ShoppingRepository:
                 await self.session.refresh(item)
         return matched
 
+    async def remove_pending_item_by_id(
+        self,
+        *,
+        household_id: UUID,
+        item_id: UUID,
+    ) -> ShoppingItem | None:
+        item = await self.session.get(ShoppingItem, item_id)
+        if item is None or item.household_id != household_id:
+            return None
+        if item.status != ShoppingItemStatus.pending:
+            return None
+        item.status = ShoppingItemStatus.skipped
+        await self.session.commit()
+        await self.session.refresh(item)
+        return item
+
     async def _list_all_pending(self, *, household_id: UUID) -> list[ShoppingItem]:
         result = await self.session.execute(
             select(ShoppingItem)

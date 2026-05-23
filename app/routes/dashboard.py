@@ -13,6 +13,7 @@ from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.prices import PriceRepository
 from app.db.repositories.receipts import ReceiptRepository
 from app.db.repositories.routines import RoutineRepository
+from app.db.repositories.shopping import ShoppingRepository
 from app.db.repositories.users import UserRepository
 from app.db.session import async_session_factory
 from app.services.dashboard_service import DashboardService
@@ -153,6 +154,29 @@ async def delete_receipt(request: Request, receipt_id: UUID) -> dict[str, bool]:
             entity_type="receipt",
             entity_id=receipt_id,
             summary="Deleted receipt and extracted items from dashboard.",
+        )
+        return {"deleted": True}
+
+
+@router.delete("/api/shopping/items/{shopping_item_id}")
+async def delete_shopping_item(request: Request, shopping_item_id: UUID) -> dict[str, bool]:
+    async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+            raise HTTPException(status_code=401, detail="Dashboard login required.")
+        item = await ShoppingRepository(session).remove_pending_item_by_id(
+            household_id=household.id,
+            item_id=shopping_item_id,
+        )
+        if item is None:
+            raise HTTPException(status_code=404, detail="Shopping item not found.")
+        await ActivityRepository(session).log(
+            household_id=household.id,
+            user_id=dashboard_user.id,
+            action=ActivityAction.deleted,
+            entity_type="shopping_item",
+            entity_id=item.id,
+            summary=f"Removed shopping item from dashboard: {item.name}",
         )
         return {"deleted": True}
 
@@ -652,7 +676,16 @@ async def dashboard_page(request: Request) -> str:
       gap: 12px;
       align-items: center;
       min-height: 38px;
+      width: 100%;
+      border: 0;
+      border-radius: 10px;
+      background: transparent;
+      color: inherit;
+      text-align: left;
+      cursor: pointer;
+      padding: 4px;
     }
+    .bar-row:hover { background: var(--surface-soft); }
     .bar-track {
       height: 7px;
       background: #eef1f5;
@@ -787,12 +820,68 @@ async def dashboard_page(request: Request) -> str:
       transition: opacity .18s ease, transform .18s ease;
     }
     .toast.show { opacity: 1; transform: translateY(0); }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      background: rgba(15, 23, 42, .22);
+      backdrop-filter: blur(8px);
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      width: min(860px, 100%);
+      max-height: min(820px, calc(100vh - 36px));
+      overflow: auto;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: 0 24px 70px rgba(15, 23, 42, .22);
+      padding: 20px;
+    }
+    .modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+    .modal-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .mini-panel {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface-soft);
+      padding: 14px;
+    }
+    .pie-chart {
+      width: min(280px, 100%);
+      height: auto;
+      display: block;
+      margin: 0 auto 10px;
+    }
+    .detail-bars { display: grid; gap: 8px; }
+    .detail-bar-row {
+      display: grid;
+      grid-template-columns: minmax(90px, 130px) minmax(100px, 1fr) 84px;
+      gap: 10px;
+      align-items: center;
+      font-size: 13px;
+    }
     @media (max-width: 900px) {
       .metrics, .main-grid { grid-template-columns: 1fr; }
       .topbar { align-items: start; flex-direction: column; }
       .top-actions { justify-content: flex-start; }
       .brand { align-items: start; flex-direction: column; gap: 12px; }
       .status { white-space: normal; }
+      .modal-grid { grid-template-columns: 1fr; }
     }
     @media (max-width: 620px) {
       .shell { width: min(100% - 22px, 1180px); padding-top: 18px; }
@@ -938,6 +1027,22 @@ async def dashboard_page(request: Request) -> str:
       </div>
     </section>
   </main>
+  <div class="modal-backdrop" id="category-modal" aria-hidden="true">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="category-modal-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="category-modal-title">Category</h2>
+          <div class="row-sub" id="category-modal-subtitle"></div>
+        </div>
+        <button class="delete-btn" type="button" id="category-modal-close" aria-label="Close category details" title="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <div id="category-modal-body"></div>
+    </section>
+  </div>
   <div class="toast" id="toast"></div>
 
   <script>
@@ -963,6 +1068,9 @@ async def dashboard_page(request: Request) -> str:
     const iconSvg = name => {
       if (name === "edit") {
         return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5Z"/></svg>`;
+      }
+      if (name === "delete") {
+        return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M7 10v9"/><path d="M12 10v9"/><path d="M17 10v9"/></svg>`;
       }
       return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>`;
     };
@@ -1039,6 +1147,7 @@ async def dashboard_page(request: Request) -> str:
       `;
     };
     let activityPage = 1;
+    let latestDashboardData = null;
     const currentMonthValue = () => {
       const now = new Date();
       return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -1061,13 +1170,95 @@ async def dashboard_page(request: Request) -> str:
       return rows.length ? rows.map(row => {
         const width = Math.max(4, moneyNumber(row.value) / max * 100);
         return `
-          <div class="bar-row">
+          <button class="bar-row" type="button" data-category-detail="${escapeHtml(row.label)}">
             <div class="row-title">${escapeHtml(row.label)}</div>
             <div class="bar-track"><div class="bar" style="width:${width}%"></div></div>
             <div class="amount">${escapeHtml(row.value)}</div>
-          </div>
+          </button>
         `;
       }).join("") : `<div class="empty">${escapeHtml(emptyText)}</div>`;
+    };
+    const palette = ["#2563eb", "#16a34a", "#f59e0b", "#ef4444", "#8b5cf6", "#0891b2", "#64748b"];
+    const renderPieChart = rows => {
+      if (!rows.length) return `<div class="empty">No breakdown data.</div>`;
+      let offset = 0;
+      const circles = rows.map((row, index) => {
+        const dash = Number(row.percent || 0);
+        const circle = `<circle r="42" cx="50" cy="50" fill="transparent" stroke="${palette[index % palette.length]}" stroke-width="16" stroke-dasharray="${dash} ${100 - dash}" stroke-dashoffset="${-offset}" transform="rotate(-90 50 50)"/>`;
+        offset += dash;
+        return circle;
+      }).join("");
+      const legend = rows.map((row, index) => `
+        <span><span class="legend-dot" style="background:${palette[index % palette.length]}"></span>${escapeHtml(row.label)} ${escapeHtml(row.percent)}%</span>
+      `).join("");
+      return `
+        <svg class="pie-chart" viewBox="0 0 100 100" role="img" aria-label="Food store breakdown">
+          <circle r="42" cx="50" cy="50" fill="transparent" stroke="#eef1f5" stroke-width="16"/>
+          ${circles}
+        </svg>
+        <div class="chart-legend">${legend}</div>
+      `;
+    };
+    const renderDetailBars = rows => {
+      if (!rows.length) return `<div class="empty">No line-item data yet.</div>`;
+      const max = Math.max(...rows.map(row => Number(row.raw_value || 0)), 1);
+      return `<div class="detail-bars">${rows.map(row => `
+        <div class="detail-bar-row">
+          <div class="row-title">${escapeHtml(row.label)}</div>
+          <div class="bar-track"><div class="bar" style="width:${Math.max(4, Number(row.raw_value || 0) / max * 100)}%"></div></div>
+          <div class="amount">${escapeHtml(row.value)}</div>
+        </div>
+      `).join("")}</div>`;
+    };
+    const renderExpenseRows = rows => rows.length ? rows.map(row => `
+      <div class="row">
+        <div class="row-main">
+          <div class="row-title">${escapeHtml(row.description)}</div>
+          <div class="row-sub">${escapeHtml(row.date)}${row.merchant ? ` · ${escapeHtml(row.merchant)}` : ""} · ${escapeHtml(row.source)}</div>
+        </div>
+        <div class="amount">${escapeHtml(row.amount)}</div>
+      </div>
+    `).join("") : `<div class="empty">No expenses in this category for the selected period.</div>`;
+    const openCategoryModal = category => {
+      const details = latestDashboardData?.category_details?.[category];
+      if (!details) return;
+      document.querySelector("#category-modal-title").textContent = category;
+      document.querySelector("#category-modal-subtitle").textContent = latestDashboardData.period.label;
+      if (category === "Food") {
+        document.querySelector("#category-modal-body").innerHTML = `
+          <div class="modal-grid">
+            <section class="mini-panel">
+              <h2>By Supermarket</h2>
+              ${renderPieChart(details.store_breakdown || [])}
+            </section>
+            <section class="mini-panel">
+              <h2>By Food Type</h2>
+              ${renderPieChart(details.nutrient_breakdown || [])}
+            </section>
+          </div>
+          <section class="mini-panel">
+            <h2>Food Type Values</h2>
+            ${renderDetailBars(details.nutrient_breakdown || [])}
+          </section>
+          <section class="mini-panel" style="margin-top:14px">
+            <h2>Food Expenses</h2>
+            <div class="rows">${renderExpenseRows(details.expenses || [])}</div>
+          </section>
+        `;
+      } else {
+        document.querySelector("#category-modal-body").innerHTML = `
+          <section class="mini-panel">
+            <h2>Expenses</h2>
+            <div class="rows">${renderExpenseRows(details.expenses || [])}</div>
+          </section>
+        `;
+      }
+      document.querySelector("#category-modal").classList.add("open");
+      document.querySelector("#category-modal").setAttribute("aria-hidden", "false");
+    };
+    const closeCategoryModal = () => {
+      document.querySelector("#category-modal").classList.remove("open");
+      document.querySelector("#category-modal").setAttribute("aria-hidden", "true");
     };
     const renderCategoryOptions = (categories, selected) => categories.map(category => (
       `<option value="${escapeHtml(category)}" ${category === selected ? "selected" : ""}>${escapeHtml(category)}</option>`
@@ -1084,6 +1275,7 @@ async def dashboard_page(request: Request) -> str:
       document.querySelector("#status").textContent = "Updating";
       const response = await fetch(`/api/dashboard?${dashboardQuery()}`);
       const data = await response.json();
+      latestDashboardData = data;
       if (data.error) {
         document.querySelector(".shell").innerHTML = `<div class="panel">${escapeHtml(data.error)}</div>`;
         return;
@@ -1138,7 +1330,10 @@ async def dashboard_page(request: Request) -> str:
                     <button type="submit">Save</button>
                   </form>
                 </div>
-                ${item.price ? `<div class="amount">${escapeHtml(item.price)}</div>` : ""}
+                <div class="transaction-actions">
+                  ${item.price ? `<div class="amount">${escapeHtml(item.price)}</div>` : ""}
+                  <button class="delete-btn" type="button" aria-label="Remove shopping item" title="Remove shopping item" data-shopping-delete="${escapeHtml(item.id)}">${iconSvg("delete")}</button>
+                </div>
               </div>
             `).join("")}
           </div>
@@ -1261,6 +1456,18 @@ async def dashboard_page(request: Request) -> str:
     }
 
     document.addEventListener("click", async event => {
+      const modalClose = event.target.closest("#category-modal-close");
+      if (modalClose || event.target.id === "category-modal") {
+        closeCategoryModal();
+        return;
+      }
+
+      const categoryDetail = event.target.closest("[data-category-detail]");
+      if (categoryDetail) {
+        openCategoryModal(categoryDetail.dataset.categoryDetail);
+        return;
+      }
+
       const tabButton = event.target.closest("[data-view-target]");
       if (tabButton) {
         document.querySelectorAll(".tab-btn").forEach(button => button.classList.remove("active"));
@@ -1290,6 +1497,22 @@ async def dashboard_page(request: Request) -> str:
       if (priceToggle) {
         const form = document.querySelector(`[data-price-form="${priceToggle.dataset.priceToggle}"]`);
         if (form) form.classList.toggle("open");
+        return;
+      }
+
+      const shoppingDelete = event.target.closest("[data-shopping-delete]");
+      if (shoppingDelete) {
+        const confirmed = window.confirm("Remove this item from the shopping list?");
+        if (!confirmed) return;
+        shoppingDelete.disabled = true;
+        const response = await fetch(`/api/shopping/items/${shoppingDelete.dataset.shoppingDelete}`, { method: "DELETE" });
+        if (!response.ok) {
+          shoppingDelete.disabled = false;
+          toast("Could not remove shopping item.");
+          return;
+        }
+        toast("Shopping item removed.");
+        await loadDashboard();
         return;
       }
 

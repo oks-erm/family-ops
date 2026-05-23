@@ -122,6 +122,7 @@ class DashboardService:
                 "is_current_month": month_start == today.replace(day=1) and month_end.month == today.month,
             },
             "expense_categories": self._expense_by_category(month_receipts, month_transactions),
+            "category_details": self._category_details(month_receipts, month_transactions),
             "transactions": self._recent_transactions(month_transactions),
             "finance_categories": FinanceCategoryService.categories(),
             "task_stats": await self._task_stats(household_id=household_id, start=month_start, end=month_end),
@@ -202,6 +203,148 @@ class DashboardService:
             for category, amount in sorted(totals.items(), key=lambda item: item[1], reverse=True)
             if amount != 0
         ]
+
+    def _category_details(
+        self,
+        receipts: list[object],
+        transactions: list[object],
+    ) -> dict[str, dict[str, object]]:
+        categories = {row["label"] for row in self._expense_by_category(receipts, transactions)}
+        details = {}
+        for category in categories:
+            rows = self._category_expense_rows(category, receipts, transactions)
+            detail: dict[str, object] = {
+                "category": category,
+                "expenses": rows,
+            }
+            if category == "Food":
+                detail["store_breakdown"] = self._food_store_breakdown(receipts, transactions)
+                detail["nutrient_breakdown"] = self._food_nutrient_breakdown(receipts)
+            details[category] = detail
+        return details
+
+    def _category_expense_rows(
+        self,
+        category: str,
+        receipts: list[object],
+        transactions: list[object],
+    ) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        if category == "Food":
+            rows.extend(
+                {
+                    "date": self.receipt_repository.effective_receipt_date(receipt).isoformat(),
+                    "description": f"Receipt: {receipt.shop_name or 'Unknown'}",
+                    "merchant": receipt.shop_name or "Unknown",
+                    "amount": self._money(
+                        self.receipt_repository.amount_as_decimal(receipt.total_amount)
+                    ),
+                    "source": "receipt",
+                }
+                for receipt in receipts
+            )
+        for transaction in transactions:
+            if transaction.transaction_type != TransactionType.expense:
+                continue
+            if (transaction.category or "Other") != category:
+                continue
+            rows.append(
+                {
+                    "date": self._dashboard_transaction_date(transaction).isoformat(),
+                    "description": transaction.description,
+                    "merchant": transaction.merchant or "",
+                    "amount": self._money(
+                        self.finance_repository.amount_as_decimal(transaction.amount)
+                    ),
+                    "source": transaction.source,
+                }
+            )
+        return sorted(rows, key=lambda row: row["date"], reverse=True)
+
+    def _food_store_breakdown(
+        self,
+        receipts: list[object],
+        transactions: list[object],
+    ) -> list[dict[str, object]]:
+        totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+        for receipt in receipts:
+            totals[receipt.shop_name or "Unknown"] += self.receipt_repository.amount_as_decimal(
+                receipt.total_amount
+            )
+        for transaction in transactions:
+            if transaction.transaction_type != TransactionType.expense:
+                continue
+            if transaction.category != "Food":
+                continue
+            store = transaction.merchant or transaction.description
+            totals[store or "Unknown"] += self.finance_repository.amount_as_decimal(
+                transaction.amount
+            )
+        return self._breakdown_rows(totals)
+
+    def _food_nutrient_breakdown(self, receipts: list[object]) -> list[dict[str, object]]:
+        totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+        for receipt in receipts:
+            for item in receipt.items:
+                amount = self.receipt_repository.amount_as_decimal(item.total_amount)
+                if amount == 0:
+                    continue
+                totals[self._food_group(item.name)] += amount
+        return self._breakdown_rows(totals)
+
+    def _breakdown_rows(self, totals: dict[str, Decimal]) -> list[dict[str, object]]:
+        total = sum(totals.values(), Decimal("0"))
+        if total == 0:
+            return []
+        rows = []
+        for label, amount in sorted(totals.items(), key=lambda item: item[1], reverse=True):
+            rows.append(
+                {
+                    "label": label,
+                    "value": self._money(amount),
+                    "raw_value": float(amount),
+                    "percent": round(float(amount / total * Decimal("100")), 1),
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _food_group(name: str) -> str:
+        lowered = name.lower()
+        groups = {
+            "Meat & Fish": (
+                "chicken", "frango", "beef", "pork", "carne", "fish", "peixe",
+                "salmon", "tuna", "atum", "ham",
+            ),
+            "Vegetables": (
+                "broccoli", "brócolo", "tomato", "tomate", "lettuce", "alface",
+                "onion", "cebola", "pepper", "cenoura", "carrot", "vegetable",
+            ),
+            "Fruit": (
+                "apple", "maçã", "banana", "orange", "laranja", "avocado",
+                "abacate", "fruit", "berries", "morang",
+            ),
+            "Bread & Grains": (
+                "bread", "pão", "rice", "arroz", "pasta", "massa", "oat",
+                "aveia", "flour", "cereal", "lentil",
+            ),
+            "Dairy": (
+                "milk", "leite", "cheese", "queijo", "yogurt", "iogurte",
+                "butter", "manteiga", "cream",
+            ),
+            "Snacks & Sweets": (
+                "chocolate", "cookie", "biscuit", "bolacha", "sweet", "candy",
+                "snack", "chips", "crisps",
+            ),
+            "Drinks": (
+                "water", "água", "agua", "juice", "sumo", "cola", "tonic",
+                "beer", "wine", "vinho",
+            ),
+        }
+        for group, tokens in groups.items():
+            if any(token in lowered for token in tokens):
+                return group
+        return "Other Food"
 
     def _income_by_category(self, transactions: list[object]) -> list[dict[str, str]]:
         totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
