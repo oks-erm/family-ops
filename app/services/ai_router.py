@@ -44,6 +44,9 @@ class AiRouter:
         prompt = (
             "You are the cheap conversational/intent layer for a Telegram household assistant. "
             "Return only compact JSON. Do not use markdown. Do not invent facts.\n"
+            "Classify the user's current message independently. The app may have asked a previous "
+            "question, but do not treat this message as an answer unless it actually semantically "
+            "answers that question.\n"
             "Keys: intent, confidence, reply, item, title, date_ref, store_name, target, "
             "source, start_time, end_time, kind, duration_minutes.\n"
             "Allowed intents: smalltalk, capability_question, add_shopping_item, going_to_store, "

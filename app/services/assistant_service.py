@@ -59,6 +59,15 @@ class AssistantService:
         self.ai_router = AiRouter(settings)
 
     async def handle_text(self, *, user_id: UUID, text: str) -> AssistantResponse:
+        ai_result = await self.ai_router.classify_light_intent(text=text)
+        ai_response = await self._handle_ai_classification(
+            user_id=user_id,
+            text=text,
+            data=ai_result.data,
+        )
+        if ai_response is not None:
+            return ai_response
+
         conversational_response = self._parse_conversational(text)
         if conversational_response is not None:
             return conversational_response
@@ -198,15 +207,6 @@ class AssistantService:
         if expense_query is not None:
             period, store_name = expense_query
             return await self._expense_summary(user_id=user_id, period=period, store_name=store_name)
-
-        ai_result = await self.ai_router.classify_light_intent(text=text)
-        ai_response = await self._handle_ai_classification(
-            user_id=user_id,
-            text=text,
-            data=ai_result.data,
-        )
-        if ai_response is not None:
-            return ai_response
 
         return AssistantResponse(
             intent=AssistantIntent.unknown,
