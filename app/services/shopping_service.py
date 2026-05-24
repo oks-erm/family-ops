@@ -100,10 +100,15 @@ class ShoppingService:
         for prefix in prefixes:
             if lowered.startswith(prefix):
                 remainder = normalized[len(prefix) :].strip()
-                return self._split_items(remainder)
+                return self._split_purchased_items(remainder)
         return []
 
     def _split_items(self, text: str) -> list[str]:
+        """Split on commas only — 'and'/'e' in product names (e.g. 'salt and pepper') must not be split."""
+        return [item.strip(" .") for item in text.split(",") if item.strip(" .")]
+
+    def _split_purchased_items(self, text: str) -> list[str]:
+        """Split purchased items list; 'and'/'e' treated as list separators here."""
         cleaned = text.replace(" and ", ",").replace(" e ", ",")
         return [item.strip(" .") for item in cleaned.split(",") if item.strip(" .")]
 
