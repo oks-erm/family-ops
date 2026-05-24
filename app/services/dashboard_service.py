@@ -124,6 +124,7 @@ class DashboardService:
             "expense_categories": self._expense_by_category(month_receipts, month_transactions),
             "category_details": self._category_details(month_receipts, month_transactions),
             "transactions": self._recent_transactions(month_transactions),
+            "income_transactions": self._income_transactions(month_transactions),
             "finance_categories": FinanceCategoryService.categories(),
             "task_stats": await self._task_stats(household_id=household_id, start=month_start, end=month_end),
             "shopping": self._pending_by_category(pending_items, quotes),
@@ -314,31 +315,40 @@ class DashboardService:
         groups = {
             "Meat & Fish": (
                 "chicken", "frango", "beef", "pork", "carne", "fish", "peixe",
-                "salmon", "tuna", "atum", "ham",
+                "salmon", "tuna", "atum", "ham", "fiambre", "presunto",
+                "salsich", "salsicha", "linguica", "chourico", "alheira",
+                "bacalhau", "camarao", "camarão", "lulas", "sardinha",
             ),
-            "Vegetables": (
+            "Veg": (
                 "broccoli", "brócolo", "tomato", "tomate", "lettuce", "alface",
-                "onion", "cebola", "pepper", "cenoura", "carrot", "vegetable",
+                "onion", "cebola", "pepper", "pimento", "cenoura", "carrot",
+                "vegetable", "espinafre", "espinafres", "couve", "curgete",
+                "beringela", "pepino", "cogumelo", "cogumelos", "feijao",
+                "ervilhas", "beterraba", "alho frances", "funcho", "courgette",
             ),
             "Fruit": (
-                "apple", "maçã", "banana", "orange", "laranja", "avocado",
-                "abacate", "fruit", "berries", "morang",
+                "apple", "maçã", "maca", "banana", "orange", "laranja", "avocado",
+                "abacate", "fruit", "berries", "morang", "uva", "pera", "manga",
+                "ananas", "melao", "melão", "kiwi", "melancia", "limao", "limão",
+                "cereja", "mirtilo", "framboesa",
             ),
             "Bread & Grains": (
                 "bread", "pão", "rice", "arroz", "pasta", "massa", "oat",
-                "aveia", "flour", "cereal", "lentil",
+                "aveia", "flour", "cereal", "lentil", "feijao", "graos",
             ),
             "Dairy": (
                 "milk", "leite", "cheese", "queijo", "yogurt", "iogurte",
-                "butter", "manteiga", "cream",
+                "butter", "manteiga", "cream", "natas", "nata", "requeijao",
+                "requeijão",
             ),
-            "Snacks & Sweets": (
+            "Sweets & Snacks": (
                 "chocolate", "cookie", "biscuit", "bolacha", "sweet", "candy",
-                "snack", "chips", "crisps",
+                "snack", "chips", "crisps", "gelado", "bolo", "pastel",
+                "amendoim", "mel",
             ),
             "Drinks": (
                 "water", "água", "agua", "juice", "sumo", "cola", "tonic",
-                "beer", "wine", "vinho",
+                "beer", "wine", "vinho", "cerveja", "refrigerante",
             ),
         }
         for group, tokens in groups.items():
@@ -363,7 +373,7 @@ class DashboardService:
     def _pending_by_category(self, pending_items: list[object], quotes: list[object]) -> list[dict[str, object]]:
         grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
         for item in pending_items:
-            category = self.category_service.category_for(item.name)
+            category = self.category_service.category_for(item.name, store_name_raw=item.store_name_raw)
             quote = self._best_quote_for_item(item, quotes)
             grouped[category].append(
                 {
@@ -468,6 +478,28 @@ class DashboardService:
                 key=lambda transaction: (self._dashboard_transaction_date(transaction), transaction.created_at),
                 reverse=True,
             )[:30]
+        ]
+
+    def _income_transactions(self, transactions: list[object]) -> list[dict[str, str]]:
+        income_transactions = [
+            transaction
+            for transaction in transactions
+            if transaction.transaction_type == TransactionType.income
+        ]
+        return [
+            {
+                "id": str(transaction.id),
+                "description": transaction.description,
+                "merchant": transaction.merchant or "",
+                "category": transaction.category or "Income",
+                "date": self._dashboard_transaction_date(transaction).isoformat(),
+                "amount": self._money(self.finance_repository.amount_as_decimal(transaction.amount)),
+            }
+            for transaction in sorted(
+                income_transactions,
+                key=lambda transaction: (self._dashboard_transaction_date(transaction), transaction.created_at),
+                reverse=True,
+            )
         ]
 
     async def _activity(self, *, household_id: UUID) -> list[dict[str, str]]:

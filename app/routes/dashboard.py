@@ -525,6 +525,9 @@ async def dashboard_page(request: Request) -> str:
     }
     .panel { padding: 18px; }
     .metric { padding: 16px; min-height: 112px; }
+    .metric-clickable:hover { background: var(--line); }
+    .metric-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .income-amount { color: #1a8a4a; font-weight: 650; }
     .metric-label {
       color: var(--muted);
       font-size: 13px;
@@ -1043,6 +1046,22 @@ async def dashboard_page(request: Request) -> str:
       <div id="category-modal-body"></div>
     </section>
   </div>
+  <div class="modal-backdrop" id="income-modal" aria-hidden="true">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="income-modal-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="income-modal-title">Income</h2>
+          <div class="row-sub" id="income-modal-subtitle"></div>
+        </div>
+        <button class="delete-btn" type="button" id="income-modal-close" aria-label="Close income breakdown" title="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <div id="income-modal-body"></div>
+    </section>
+  </div>
   <div class="toast" id="toast"></div>
 
   <script>
@@ -1056,6 +1075,13 @@ async def dashboard_page(request: Request) -> str:
     }[char]));
     const metric = (label, value, note = "") => `
       <article class="metric">
+        <div class="metric-label">${escapeHtml(label)}</div>
+        <div class="metric-value">${escapeHtml(value)}</div>
+        ${note ? `<div class="metric-note">${escapeHtml(note)}</div>` : ""}
+      </article>
+    `;
+    const clickableMetric = (label, value, action, note = "") => `
+      <article class="metric metric-clickable" data-metric-action="${escapeHtml(action)}" role="button" tabindex="0" style="cursor:pointer">
         <div class="metric-label">${escapeHtml(label)}</div>
         <div class="metric-value">${escapeHtml(value)}</div>
         ${note ? `<div class="metric-note">${escapeHtml(note)}</div>` : ""}
@@ -1178,21 +1204,34 @@ async def dashboard_page(request: Request) -> str:
         `;
       }).join("") : `<div class="empty">${escapeHtml(emptyText)}</div>`;
     };
-    const palette = ["#2563eb", "#16a34a", "#f59e0b", "#ef4444", "#8b5cf6", "#0891b2", "#64748b"];
-    const renderPieChart = rows => {
-      if (!rows.length) return `<div class="empty">No breakdown data.</div>`;
-      let offset = 0;
-      const circles = rows.map((row, index) => {
-        const dash = Number(row.percent || 0);
-        const circle = `<circle r="42" cx="50" cy="50" fill="transparent" stroke="${palette[index % palette.length]}" stroke-width="16" stroke-dasharray="${dash} ${100 - dash}" stroke-dashoffset="${-offset}" transform="rotate(-90 50 50)"/>`;
-        offset += dash;
-        return circle;
+    const palette = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#06b6d4", "#f97316"];
+    const C = 2 * Math.PI * 42; // SVG circumference for r=42
+    const consolidateRows = (rawRows, maxSlices) => {
+      const sorted = [...rawRows].sort((a, b) => Number(b.raw_value || 0) - Number(a.raw_value || 0));
+      if (sorted.length <= maxSlices) return sorted;
+      const main = sorted.slice(0, maxSlices - 1);
+      const rest = sorted.slice(maxSlices - 1);
+      const pct = Math.round(rest.reduce((s, r) => s + Number(r.percent || 0), 0) * 10) / 10;
+      return [...main, { label: "Other", percent: pct, raw_value: 0, value: "" }];
+    };
+    const renderPieChart = (rawRows, maxSlices = 7) => {
+      if (!rawRows.length) return `<div class="empty">No breakdown data.</div>`;
+      const rows = consolidateRows(rawRows, maxSlices);
+      let cumPct = 0;
+      const circles = rows.map((row, i) => {
+        const pct = Number(row.percent || 0);
+        const dash = (pct / 100 * C).toFixed(2);
+        const gap = (C - pct / 100 * C).toFixed(2);
+        const off = (-(cumPct / 100) * C).toFixed(2);
+        cumPct += pct;
+        const hint = row.value ? ` · ${row.value}` : "";
+        return `<circle r="42" cx="50" cy="50" fill="transparent" stroke="${palette[i % palette.length]}" stroke-width="16" stroke-dasharray="${dash} ${gap}" stroke-dashoffset="${off}" transform="rotate(-90 50 50)"><title>${row.label}: ${row.percent}%${hint}</title></circle>`;
       }).join("");
-      const legend = rows.map((row, index) => `
-        <span><span class="legend-dot" style="background:${palette[index % palette.length]}"></span>${escapeHtml(row.label)} ${escapeHtml(row.percent)}%</span>
+      const legend = rows.map((row, i) => `
+        <span><span class="legend-dot" style="background:${palette[i % palette.length]}"></span>${escapeHtml(row.label)} ${row.percent}%</span>
       `).join("");
       return `
-        <svg class="pie-chart" viewBox="0 0 100 100" role="img" aria-label="Food store breakdown">
+        <svg class="pie-chart" viewBox="0 0 100 100" role="img" aria-label="Breakdown chart" style="cursor:default">
           <circle r="42" cx="50" cy="50" fill="transparent" stroke="#eef1f5" stroke-width="16"/>
           ${circles}
         </svg>
@@ -1229,11 +1268,11 @@ async def dashboard_page(request: Request) -> str:
           <div class="modal-grid">
             <section class="mini-panel">
               <h2>By Supermarket</h2>
-              ${renderPieChart(details.store_breakdown || [])}
+              ${renderPieChart(details.store_breakdown || [], 5)}
             </section>
             <section class="mini-panel">
               <h2>By Food Type</h2>
-              ${renderPieChart(details.nutrient_breakdown || [])}
+              ${renderPieChart(details.nutrient_breakdown || [], 8)}
             </section>
           </div>
           <section class="mini-panel">
@@ -1260,6 +1299,36 @@ async def dashboard_page(request: Request) -> str:
       document.querySelector("#category-modal").classList.remove("open");
       document.querySelector("#category-modal").setAttribute("aria-hidden", "true");
     };
+    const openIncomeModal = () => {
+      const transactions = latestDashboardData?.income_transactions || [];
+      document.querySelector("#income-modal-title").textContent = `Income ${latestDashboardData?.period?.label || ""}`;
+      document.querySelector("#income-modal-subtitle").textContent = transactions.length
+        ? `${transactions.length} transaction${transactions.length === 1 ? "" : "s"}`
+        : "No income recorded";
+      if (transactions.length === 0) {
+        document.querySelector("#income-modal-body").innerHTML = `<div class="empty">No income transactions recorded for this period.</div>`;
+      } else {
+        document.querySelector("#income-modal-body").innerHTML = `
+          <div class="rows">
+            ${transactions.map(tx => `
+              <div class="row">
+                <div class="row-main">
+                  <div class="row-title">${escapeHtml(tx.description)}${tx.merchant && tx.merchant !== tx.description ? ` <span class="muted">(${escapeHtml(tx.merchant)})</span>` : ""}</div>
+                  <div class="row-sub">${escapeHtml(tx.category)} &middot; ${escapeHtml(tx.date)}</div>
+                </div>
+                <div class="row-aside income-amount">${escapeHtml(tx.amount)}</div>
+              </div>
+            `).join("")}
+          </div>
+        `;
+      }
+      document.querySelector("#income-modal").classList.add("open");
+      document.querySelector("#income-modal").setAttribute("aria-hidden", "false");
+    };
+    const closeIncomeModal = () => {
+      document.querySelector("#income-modal").classList.remove("open");
+      document.querySelector("#income-modal").setAttribute("aria-hidden", "true");
+    };
     const renderCategoryOptions = (categories, selected) => categories.map(category => (
       `<option value="${escapeHtml(category)}" ${category === selected ? "selected" : ""}>${escapeHtml(category)}</option>`
     )).join("");
@@ -1285,7 +1354,7 @@ async def dashboard_page(request: Request) -> str:
       const t = data.totals;
       document.querySelector("#metrics").innerHTML = [
         metric(`Expenses ${data.period.label}`, t.this_month),
-        metric(`Income ${data.period.label}`, t.income_month),
+        clickableMetric(`Income ${data.period.label}`, t.income_month, "income-breakdown"),
         metric(data.totals.saved_month_value >= 0 ? "Saved So Far" : "Over So Far", `${Math.abs(moneyNumber(t.saved_month)).toFixed(2)} EUR`),
         data.period.is_current_month
           ? metric("Next Month (Projection)", t.next_month_projection)
@@ -1460,6 +1529,21 @@ async def dashboard_page(request: Request) -> str:
       if (modalClose || event.target.id === "category-modal") {
         closeCategoryModal();
         return;
+      }
+
+      const incomeModalClose = event.target.closest("#income-modal-close");
+      if (incomeModalClose || event.target.id === "income-modal") {
+        closeIncomeModal();
+        return;
+      }
+
+      const metricAction = event.target.closest("[data-metric-action]");
+      if (metricAction) {
+        const action = metricAction.dataset.metricAction;
+        if (action === "income-breakdown") {
+          openIncomeModal();
+          return;
+        }
       }
 
       const categoryDetail = event.target.closest("[data-category-detail]");
