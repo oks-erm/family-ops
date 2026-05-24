@@ -281,7 +281,7 @@ class DashboardService:
             totals[store or "Unknown"] += self.finance_repository.amount_as_decimal(
                 transaction.amount
             )
-        return self._breakdown_rows(totals)
+        return self._breakdown_rows(totals, min_percent=5.0)
 
     def _food_nutrient_breakdown(self, receipts: list[object]) -> list[dict[str, object]]:
         totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
@@ -293,10 +293,26 @@ class DashboardService:
                 totals[self._food_group(item.name)] += amount
         return self._breakdown_rows(totals)
 
-    def _breakdown_rows(self, totals: dict[str, Decimal]) -> list[dict[str, object]]:
+    def _breakdown_rows(
+        self,
+        totals: dict[str, Decimal],
+        min_percent: float = 0.0,
+    ) -> list[dict[str, object]]:
         total = sum(totals.values(), Decimal("0"))
         if total == 0:
             return []
+        if min_percent > 0:
+            other = Decimal("0")
+            filtered: dict[str, Decimal] = {}
+            for label, amount in totals.items():
+                if float(amount / total * 100) < min_percent:
+                    other += amount
+                else:
+                    filtered[label] = amount
+            if other > 0:
+                filtered["Other"] = other
+            totals = filtered
+            total = sum(totals.values(), Decimal("0"))
         rows = []
         for label, amount in sorted(totals.items(), key=lambda item: item[1], reverse=True):
             rows.append(
