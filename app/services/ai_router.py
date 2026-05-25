@@ -142,6 +142,44 @@ class AiRouter:
             logger.info("Ollama light AI call failed: %s", exc)
             return AiJsonResult(provider=AiProvider.ollama, data=None, error=str(exc))
 
+    async def classify_food_items(self, item_names: list[str]) -> dict[str, str]:
+        """Batch-classify grocery item names into food categories via AI.
+
+        Returns a mapping of item_name -> category.
+        Falls back to an empty dict on failure (caller handles fallback).
+        """
+        if not item_names:
+            return {}
+        categories = (
+            "Protein, Veg, Fruit & Nuts, Bread & Carbs, "
+            "Dairy, Sweets, Snacks, Drinks, Other Food"
+        )
+        items_json = json.dumps(item_names, ensure_ascii=False)
+        prompt = (
+            "You are a grocery item categorizer for a household finance app. "
+            "Classify each item name from Portuguese supermarket receipts into exactly one category. "
+            f"Categories: {categories}.\n"
+            "Rules:\n"
+            "- Protein: meat, fish, seafood, eggs, cold cuts, sausages\n"
+            "- Veg: all vegetables (fresh, frozen, canned)\n"
+            "- Fruit & Nuts: all fruit, nuts, seeds, dried fruit\n"
+            "- Bread & Carbs: bread, rice, pasta, oats, flour, cereals, legumes, grains\n"
+            "- Dairy: milk, cheese, yogurt, butter, cream, eggs substitutes\n"
+            "- Sweets: chocolate, candy, ice cream, cakes, pastries, honey, jams\n"
+            "- Snacks: crisps, chips, popcorn, crackers, snack bars, aperitivo\n"
+            "- Drinks: water, juice, soft drinks, beer, wine, spirits, coffee, tea\n"
+            "- Other Food: oils, condiments, sauces, spices, cleaning products, "
+            "  hygiene, or anything not fitting above\n"
+            "Items may be in Portuguese, English, or brand names. "
+            "Return only compact JSON with no markdown: "
+            '{"item name as given": "Category", ...}\n'
+            f"Items: {items_json}"
+        )
+        result = await self._gemini_json(prompt=prompt)
+        if result.data and isinstance(result.data, dict):
+            return {k: v for k, v in result.data.items() if isinstance(v, str)}
+        return {}
+
     async def _gemini_json(self, *, prompt: str) -> AiJsonResult:
         if not self.settings.gemini_api_key:
             return AiJsonResult(provider=AiProvider.gemini, data=None, error="missing_gemini_api_key")

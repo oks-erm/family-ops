@@ -14,6 +14,8 @@ from app.db.repositories.prices import PriceRepository
 from app.db.repositories.receipts import ReceiptRepository
 from app.db.repositories.shopping import ShoppingRepository
 from app.db.repositories.users import UserRepository
+from app.config import get_settings
+from app.services.ai_router import AiRouter
 from app.services.finance_category_service import FinanceCategoryService
 from app.services.recommendation_service import RecommendationService
 from app.services.shopping_category_service import ShoppingCategoryService
@@ -125,7 +127,7 @@ class DashboardService:
                 "is_current_month": month_start == today.replace(day=1) and month_end.month == today.month,
             },
             "expense_categories": self._expense_by_category(month_receipts, month_transactions),
-            "category_details": self._category_details(month_receipts, month_transactions),
+            "category_details": await self._category_details(month_receipts, month_transactions),
             "transactions": self._recent_transactions(month_transactions),
             "income_transactions": self._income_transactions(month_transactions),
             "finance_categories": FinanceCategoryService.categories(),
@@ -217,13 +219,16 @@ class DashboardService:
             if amount != 0
         ]
 
-    def _category_details(
+    async def _category_details(
         self,
         receipts: list[object],
         transactions: list[object],
     ) -> dict[str, dict[str, object]]:
         categories = {row["label"] for row in self._expense_by_category(receipts, transactions)}
         details = {}
+        nutrient_breakdown = None
+        if "Food" in categories:
+            nutrient_breakdown = await self._food_nutrient_breakdown(receipts)
         for category in categories:
             rows = self._category_expense_rows(category, receipts, transactions)
             detail: dict[str, object] = {
@@ -232,7 +237,7 @@ class DashboardService:
             }
             if category == "Food":
                 detail["store_breakdown"] = self._food_store_breakdown(receipts, transactions)
-                detail["nutrient_breakdown"] = self._food_nutrient_breakdown(receipts)
+                detail["nutrient_breakdown"] = nutrient_breakdown or []
             elif category == "Commute":
                 detail["subcategory_breakdown"] = self._commute_subcategory_breakdown(transactions)
             details[category] = detail
@@ -314,14 +319,23 @@ class DashboardService:
             )
         return self._breakdown_rows(totals, min_percent=5.0)
 
-    def _food_nutrient_breakdown(self, receipts: list[object]) -> list[dict[str, object]]:
-        totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    async def _food_nutrient_breakdown(self, receipts: list[object]) -> list[dict[str, object]]:
+        all_items: list[tuple[object, Decimal]] = []
         for receipt in receipts:
             for item in receipt.items:
                 amount = self.receipt_repository.amount_as_decimal(item.total_amount)
                 if amount == 0:
                     continue
-                totals[self._food_group(item.name)] += amount
+                all_items.append((item, amount))
+
+        unique_names = list({item.name for item, _ in all_items})
+        ai_router = AiRouter(get_settings())
+        ai_mapping = await ai_router.classify_food_items(unique_names)
+
+        totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+        for item, amount in all_items:
+            category = ai_mapping.get(item.name) or self._food_group(item.name)
+            totals[category] += amount
         return self._breakdown_rows(totals)
 
     def _breakdown_rows(
