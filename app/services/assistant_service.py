@@ -205,8 +205,14 @@ class AssistantService:
 
         expense_query = self._parse_expense_query(text)
         if expense_query is not None:
-            period, store_name = expense_query
-            return await self._expense_summary(user_id=user_id, period=period, store_name=store_name)
+            period, store_name, query_kind, category = expense_query
+            return await self._expense_summary(
+                user_id=user_id,
+                period=period,
+                store_name=store_name,
+                query_kind=query_kind,
+                category=category,
+            )
 
         return AssistantResponse(
             intent=AssistantIntent.unknown,
@@ -455,8 +461,17 @@ class AssistantService:
         if intent == "shopping_summary":
             return await self._shopping_summary(user_id=user_id)
         if intent == "expense_query":
-            period = "this month" if date_ref not in {"today", "week"} else "this week"
-            return await self._expense_summary(user_id=user_id, period=period, store_name=store_name)
+            ai_kind = str(data.get("kind") or "spend").strip().lower()
+            query_kind = "income" if ai_kind == "income" else "spend"
+            ai_category = str(data.get("category") or "").strip() or None
+            period = self._period_from_date_ref(date_ref)
+            return await self._expense_summary(
+                user_id=user_id,
+                period=period,
+                store_name=store_name,
+                query_kind=query_kind,
+                category=ai_category,
+            )
         if intent in {"unknown", "clarify"} and reply:
             return AssistantResponse(intent=AssistantIntent.unknown, text=reply)
         return None
@@ -1378,17 +1393,30 @@ class AssistantService:
         user_id: UUID,
         period: str,
         store_name: str | None,
+        query_kind: str = "spend",
+        category: str | None = None,
     ) -> AssistantResponse:
         from app.utils.datetime import now_in_timezone
 
         user = await UserRepository(self.session).get_by_id(user_id=user_id)
         today = now_in_timezone(user.timezone if user else "Europe/Lisbon").date()
-        text = await AnalyticsService(self.session).grocery_spend_summary(
-            household_id=await self._household_id_for_user(user_id=user_id),
-            today=today,
-            period=period,
-            store_name=store_name,
-        )
+        household_id = await self._household_id_for_user(user_id=user_id)
+        analytics = AnalyticsService(self.session)
+        if query_kind == "income" or category:
+            text = await analytics.finance_summary(
+                household_id=household_id,
+                today=today,
+                period=period,
+                query_kind=query_kind,
+                category_filter=category,
+            )
+        else:
+            text = await analytics.grocery_spend_summary(
+                household_id=household_id,
+                today=today,
+                period=period,
+                store_name=store_name,
+            )
         return AssistantResponse(intent=AssistantIntent.expense_summary, text=text)
 
     async def _household_id_for_user(self, *, user_id: UUID) -> UUID:
@@ -1509,19 +1537,107 @@ class AssistantService:
         return now_in_timezone(timezone).date() + timedelta(days=1)
 
     @staticmethod
-    def _parse_expense_query(text: str) -> tuple[str, str | None] | None:
-        lowered = text.lower()
-        if not any(word in lowered for word in ("spend", "spent", "expense", "expenses", "groceries")):
+    def _parse_expense_query(text: str) -> tuple[str, str | None, str, str | None] | None:
+        lowered = text.lower().strip(" ?!.")
+        _INCOME_WORDS = ("income", " earn", "earned", "salary", "salário", "salario", "ordenado")
+        _SPEND_WORDS = ("spend", "spent", "expense", "how much", "cost", "groceries")
+        is_income = any(w in lowered for w in _INCOME_WORDS)
+        is_spend = any(w in lowered for w in _SPEND_WORDS)
+        if not is_income and not is_spend:
             return None
-        period = "this month" if "month" in lowered else "this week"
-        store_name = None
-        store_match = re.search(r"\b(?:in|at|from)\s+([a-zA-ZÀ-ÿ0-9' -]+)", text)
-        if store_match:
-            store_name = store_match.group(1).strip(" ?.")
-            for suffix in (" this week", " this month", " week", " month"):
-                if store_name.lower().endswith(suffix):
-                    store_name = store_name[: -len(suffix)].strip()
-        return period, store_name
+        query_kind = "income" if is_income else "spend"
+
+        _MONTHS: dict[str, int] = {
+            "january": 1, "february": 2, "march": 3, "april": 4,
+            "may": 5, "june": 6, "july": 7, "august": 8,
+            "september": 9, "october": 10, "november": 11, "december": 12,
+        }
+        period = "this month"
+        if "last year" in lowered:
+            period = "last year"
+        elif "this year" in lowered:
+            period = "this year"
+        elif "last month" in lowered:
+            period = "last month"
+        elif "this week" in lowered:
+            period = "this week"
+        elif "this month" in lowered:
+            period = "this month"
+        else:
+            m_named = re.search(
+                r"\bin\s+(" + "|".join(_MONTHS.keys()) + r")\s*(?:(20\d{2}))?\b",
+                lowered,
+            )
+            if m_named:
+                month_num = _MONTHS[m_named.group(1)]
+                year = int(m_named.group(2)) if m_named.group(2) else date.today().year
+                period = f"month:{year:04d}-{month_num:02d}"
+            else:
+                m_year = re.search(r"\bin\s*(20\d{2})\b|\b(20\d{2})\b", lowered)
+                if m_year:
+                    period = f"year:{int(m_year.group(1) or m_year.group(2))}"
+
+        # Remove period phrases so they don't bleed into category extraction
+        _period_pat = (
+            r"\b(this month|this week|this year|last month|last year"
+            r"|in\s+(?:" + "|".join(_MONTHS.keys()) + r")(?:\s+20\d{2})?"
+            r"|in\s+20\d{2}|20\d{2})\b"
+        )
+        clean = re.sub(_period_pat, "", lowered, flags=re.IGNORECASE).strip(" ?.")
+
+        category: str | None = None
+        cat_match = re.search(
+            r"\b(?:spend(?:ing)?|spent|expenses?)\s+on\s+([a-zA-ZÀ-ÿ][\w\s'&-]{1,30})",
+            clean,
+        ) or re.search(
+            r"\bon\s+([a-zA-ZÀ-ÿ][\w\s'&-]{1,30})",
+            clean,
+        )
+        if cat_match:
+            cat = cat_match.group(1).strip()
+            _skip = {"average", "the", "a", "an", "us", "we"}
+            if len(cat) > 1 and cat.lower() not in _skip:
+                category = cat
+
+        store_name: str | None = None
+        if query_kind == "spend" and not category:
+            store_match = re.search(r"\b(?:at|from)\s+([a-zA-ZÀ-ÿ0-9' -]+)", text)
+            if store_match:
+                store_name = store_match.group(1).strip(" ?.")
+                for suffix in (" this week", " this month", " week", " month", " year"):
+                    if store_name.lower().endswith(suffix):
+                        store_name = store_name[: -len(suffix)].strip()
+        return period, store_name, query_kind, category
+
+    @staticmethod
+    def _period_from_date_ref(date_ref: str) -> str:
+        dr = date_ref.strip().lower()
+        if dr in {"", "today", "tonight"}:
+            return "this month"
+        if dr == "week":
+            return "this week"
+        if dr in {"this month", "month"}:
+            return "this month"
+        if dr == "last month":
+            return "last month"
+        if dr in {"this year", "year"}:
+            return "this year"
+        if dr == "last year":
+            return "last year"
+        _MONTHS: dict[str, int] = {
+            "january": 1, "february": 2, "march": 3, "april": 4,
+            "may": 5, "june": 6, "july": 7, "august": 8,
+            "september": 9, "october": 10, "november": 11, "december": 12,
+        }
+        m = re.match(r"^(" + "|".join(_MONTHS.keys()) + r")(?:\s+(20\d{2}))?$", dr)
+        if m:
+            month_num = _MONTHS[m.group(1)]
+            year = int(m.group(2)) if m.group(2) else date.today().year
+            return f"month:{year:04d}-{month_num:02d}"
+        m_year = re.match(r"^(20\d{2})$", dr)
+        if m_year:
+            return f"year:{m_year.group(1)}"
+        return "this month"
 
     @staticmethod
     def _parse_planning_query(text: str) -> str | None:
