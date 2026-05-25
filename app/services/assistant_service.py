@@ -71,6 +71,21 @@ class AssistantService:
         if move_request is not None:
             return await self._move_item(user_id=user_id, request=move_request)
 
+        # Breakdown follow-up must also run before the AI so "Breakdown" / "Detalhe"
+        # is not intercepted by the AI's clarify/unknown handler.
+        _BREAKDOWN_WORDS = ("breakdown", "details", "detalhe", "detalhes", "listar")
+        if any(w in text.lower() for w in _BREAKDOWN_WORDS):
+            cached = _last_finance_query.get(str(user_id))
+            if cached:
+                return await self._expense_summary(
+                    user_id=user_id,
+                    period=cached["period"],
+                    store_name=cached.get("store_name"),
+                    query_kind=cached.get("query_kind", "spend"),
+                    category=cached.get("category"),
+                    original_question=text,
+                )
+
         ai_result = await self.ai_router.classify_light_intent(text=text)
         ai_response = await self._handle_ai_classification(
             user_id=user_id,
@@ -222,21 +237,6 @@ class AssistantService:
                 category=category,
                 original_question=text,
             )
-
-        # Allow a bare follow-up ("Breakdown", "Details", etc.) to re-run the last
-        # finance query with itemised output if the user already asked one.
-        _BREAKDOWN_WORDS = ("breakdown", "details", "detalhe", "detalhes", "listar", "lista")
-        if any(w in text.lower() for w in _BREAKDOWN_WORDS):
-            cached = _last_finance_query.get(str(user_id))
-            if cached:
-                return await self._expense_summary(
-                    user_id=user_id,
-                    period=cached["period"],
-                    store_name=cached.get("store_name"),
-                    query_kind=cached.get("query_kind", "spend"),
-                    category=cached.get("category"),
-                    original_question=text,  # contains breakdown keyword → triggers itemised mode
-                )
 
         return AssistantResponse(
             intent=AssistantIntent.unknown,
@@ -1466,13 +1466,35 @@ class AssistantService:
         # Pre-filter by category in Python so Gemini only sees the relevant rows and
         # cannot accidentally over-count by pulling in unrelated categories.
         # "Commute" is a virtual grouping on the dashboard — map it to the actual DB categories.
+        # Also handle common synonyms / Portuguese equivalents the user or AI might use.
         if category:
             from app.services.dashboard_service import _COMMUTE_SUBCATEGORIES
+            _COMMUTE_ALIASES = {
+                "commute", "transport", "transportation", "transporte", "transportes",
+                "deslocação", "deslocacao", "viagem", "viagens", "travel",
+                "uber", "gas", "tolls", "toll", "public transport",
+            }
             cat_lower = category.lower()
-            if cat_lower == "commute":
+            if cat_lower in _COMMUTE_ALIASES:
                 db_cats = {c.lower() for c in _COMMUTE_SUBCATEGORIES}
             else:
-                db_cats = {cat_lower}
+                # For other categories normalise common synonyms to the DB spelling
+                _ALIASES: dict[str, str] = {
+                    "food": "food", "comida": "food", "supermercado": "food",
+                    "grocery": "food", "groceries": "food", "mercearia": "food",
+                    "eat out": "eat out", "eating out": "eat out", "restaurant": "eat out",
+                    "restaurante": "eat out", "comer fora": "eat out",
+                    "health": "health", "saúde": "health", "saude": "health",
+                    "sport": "sport", "desporto": "sport", "fitness": "sport",
+                    "entertainment": "entertainment", "lazer": "entertainment",
+                    "subscriptions": "subscriptions", "assinaturas": "subscriptions",
+                    "utilities": "utilities", "utilidades": "utilities",
+                    "house chemicals": "house chemicals", "limpeza": "house chemicals",
+                    "beauty": "beauty", "beleza": "beauty",
+                    "taxes": "taxes", "impostos": "taxes",
+                }
+                normalised = _ALIASES.get(cat_lower, cat_lower)
+                db_cats = {normalised}
             transactions = [
                 t for t in transactions
                 if (t.category or "").lower() in db_cats
@@ -1648,72 +1670,106 @@ class AssistantService:
     @staticmethod
     def _parse_expense_query(text: str) -> tuple[str, str | None, str, str | None] | None:
         lowered = text.lower().strip(" ?!.")
-        _INCOME_WORDS = ("income", " earn", "earned", "salary", "salário", "salario", "ordenado")
-        _SPEND_WORDS = ("spend", "spent", "expense", "how much", "cost", "groceries")
+
+        # ── Detect income vs spend ──────────────────────────────────────────────
+        _INCOME_WORDS = (
+            "income", " earn", "earned", "salary", "salário", "salario",
+            "ordenado", "rendimento", "receita", "receb",
+        )
+        _SPEND_WORDS = (
+            # English
+            "spend", "spent", "expense", "expenses", "how much", "cost",
+            "groceries",
+            # Portuguese
+            "gastamos", "gastámos", "gastei", "gast", "despesa", "despesas",
+            "quanto", "custou", "custo", "gastamos", "quanto gastamos",
+        )
         is_income = any(w in lowered for w in _INCOME_WORDS)
         is_spend = any(w in lowered for w in _SPEND_WORDS)
         if not is_income and not is_spend:
             return None
         query_kind = "income" if is_income else "spend"
 
+        # ── Detect period ───────────────────────────────────────────────────────
         _MONTHS: dict[str, int] = {
+            # English
             "january": 1, "february": 2, "march": 3, "april": 4,
             "may": 5, "june": 6, "july": 7, "august": 8,
             "september": 9, "october": 10, "november": 11, "december": 12,
+            # Portuguese
+            "janeiro": 1, "fevereiro": 2, "março": 3, "marco": 3,
+            "abril": 4, "maio": 5, "junho": 6, "julho": 7,
+            "agosto": 8, "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12,
         }
         period = "this month"
-        if "last year" in lowered:
+        _LAST_YEAR = ("last year", "ano passado")
+        _THIS_YEAR = ("this year", "este ano")
+        _LAST_MONTH = ("last month", "mês passado", "mes passado")
+        _THIS_WEEK = ("this week", "esta semana")
+        _THIS_MONTH = ("this month", "este mês", "este mes")
+        if any(p in lowered for p in _LAST_YEAR):
             period = "last year"
-        elif "this year" in lowered:
+        elif any(p in lowered for p in _THIS_YEAR):
             period = "this year"
-        elif "last month" in lowered:
+        elif any(p in lowered for p in _LAST_MONTH):
             period = "last month"
-        elif "this week" in lowered:
+        elif any(p in lowered for p in _THIS_WEEK):
             period = "this week"
-        elif "this month" in lowered:
+        elif any(p in lowered for p in _THIS_MONTH):
             period = "this month"
         else:
             m_named = re.search(
-                r"\bin\s+(" + "|".join(_MONTHS.keys()) + r")\s*(?:(20\d{2}))?\b",
+                r"\bem\s+(" + "|".join(_MONTHS.keys()) + r")\s*(?:(20\d{2}))?\b"
+                r"|\bin\s+(" + "|".join(_MONTHS.keys()) + r")\s*(?:(20\d{2}))?\b",
                 lowered,
             )
             if m_named:
-                month_num = _MONTHS[m_named.group(1)]
-                year = int(m_named.group(2)) if m_named.group(2) else date.today().year
+                month_name = m_named.group(1) or m_named.group(3)
+                year_str = m_named.group(2) or m_named.group(4)
+                month_num = _MONTHS[month_name]
+                year = int(year_str) if year_str else date.today().year
                 period = f"month:{year:04d}-{month_num:02d}"
             else:
-                m_year = re.search(r"\bin\s*(20\d{2})\b|\b(20\d{2})\b", lowered)
+                m_year = re.search(r"\bem\s*(20\d{2})\b|\bin\s*(20\d{2})\b|\b(20\d{2})\b", lowered)
                 if m_year:
-                    period = f"year:{int(m_year.group(1) or m_year.group(2))}"
+                    period = f"year:{int(m_year.group(1) or m_year.group(2) or m_year.group(3))}"
 
-        # Remove period phrases so they don't bleed into category extraction
+        # ── Strip period phrases before extracting category ─────────────────────
+        _month_names = "|".join(_MONTHS.keys())
         _period_pat = (
             r"\b(this month|this week|this year|last month|last year"
-            r"|in\s+(?:" + "|".join(_MONTHS.keys()) + r")(?:\s+20\d{2})?"
-            r"|in\s+20\d{2}|20\d{2})\b"
+            r"|este m[eê]s|esta semana|este ano|m[eê]s passado|ano passado"
+            r"|(?:em|in)\s+(?:" + _month_names + r")(?:\s+20\d{2})?"
+            r"|(?:em|in)\s+20\d{2}|20\d{2})\b"
         )
         clean = re.sub(_period_pat, "", lowered, flags=re.IGNORECASE).strip(" ?.")
 
+        # ── Extract category ────────────────────────────────────────────────────
         category: str | None = None
-        cat_match = re.search(
-            r"\b(?:spend(?:ing)?|spent|expenses?)\s+on\s+([a-zA-ZÀ-ÿ][\w\s'&-]{1,30})",
-            clean,
-        ) or re.search(
-            r"\bon\s+([a-zA-ZÀ-ÿ][\w\s'&-]{1,30})",
-            clean,
+        cat_match = (
+            # "spent on X" / "spending on X" / "expenses on X"
+            re.search(
+                r"\b(?:spend(?:ing)?|spent|expenses?|gasto?s?|despesas?)\s+(?:on|em|com)\s+([a-zA-ZÀ-ÿ][\w\s'&/-]{1,30})",
+                clean,
+            )
+            # "on X"
+            or re.search(r"\b(?:on|em|com)\s+([a-zA-ZÀ-ÿ][\w\s'&/-]{1,30})", clean)
+            # "com X" already covered; try "em X" standalone
+            or re.search(r"\bem\s+([a-zA-ZÀ-ÿ][\w\s'&/-]{1,30})", clean)
         )
         if cat_match:
             cat = cat_match.group(1).strip()
-            _skip = {"average", "the", "a", "an", "us", "we"}
+            _skip = {"average", "the", "a", "an", "us", "we", "o", "a", "os", "as", "nos", "nas"}
             if len(cat) > 1 and cat.lower() not in _skip:
                 category = cat
 
         store_name: str | None = None
         if query_kind == "spend" and not category:
-            store_match = re.search(r"\b(?:at|from)\s+([a-zA-ZÀ-ÿ0-9' -]+)", text)
+            store_match = re.search(r"\b(?:at|from|no|na|em)\s+([a-zA-ZÀ-ÿ0-9' -]+)", text)
             if store_match:
                 store_name = store_match.group(1).strip(" ?.")
-                for suffix in (" this week", " this month", " week", " month", " year"):
+                for suffix in (" this week", " this month", " esta semana", " este mês",
+                               " week", " month", " year", " semana", " mês"):
                     if store_name.lower().endswith(suffix):
                         store_name = store_name[: -len(suffix)].strip()
         return period, store_name, query_kind, category
