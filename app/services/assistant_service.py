@@ -1790,7 +1790,13 @@ class AssistantService:
 
         store_name: str | None = None
         if query_kind == "spend" and not category:
-            store_match = re.search(r"\b(?:at|from|no|na|em)\s+([a-zA-ZÀ-ÿ0-9' -]+)", text)
+            # Match "at/from/no/na/em X" broadly, or "in X" only when X starts with a capital
+            # (to avoid "in this month", "in April", etc.)
+            store_match = re.search(
+                r"\b(?:at|from|no|na|em)\s+([a-zA-ZÀ-ÿ0-9' -]+)", text
+            ) or re.search(
+                r"\bin\s+([A-ZÀ-Ÿ][a-zA-ZÀ-ÿ0-9' -]*)", text
+            )
             if store_match:
                 store_name = store_match.group(1).strip(" ?.")
                 for suffix in (" this week", " this month", " esta semana", " este mês",
