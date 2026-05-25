@@ -25,6 +25,10 @@ from app.services.planning_service import PlannedTaskInput, PlanningInput, Plann
 from app.services.shopping_category_service import ShoppingCategoryService
 from app.services.shopping_service import ParsedShoppingItem, ShoppingService
 
+# Per-user cache: remembers the most-recent finance query so a bare "Breakdown"
+# follow-up can re-run it with itemised output without repeating the question.
+_last_finance_query: dict[str, dict] = {}
+
 
 class AssistantIntent(StrEnum):
     add_shopping_item = "add_shopping_item"
@@ -218,6 +222,21 @@ class AssistantService:
                 category=category,
                 original_question=text,
             )
+
+        # Allow a bare follow-up ("Breakdown", "Details", etc.) to re-run the last
+        # finance query with itemised output if the user already asked one.
+        _BREAKDOWN_WORDS = ("breakdown", "details", "detalhe", "detalhes", "listar", "lista")
+        if any(w in text.lower() for w in _BREAKDOWN_WORDS):
+            cached = _last_finance_query.get(str(user_id))
+            if cached:
+                return await self._expense_summary(
+                    user_id=user_id,
+                    period=cached["period"],
+                    store_name=cached.get("store_name"),
+                    query_kind=cached.get("query_kind", "spend"),
+                    category=cached.get("category"),
+                    original_question=text,  # contains breakdown keyword → triggers itemised mode
+                )
 
         return AssistantResponse(
             intent=AssistantIntent.unknown,
@@ -1435,6 +1454,23 @@ class AssistantService:
             t for t in all_transactions
             if start_date <= DashboardService._dashboard_transaction_date(t) <= end_date
         ]
+
+        # Cache query params now so a follow-up "Breakdown" can re-run this query.
+        _last_finance_query[str(user_id)] = {
+            "period": period,
+            "store_name": store_name,
+            "query_kind": query_kind,
+            "category": category,
+        }
+
+        # Pre-filter by category in Python so Gemini only sees the relevant rows and
+        # cannot accidentally over-count by pulling in unrelated categories.
+        if category:
+            cat_lower = category.lower()
+            transactions = [
+                t for t in transactions
+                if (t.category or "").lower() == cat_lower
+            ]
 
         receipt_repo = ReceiptRepository(self.session)
         receipts = await receipt_repo.list_receipts_between(
