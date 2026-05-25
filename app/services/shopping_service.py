@@ -174,13 +174,7 @@ class ShoppingService:
         lowered = text.lower().strip()
         if any(action in lowered for action in cls._action_markers()):
             return False
-        if cls._trailing_store(text) is not None:
-            return True
-        if any(marker in lowered for marker in (" from ", " de ", " do ", " da ", " no ", " na ", " anywhere")):
-            return True
-        if lowered.startswith(("some ", "more ")):
-            return True
-        return any(token in lowered for token in cls._grocery_tokens())
+        return True
 
     @staticmethod
     def _action_markers() -> tuple[str, ...]:

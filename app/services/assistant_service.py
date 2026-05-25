@@ -1121,26 +1121,50 @@ class AssistantService:
                 text="Nothing is pending on the shopping list.",
             )
 
-        grouped: dict[str, list[str]] = {}
+        non_supermarket: dict[str, list[str]] = {}
+        by_store: dict[str, list[str]] = {}
         for item in items:
-            category = self.shopping_category_service.category_for(item.name)
-            grouped.setdefault(category, []).append(
-                f"- {item.name} ({item.store_name_raw or 'anywhere'})"
+            category = self.shopping_category_service.category_for(
+                item.name, store_name_raw=item.store_name_raw
             )
+            if category == "Supermarket":
+                store_key = item.store_name_raw.strip().title() if item.store_name_raw else "Anywhere"
+                by_store.setdefault(store_key, []).append(f"- {item.name}")
+            else:
+                non_supermarket.setdefault(category, []).append(
+                    f"- {item.name} ({item.store_name_raw or 'anywhere'})"
+                )
 
-        preferred_order = ("Food", "Cosmetics", "Clothes", "House")
         lines = ["Shopping list:"]
-        for category in preferred_order:
-            category_items = grouped.pop(category, [])
+        for category in ("Online", "Health", "Tech", "Clothes", "House"):
+            category_items = non_supermarket.pop(category, [])
             if not category_items:
                 continue
             lines.append("")
             lines.append(category)
             lines.extend(category_items)
-        for category, category_items in sorted(grouped.items()):
+        for category, category_items in sorted(non_supermarket.items()):
             lines.append("")
             lines.append(category)
             lines.extend(category_items)
+
+        known_stores = ("Continente", "Lidl", "Aldi", "Pingo Doce", "Mercadona", "Mini Mix")
+        for store in known_stores:
+            store_items = by_store.pop(store, [])
+            if not store_items:
+                continue
+            lines.append("")
+            lines.append(store)
+            lines.extend(store_items)
+        anywhere_items = by_store.pop("Anywhere", [])
+        for store, store_items in sorted(by_store.items()):
+            lines.append("")
+            lines.append(store)
+            lines.extend(store_items)
+        if anywhere_items:
+            lines.append("")
+            lines.append("Anywhere")
+            lines.extend(anywhere_items)
 
         return AssistantResponse(
             intent=AssistantIntent.shopping_summary,
