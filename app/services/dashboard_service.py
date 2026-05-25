@@ -360,13 +360,14 @@ class DashboardService:
     def _food_group(name: str) -> str:
         lowered = name.lower()
         groups = {
-            "Meat & Fish": (
+            "Protein": (
                 "chicken", "frango", "beef", "pork", "porco", "carne", "fish", "peixe",
                 "salmon", "salmao", "salmã", "tuna", "atum", "ham", "fiambre", "presunto",
                 "salsich", "salsicha", "linguica", "chourico", "alheira",
                 "bacalhau", "camarao", "camarão", "lulas", "sardinha",
                 "pescada", "panga", "truta", "dourada", "robalo",
                 "vitela", "peru", "borrego", "entrec", "bife",
+                "ovo", "ovos", "egg",
             ),
             "Veg": (
                 "broccoli", "brocol", "brócolo", "tomato", "tomate", "lettuce", "alface",
@@ -376,14 +377,16 @@ class DashboardService:
                 "ervilhas", "beterraba", "alho frances", "funcho", "courgette",
                 "alho", "nabo", "abobora", "abobrinha", "rucula",
             ),
-            "Fruit": (
+            "Fruit & Nuts": (
                 "apple", "maçã", "maca", "banana", "orange", "laranja", "avocado",
                 "abacate", "fruit", "berries", "morang", "uva", "pera", "manga",
                 "ananas", "melao", "melão", "kiwi", "melancia", "limao", "limão",
                 "cereja", "mirtil", "framboesa", "tamaras", "figo", "ameixa",
                 "pessego", "abacaxi", "lichia",
+                "amendoim", "caju", "noz", "amendoa", "pinhao",
+                "nuts", "almond", "cashew", "walnut", "pistachio", "pistacio",
             ),
-            "Bread & Grains": (
+            "Bread & Carbs": (
                 "bread", "pão", "pao", "rice", "arroz", "pasta", "massa", "oat",
                 "aveia", "flour", "farinha", "cereal", "lentil", "lentilha", "graos",
                 "grao", "chickpea", "grao-de-bico", "quinoa", "espelta",
@@ -392,14 +395,16 @@ class DashboardService:
             "Dairy": (
                 "milk", "leite", "cheese", "queijo", "yogurt", "iogurte",
                 "butter", "manteiga", "cream", "natas", "nata", "requeijao",
-                "requeijão", "cottage", "ovo ", "ovos", "ovo,",
+                "requeijão", "cottage",
             ),
-            "Sweets & Snacks": (
+            "Sweets": (
                 "chocolate", "cookie", "biscuit", "bolacha", "sweet", "candy",
-                "snack", "chips", "crisps", "gelado", "bolo", "pastel",
-                "amendoim", "mel", "caju", "noz", "amendoa", "pinhao",
-                "nuts", "almond", "cashew", "walnut", "pistachio", "pistacio",
-                "granola", "barrinha", "biscoito", "wafer",
+                "gelado", "bolo", "pastel", "mel", "caramelo", "doce",
+                "biscoito", "wafer", "sobremesa", "geleia",
+            ),
+            "Snacks": (
+                "snack", "chips", "crisps", "pipoca", "nachos", "pretzel",
+                "granola", "barrinha", "cracker",
             ),
             "Drinks": (
                 "water", "água", "agua", "juice", "sumo", "cola", "tonic",
