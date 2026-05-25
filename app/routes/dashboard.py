@@ -684,7 +684,7 @@ async def dashboard_page(request: Request) -> str:
       display: flex;
       align-items: center;
       gap: 10px;
-      flex-wrap: wrap;
+      flex-shrink: 0;
       justify-content: flex-end;
     }
     .category-select {
@@ -1240,7 +1240,8 @@ async def dashboard_page(request: Request) -> str:
     };
     const renderPieChart = (rawRows, maxSlices = 7) => {
       if (!rawRows.length) return `<div class="empty">No breakdown data.</div>`;
-      const rows = consolidateRows(rawRows, maxSlices);
+      const rows = consolidateRows(rawRows, maxSlices).filter(r => Number(r.percent || 0) > 0);
+      if (!rows.length) return `<div class="empty">No breakdown data.</div>`;
       let cumPct = 0;
       const circles = rows.map((row, i) => {
         const pct = Number(row.percent || 0);

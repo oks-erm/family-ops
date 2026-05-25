@@ -83,7 +83,7 @@ class DashboardService:
             for transaction in series_transactions
             if month_start <= self._dashboard_transaction_date(transaction) <= month_end
         ]
-        quotes = await self.price_repository.latest_for_household(household_id=household_id, limit=100)
+        quotes = await self.price_repository.latest_for_household(household_id=household_id, limit=2000)
         week_transactions = [
             transaction
             for transaction in month_transactions
@@ -324,7 +324,7 @@ class DashboardService:
         for receipt in receipts:
             for item in receipt.items:
                 amount = self.receipt_repository.amount_as_decimal(item.total_amount)
-                if amount == 0:
+                if amount <= 0:
                     continue
                 all_items.append((item, amount))
 
@@ -360,6 +360,8 @@ class DashboardService:
             total = sum(totals.values(), Decimal("0"))
         rows = []
         for label, amount in sorted(totals.items(), key=lambda item: item[1], reverse=True):
+            if amount <= 0:
+                continue
             rows.append(
                 {
                     "label": label,
