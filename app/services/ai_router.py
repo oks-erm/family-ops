@@ -192,6 +192,63 @@ class AiRouter:
             return {k: v for k, v in result.data.items() if isinstance(v, str)}
         return {}
 
+    async def answer_finance_question(
+        self,
+        *,
+        question: str,
+        tx_rows: list[dict[str, str]],
+        item_rows: list[dict[str, str]],
+    ) -> str:
+        """Answer a natural-language finance question from raw transaction + receipt data.
+
+        tx_rows: list of {date, category, description, amount, currency, type}
+        item_rows: list of {date, store, name, amount}
+        Returns a short plain-text answer.
+        """
+        if not self.settings.gemini_api_key:
+            return "AI not configured — cannot answer query."
+
+        tx_lines = "\n".join(
+            f"{r['date']} | {r['type']} | {r['category']} | {r['description']} | {r['amount']} {r['currency']}"
+            for r in tx_rows[:300]
+        ) or "(no bank transactions in this period)"
+
+        item_lines = "\n".join(
+            f"{r['date']} | {r['store']} | {r['name']} | {r['amount']}"
+            for r in item_rows[:500]
+        ) or "(no scanned receipt items in this period)"
+
+        prompt = (
+            "You are a household finance assistant. Answer the question below using ONLY "
+            "the data provided. Do not invent amounts. Sum amounts yourself.\n"
+            "Show total, number of entries, and up to 10 itemised examples.\n"
+            "Respond in the same language as the question. Be concise.\n\n"
+            f"Question: {question}\n\n"
+            "Bank transactions (date | type | category | description | amount currency):\n"
+            f"{tx_lines}\n\n"
+            "Scanned receipt line items (date | store | item name | amount):\n"
+            f"{item_lines}"
+        )
+
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self.settings.gemini_model}:generateContent"
+        )
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0},
+        }
+        headers = {"x-goog-api-key": self.settings.gemini_api_key}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+            candidate = response.json()["candidates"][0]
+            return candidate["content"]["parts"][0]["text"].strip()
+        except Exception as exc:
+            logger.info("Gemini finance question failed: %s", exc)
+            return f"Could not answer query: {exc}"
+
     async def _gemini_json(self, *, prompt: str) -> AiJsonResult:
         if not self.settings.gemini_api_key:
             return AiJsonResult(provider=AiProvider.gemini, data=None, error="missing_gemini_api_key")

@@ -9,8 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.db.models import ActivityAction, DailyPlanStatus, PlanningConversationState
 from app.db.repositories.activity import ActivityRepository
+from app.db.repositories.finance import FinanceRepository
 from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.planning import PlanningRepository
+from app.db.repositories.receipts import ReceiptRepository
 from app.db.repositories.routines import RoutineRepository
 from app.db.repositories.tasks import TaskRepository
 from app.db.repositories.users import UserRepository
@@ -212,6 +214,7 @@ class AssistantService:
                 store_name=store_name,
                 query_kind=query_kind,
                 category=category,
+                original_question=text,
             )
 
         return AssistantResponse(
@@ -471,6 +474,7 @@ class AssistantService:
                 store_name=store_name,
                 query_kind=query_kind,
                 category=ai_category,
+                original_question=text,
             )
         if intent in {"unknown", "clarify"} and reply:
             return AssistantResponse(intent=AssistantIntent.unknown, text=reply)
@@ -1395,28 +1399,77 @@ class AssistantService:
         store_name: str | None,
         query_kind: str = "spend",
         category: str | None = None,
+        original_question: str | None = None,
     ) -> AssistantResponse:
         from app.utils.datetime import now_in_timezone
 
         user = await UserRepository(self.session).get_by_id(user_id=user_id)
         today = now_in_timezone(user.timezone if user else "Europe/Lisbon").date()
         household_id = await self._household_id_for_user(user_id=user_id)
-        analytics = AnalyticsService(self.session)
-        if query_kind == "income" or category:
-            text = await analytics.finance_summary(
-                household_id=household_id,
-                today=today,
-                period=period,
-                query_kind=query_kind,
-                category_filter=category,
-            )
-        else:
+
+        # For general grocery spend (no category, no income), use the structured path
+        if query_kind == "spend" and not category:
+            analytics = AnalyticsService(self.session)
             text = await analytics.grocery_spend_summary(
                 household_id=household_id,
                 today=today,
                 period=period,
                 store_name=store_name,
             )
+            return AssistantResponse(intent=AssistantIntent.expense_summary, text=text)
+
+        # For category or income queries, feed raw data rows to the AI
+        analytics = AnalyticsService(self.session)
+        start_date, end_date = analytics._date_range(today=today, period=period)
+
+        finance_repo = FinanceRepository(self.session)
+        transactions = await finance_repo.list_between(
+            household_id=household_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        receipt_repo = ReceiptRepository(self.session)
+        receipts = await receipt_repo.list_receipts_between(
+            household_id=household_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        tx_rows = [
+            {
+                "date": str(t.occurred_on),
+                "type": t.transaction_type.value if hasattr(t.transaction_type, "value") else str(t.transaction_type),
+                "category": t.category or "",
+                "description": t.description or "",
+                "amount": t.amount or "0",
+                "currency": t.currency or "EUR",
+            }
+            for t in transactions
+        ]
+
+        item_rows = [
+            {
+                "date": str(receipt_repo.effective_receipt_date(r)),
+                "store": r.shop_name or "Unknown",
+                "name": item.name or "",
+                "amount": item.total_amount or "0",
+            }
+            for r in receipts
+            for item in r.items
+        ]
+
+        question = original_question or (
+            f"How much did we spend on {category} during {period}?"
+            if category
+            else f"What was the income for {period}?"
+        )
+
+        text = await self.ai_router.answer_finance_question(
+            question=question,
+            tx_rows=tx_rows,
+            item_rows=item_rows,
+        )
         return AssistantResponse(intent=AssistantIntent.expense_summary, text=text)
 
     async def _household_id_for_user(self, *, user_id: UUID) -> UUID:
