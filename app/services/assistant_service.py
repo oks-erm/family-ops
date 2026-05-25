@@ -1429,6 +1429,11 @@ class AssistantService:
             end_date=end_date,
         )
 
+        # Recategorise "Other"/"Commute" transactions the same way the dashboard does,
+        # so VIAVERDE and similar are correctly labelled before we send rows to the AI.
+        from app.services.dashboard_service import DashboardService
+        await DashboardService(self.session)._recategorize_known_other_transactions(transactions)
+
         receipt_repo = ReceiptRepository(self.session)
         receipts = await receipt_repo.list_receipts_between(
             household_id=household_id,
