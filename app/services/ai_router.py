@@ -227,11 +227,19 @@ class AiRouter:
         else:
             detail_instruction = "Reply with ONE concise line: total amount and number of transactions. No list, no examples."
 
+        # Detect the question language to give Gemini an explicit instruction.
+        pt_markers = ("quanto", "gastamos", "gastámos", "despesa", "mês", "este", "esta", "ano")
+        lang_instruction = (
+            "Reply in Portuguese."
+            if any(m in question.lower() for m in pt_markers)
+            else "Reply in English."
+        )
+
         prompt = (
             "You are a household finance assistant. Answer the question below using ONLY "
             "the data provided. Do not invent amounts. Sum amounts yourself.\n"
             f"{detail_instruction}\n"
-            "Respond in the same language as the question.\n\n"
+            f"{lang_instruction}\n\n"
             f"Question: {question}\n\n"
             "Bank transactions (date | type | category | description | amount currency):\n"
             f"{tx_lines}\n\n"

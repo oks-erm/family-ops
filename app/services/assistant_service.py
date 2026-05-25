@@ -1463,42 +1463,67 @@ class AssistantService:
             "category": category,
         }
 
-        # Pre-filter by category in Python so Gemini only sees the relevant rows and
-        # cannot accidentally over-count by pulling in unrelated categories.
-        # "Commute" is a virtual grouping on the dashboard — map it to the actual DB categories.
-        # Also handle common synonyms / Portuguese equivalents the user or AI might use.
+        # Pre-filter by category in Python so Gemini only sees relevant rows.
+        # Rules:
+        #   - Generic commute words → all commute subcategories (Uber, Gas, Tolls, Public Transport)
+        #   - Specific subcategory synonyms → just that one DB category
+        #   - Everything else → normalise via alias map then exact match
+        #   - Unknown term → skip pre-filter, let Gemini handle it (e.g. "crisps" from receipts)
         if category:
             from app.services.dashboard_service import _COMMUTE_SUBCATEGORIES
-            _COMMUTE_ALIASES = {
+
+            cat_lower = category.lower()
+
+            # Words that mean the whole commute group
+            _COMMUTE_GROUP = {
                 "commute", "transport", "transportation", "transporte", "transportes",
                 "deslocação", "deslocacao", "viagem", "viagens", "travel",
-                "uber", "gas", "tolls", "toll", "public transport",
             }
-            cat_lower = category.lower()
-            if cat_lower in _COMMUTE_ALIASES:
-                db_cats = {c.lower() for c in _COMMUTE_SUBCATEGORIES}
+            # Synonyms that map to a single DB category (lowercase DB name)
+            _SINGLE_ALIAS: dict[str, str] = {
+                # Gas
+                "gas": "gas", "petrol": "gas", "fuel": "gas",
+                "gasoline": "gas", "gasolina": "gas", "diesel": "gas",
+                # Uber / taxi
+                "uber": "uber", "taxi": "uber", "bolt": "uber", "ride": "uber", "cabify": "uber",
+                # Tolls
+                "toll": "tolls", "tolls": "tolls", "portagem": "tolls", "portagens": "tolls",
+                "via verde": "tolls",
+                # Public transport
+                "public transport": "public transport", "metro": "public transport",
+                "bus": "public transport", "train": "public transport",
+                "comboio": "public transport", "autocarro": "public transport",
+                # Food
+                "food": "food", "comida": "food", "supermercado": "food",
+                "grocery": "food", "groceries": "food", "mercearia": "food",
+                # Eat Out
+                "eat out": "eat out", "eating out": "eat out", "restaurant": "eat out",
+                "restaurante": "eat out", "comer fora": "eat out",
+                # Others
+                "health": "health", "saúde": "health", "saude": "health",
+                "sport": "sport", "desporto": "sport", "fitness": "sport",
+                "entertainment": "entertainment", "lazer": "entertainment",
+                "subscriptions": "subscriptions", "assinaturas": "subscriptions",
+                "utilities": "utilities", "utilidades": "utilities",
+                "house chemicals": "house chemicals", "limpeza": "house chemicals",
+                "beauty": "beauty", "beleza": "beauty",
+                "taxes": "taxes", "impostos": "taxes",
+            }
+
+            if cat_lower in _COMMUTE_GROUP:
+                db_cats: set[str] | None = {c.lower() for c in _COMMUTE_SUBCATEGORIES}
+            elif cat_lower in _SINGLE_ALIAS:
+                db_cats = {_SINGLE_ALIAS[cat_lower]}
             else:
-                # For other categories normalise common synonyms to the DB spelling
-                _ALIASES: dict[str, str] = {
-                    "food": "food", "comida": "food", "supermercado": "food",
-                    "grocery": "food", "groceries": "food", "mercearia": "food",
-                    "eat out": "eat out", "eating out": "eat out", "restaurant": "eat out",
-                    "restaurante": "eat out", "comer fora": "eat out",
-                    "health": "health", "saúde": "health", "saude": "health",
-                    "sport": "sport", "desporto": "sport", "fitness": "sport",
-                    "entertainment": "entertainment", "lazer": "entertainment",
-                    "subscriptions": "subscriptions", "assinaturas": "subscriptions",
-                    "utilities": "utilities", "utilidades": "utilities",
-                    "house chemicals": "house chemicals", "limpeza": "house chemicals",
-                    "beauty": "beauty", "beleza": "beauty",
-                    "taxes": "taxes", "impostos": "taxes",
-                }
-                normalised = _ALIASES.get(cat_lower, cat_lower)
-                db_cats = {normalised}
-            transactions = [
-                t for t in transactions
-                if (t.category or "").lower() in db_cats
-            ]
+                # Unknown / too specific (e.g. "crisps") — don't filter bank transactions
+                # by category; Gemini will use both tx_rows and item_rows to answer.
+                db_cats = None
+
+            if db_cats is not None:
+                transactions = [
+                    t for t in transactions
+                    if (t.category or "").lower() in db_cats
+                ]
 
         receipt_repo = ReceiptRepository(self.session)
         receipts = await receipt_repo.list_receipts_between(
