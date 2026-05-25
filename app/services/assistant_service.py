@@ -1465,11 +1465,17 @@ class AssistantService:
 
         # Pre-filter by category in Python so Gemini only sees the relevant rows and
         # cannot accidentally over-count by pulling in unrelated categories.
+        # "Commute" is a virtual grouping on the dashboard — map it to the actual DB categories.
         if category:
+            from app.services.dashboard_service import _COMMUTE_SUBCATEGORIES
             cat_lower = category.lower()
+            if cat_lower == "commute":
+                db_cats = {c.lower() for c in _COMMUTE_SUBCATEGORIES}
+            else:
+                db_cats = {cat_lower}
             transactions = [
                 t for t in transactions
-                if (t.category or "").lower() == cat_lower
+                if (t.category or "").lower() in db_cats
             ]
 
         receipt_repo = ReceiptRepository(self.session)
