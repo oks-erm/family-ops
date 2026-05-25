@@ -1253,7 +1253,7 @@ async def dashboard_page(request: Request) -> str:
       <div class="row">
         <div class="row-main">
           <div class="row-title">${escapeHtml(row.description)}</div>
-          <div class="row-sub">${escapeHtml(row.date)}${row.merchant ? ` · ${escapeHtml(row.merchant)}` : ""} · ${escapeHtml(row.source)}</div>
+          <div class="row-sub">${escapeHtml(row.date)}${row.merchant ? ` · ${escapeHtml(row.merchant)}` : ""}${row.subcategory ? ` · ${escapeHtml(row.subcategory)}` : ` · ${escapeHtml(row.source)}`}</div>
         </div>
         <div class="amount">${escapeHtml(row.amount)}</div>
       </div>
@@ -1281,6 +1281,23 @@ async def dashboard_page(request: Request) -> str:
           </section>
           <section class="mini-panel" style="margin-top:14px">
             <h2>Food Expenses</h2>
+            <div class="rows">${renderExpenseRows(details.expenses || [])}</div>
+          </section>
+        `;
+      } else if (category === "Commute") {
+        document.querySelector("#category-modal-body").innerHTML = `
+          <div class="modal-grid">
+            <section class="mini-panel">
+              <h2>By Type</h2>
+              ${renderPieChart(details.subcategory_breakdown || [], 5)}
+            </section>
+            <section class="mini-panel">
+              <h2>Breakdown</h2>
+              ${renderDetailBars(details.subcategory_breakdown || [])}
+            </section>
+          </div>
+          <section class="mini-panel" style="margin-top:14px">
+            <h2>Commute Expenses</h2>
             <div class="rows">${renderExpenseRows(details.expenses || [])}</div>
           </section>
         `;

@@ -19,6 +19,9 @@ from app.services.recommendation_service import RecommendationService
 from app.services.shopping_category_service import ShoppingCategoryService
 
 
+_COMMUTE_SUBCATEGORIES: frozenset[str] = frozenset({"Uber", "Gas", "Tolls", "Public Transport"})
+
+
 class DashboardService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -204,9 +207,10 @@ class DashboardService:
         for transaction in transactions:
             if transaction.transaction_type != TransactionType.expense:
                 continue
-            totals[transaction.category or "Other"] += self.finance_repository.amount_as_decimal(
-                transaction.amount
-            )
+            cat = transaction.category or "Other"
+            if cat in _COMMUTE_SUBCATEGORIES:
+                cat = "Commute"
+            totals[cat] += self.finance_repository.amount_as_decimal(transaction.amount)
         return [
             {"label": category, "value": self._money(amount)}
             for category, amount in sorted(totals.items(), key=lambda item: item[1], reverse=True)
@@ -229,6 +233,8 @@ class DashboardService:
             if category == "Food":
                 detail["store_breakdown"] = self._food_store_breakdown(receipts, transactions)
                 detail["nutrient_breakdown"] = self._food_nutrient_breakdown(receipts)
+            elif category == "Commute":
+                detail["subcategory_breakdown"] = self._commute_subcategory_breakdown(transactions)
             details[category] = detail
         return details
 
@@ -255,20 +261,37 @@ class DashboardService:
         for transaction in transactions:
             if transaction.transaction_type != TransactionType.expense:
                 continue
-            if (transaction.category or "Other") != category:
+            cat = transaction.category or "Other"
+            effective_cat = "Commute" if cat in _COMMUTE_SUBCATEGORIES else cat
+            if effective_cat != category:
                 continue
-            rows.append(
-                {
-                    "date": self._dashboard_transaction_date(transaction).isoformat(),
-                    "description": transaction.description,
-                    "merchant": transaction.merchant or "",
-                    "amount": self._money(
-                        self.finance_repository.amount_as_decimal(transaction.amount)
-                    ),
-                    "source": transaction.source,
-                }
-            )
+            row: dict[str, str] = {
+                "date": self._dashboard_transaction_date(transaction).isoformat(),
+                "description": transaction.description,
+                "merchant": transaction.merchant or "",
+                "amount": self._money(
+                    self.finance_repository.amount_as_decimal(transaction.amount)
+                ),
+                "source": transaction.source,
+            }
+            if category == "Commute":
+                row["subcategory"] = cat
+            rows.append(row)
         return sorted(rows, key=lambda row: row["date"], reverse=True)
+
+    def _commute_subcategory_breakdown(
+        self,
+        transactions: list[object],
+    ) -> list[dict[str, object]]:
+        totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+        for transaction in transactions:
+            if transaction.transaction_type != TransactionType.expense:
+                continue
+            cat = transaction.category or "Other"
+            if cat not in _COMMUTE_SUBCATEGORIES:
+                continue
+            totals[cat] += self.finance_repository.amount_as_decimal(transaction.amount)
+        return self._breakdown_rows(totals)
 
     def _food_store_breakdown(
         self,
