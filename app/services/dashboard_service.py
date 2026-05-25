@@ -869,11 +869,12 @@ class DashboardService:
             price = DashboardService._decimal_price(quote.price)
             if price is None or price <= 0:
                 continue
-            candidates.append((price, DashboardService._store_rank(quote.store_name), quote))
+            is_manual = 0 if quote.source == "dashboard_manual" else 1
+            candidates.append((is_manual, price, DashboardService._store_rank(quote.store_name), quote))
 
         if not candidates:
             return None
-        return sorted(candidates, key=lambda candidate: (candidate[0], candidate[1]))[0][2]
+        return sorted(candidates, key=lambda candidate: (candidate[0], candidate[1], candidate[2]))[0][3]
 
     @staticmethod
     def _valid_quote_for_item(*, item_store: str, quote: object) -> bool:
