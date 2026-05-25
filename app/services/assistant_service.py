@@ -1423,16 +1423,16 @@ class AssistantService:
         start_date, end_date = analytics._date_range(today=today, period=period)
 
         finance_repo = FinanceRepository(self.session)
-        transactions = await finance_repo.list_between(
-            household_id=household_id,
-            start_date=start_date,
-            end_date=end_date,
-        )
-
-        # Recategorise "Other"/"Commute" transactions the same way the dashboard does,
-        # so VIAVERDE and similar are correctly labelled before we send rows to the AI.
+        # Load all household transactions and filter with the same date logic the dashboard uses:
+        # _dashboard_transaction_date falls back to created_at when occurred_on is in a different
+        # month (bank screenshots imported late), so list_between would miss those rows.
         from app.services.dashboard_service import DashboardService
-        await DashboardService(self.session)._recategorize_known_other_transactions(transactions)
+        all_transactions = await finance_repo.list_for_household(household_id=household_id)
+        await DashboardService(self.session)._recategorize_known_other_transactions(all_transactions)
+        transactions = [
+            t for t in all_transactions
+            if start_date <= DashboardService._dashboard_transaction_date(t) <= end_date
+        ]
 
         receipt_repo = ReceiptRepository(self.session)
         receipts = await receipt_repo.list_receipts_between(
