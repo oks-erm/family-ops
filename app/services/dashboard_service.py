@@ -552,7 +552,7 @@ class DashboardService:
                 expense_transactions,
                 key=lambda transaction: (self._dashboard_transaction_date(transaction), transaction.created_at),
                 reverse=True,
-            )[:30]
+            )
         ]
 
     def _income_transactions(self, transactions: list[object]) -> list[dict[str, str]]:
