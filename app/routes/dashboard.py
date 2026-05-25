@@ -1376,14 +1376,18 @@ async def dashboard_page(request: Request) -> str:
         .map(item => `<div class="recommendation">${escapeHtml(item)}</div>`)
         .join("");
 
-      const shoppingItems = flattenShopping(data.shopping);
-      setCollapseButton("categories", shoppingItems.length, false);
-      document.querySelector("#categories").innerHTML = shoppingItems.length ? `
-        <div class="category">
-          <div class="category-title">Pending</div>
-          <div class="rows">
-            ${shoppingItems.map((item, index) => `
-              <div class="row ${index >= 6 ? "hidden-row" : ""}" data-collapsible-row="categories">
+      const totalShoppingItems = (data.shopping || []).reduce((s, g) => s + (g.items || []).length, 0);
+      setCollapseButton("categories", totalShoppingItems, false);
+      const activeShoppingGroups = (data.shopping || []).filter(g => g.items && g.items.length > 0);
+      if (!activeShoppingGroups.length) {
+        document.querySelector("#categories").innerHTML = `<div class="empty">No pending shopping items.</div>`;
+      } else {
+        let shoppingRowCount = 0;
+        document.querySelector("#categories").innerHTML = activeShoppingGroups.map(group => {
+          const rows = group.items.map(item => {
+            const hidden = shoppingRowCount++ >= 6 ? " hidden-row" : "";
+            return `
+              <div class="row${hidden}" data-collapsible-row="categories">
                 <div class="row-main">
                   <div class="row-title">${escapeHtml(item.name)} <span class="muted">(${escapeHtml(item.store)})</span></div>
                   <div class="price-meta">
@@ -1403,11 +1407,11 @@ async def dashboard_page(request: Request) -> str:
                   ${item.price ? `<div class="amount">${escapeHtml(item.price)}</div>` : ""}
                   <button class="delete-btn" type="button" aria-label="Remove shopping item" title="Remove shopping item" data-shopping-delete="${escapeHtml(item.id)}">${iconSvg("delete")}</button>
                 </div>
-              </div>
-            `).join("")}
-          </div>
-        </div>
-      ` : `<div class="empty">No pending shopping items.</div>`;
+              </div>`;
+          }).join("");
+          return `<div class="category"><div class="category-title">${escapeHtml(group.category)}</div><div class="rows">${rows}</div></div>`;
+        }).join("");
+      }
 
       setCollapseButton("promotions", data.promotions.length, false);
       document.querySelector("#promotions").innerHTML = data.promotions.length ? data.promotions.map((item, index) => `

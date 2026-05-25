@@ -107,6 +107,11 @@ class FinanceCategoryService:
                 "bp",
                 "cepsa",
                 "prio",
+                "posto",
+                "estacao",
+                "est servic",
+                "veiga seabra",
+                "veiga e seabra",
             },
             "Tolls": {
                 "toll",

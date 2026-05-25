@@ -155,11 +155,14 @@ class DashboardService:
 
     async def _recategorize_known_other_transactions(self, transactions: list[object]) -> None:
         category_service = FinanceCategoryService()
+        # Categories that should be re-evaluated ("Commute" was split into sub-categories)
+        reclassify_from = {"Other", "Commute"}
+        commute_subcategories = {"Uber", "Gas", "Tolls", "Public Transport"}
         changed = False
         for transaction in transactions:
             if transaction.transaction_type != TransactionType.expense:
                 continue
-            if transaction.category and transaction.category != "Other":
+            if transaction.category and transaction.category not in reclassify_from:
                 continue
             text = " ".join(
                 part
@@ -167,10 +170,15 @@ class DashboardService:
                 if part
             )
             category = category_service.category_for(text)
-            if category == "Other":
-                continue
-            transaction.category = category
-            changed = True
+            if transaction.category == "Commute":
+                # Only update if we can assign a specific sub-category
+                if category in commute_subcategories:
+                    transaction.category = category
+                    changed = True
+            else:
+                if category != "Other":
+                    transaction.category = category
+                    changed = True
         if changed:
             await self.session.commit()
 
