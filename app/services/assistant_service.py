@@ -440,8 +440,14 @@ class AssistantService:
                 move_target = target
             elif source in {"shopping", "task", "plan"}:
                 move_target = "task" if source == "shopping" else "shopping"
+            elif date_ref in {"tomorrow", "today", "tonight"}:
+                move_target = date_ref
+            elif target and target not in {"any", ""}:
+                move_target = target  # store name
+            elif store_name:
+                move_target = store_name  # store name from store_name field
             else:
-                move_target = "tomorrow" if date_ref == "tomorrow" else "today" if date_ref == "today" else "task"
+                move_target = "task"
             return await self._move_item(
                 user_id=user_id,
                 request={"name": item, "target": move_target},
@@ -1339,9 +1345,31 @@ class AssistantService:
                 text=f"Moved from tasks to shopping list: {saved.name}.",
             )
 
+        # Treat target as a store name to reassign on the shopping list
+        _anywhere_aliases = {"anywhere", "qualquer sitio", "qualquer sítio", "qualquer loja"}
+        new_store = None if target.lower() in _anywhere_aliases else target
+        reassigned = await self.shopping_repository.reassign_store(
+            household_id=household_id,
+            item_name=name,
+            new_store=new_store,
+        )
+        if reassigned is None:
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text=f"I could not find '{name}' on the shopping list.",
+            )
+        store_label = new_store or "anywhere"
+        await self.activity_repository.log(
+            household_id=household_id,
+            user_id=user_id,
+            action=ActivityAction.updated,
+            entity_type="shopping_item",
+            entity_id=reassigned.id,
+            summary=f"Reassigned shopping item store: {reassigned.name} → {store_label}",
+        )
         return AssistantResponse(
-            intent=AssistantIntent.unknown,
-            text="I can move an item to tomorrow, to tasks, to plan, or to shopping.",
+            intent=AssistantIntent.item_moved,
+            text=f"Moved {reassigned.name} to {store_label}.",
         )
 
     async def _expense_summary(
@@ -1851,6 +1879,21 @@ class AssistantService:
                 "target": "tomorrow",
                 "date_text": "tomorrow",
             }
+        # Store reassignment: "move beef to Lidl", "move lentils to anywhere"
+        _reserved_targets = {
+            "tomorrow", "today", "tonight", "this week", "next week",
+            "shopping", "shopping list", "task", "tasks", "plan",
+        }
+        match = re.match(
+            r"^(?:move|change|put|reassign)\s+(.+?)\s+(?:to|para(?:\s+(?:o|a|os|as))?)\s+(.+)$",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            name_part = match.group(1).strip(" .")
+            target_part = match.group(2).strip(" .")
+            if target_part.lower() not in _reserved_targets:
+                return {"name": name_part, "target": target_part, "date_text": ""}
         return None
 
     @staticmethod

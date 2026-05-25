@@ -100,6 +100,26 @@ class ShoppingRepository:
                 await self.session.refresh(item)
         return matched
 
+    async def reassign_store(
+        self,
+        *,
+        household_id: UUID,
+        item_name: str,
+        new_store: str | None,
+    ) -> ShoppingItem | None:
+        pending_items = await self._list_all_pending(household_id=household_id)
+        normalized_target = self._normalize_name(item_name)
+        matched = next(
+            (i for i in pending_items if self._names_match(self.normalizer.normalize(i.name), normalized_target)),
+            None,
+        )
+        if matched is None:
+            return None
+        matched.store_name_raw = new_store
+        await self.session.commit()
+        await self.session.refresh(matched)
+        return matched
+
     async def remove_pending_item_by_id(
         self,
         *,
