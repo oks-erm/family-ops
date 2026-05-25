@@ -198,11 +198,13 @@ class AiRouter:
         question: str,
         tx_rows: list[dict[str, str]],
         item_rows: list[dict[str, str]],
+        breakdown: bool = False,
     ) -> str:
         """Answer a natural-language finance question from raw transaction + receipt data.
 
         tx_rows: list of {date, category, description, amount, currency, type}
         item_rows: list of {date, store, name, amount}
+        breakdown: if True, include an itemised list; otherwise summary only.
         Returns a short plain-text answer.
         """
         if not self.settings.gemini_api_key:
@@ -218,11 +220,16 @@ class AiRouter:
             for r in item_rows[:500]
         ) or "(no scanned receipt items in this period)"
 
+        if breakdown:
+            detail_instruction = "Show total, number of transactions, then list every matching entry (date, description, amount)."
+        else:
+            detail_instruction = "Reply with ONE concise line: total amount and number of transactions. No list, no examples."
+
         prompt = (
             "You are a household finance assistant. Answer the question below using ONLY "
             "the data provided. Do not invent amounts. Sum amounts yourself.\n"
-            "Show total, number of entries, and up to 10 itemised examples.\n"
-            "Respond in the same language as the question. Be concise.\n\n"
+            f"{detail_instruction}\n"
+            "Respond in the same language as the question.\n\n"
             f"Question: {question}\n\n"
             "Bank transactions (date | type | category | description | amount currency):\n"
             f"{tx_lines}\n\n"

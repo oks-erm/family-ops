@@ -61,6 +61,12 @@ class AssistantService:
         self.ai_router = AiRouter(settings)
 
     async def handle_text(self, *, user_id: UUID, text: str) -> AssistantResponse:
+        # Deterministic move parser runs first — "move X to Y" is unambiguous and the AI
+        # tends to misclassify it as shopping_summary or going_to_store.
+        move_request = self._parse_move_request(text)
+        if move_request is not None:
+            return await self._move_item(user_id=user_id, request=move_request)
+
         ai_result = await self.ai_router.classify_light_intent(text=text)
         ai_response = await self._handle_ai_classification(
             user_id=user_id,
@@ -153,10 +159,6 @@ class AssistantService:
         routine_update = self._parse_routine_duration_update(text)
         if routine_update is not None:
             return await self._update_routine_duration(user_id=user_id, title=routine_update[0], minutes=routine_update[1])
-
-        move_request = self._parse_move_request(text)
-        if move_request is not None:
-            return await self._move_item(user_id=user_id, request=move_request)
 
         remove_request = self._parse_remove_request(text)
         if remove_request is not None:
@@ -1441,9 +1443,11 @@ class AssistantService:
             end_date=end_date,
         )
 
+        # Use the effective display date (same as dashboard) so Gemini sees the correct year,
+        # not the original occurred_on which may be from a prior year's imported statement.
         tx_rows = [
             {
-                "date": str(t.occurred_on),
+                "date": str(DashboardService._dashboard_transaction_date(t)),
                 "type": t.transaction_type.value if hasattr(t.transaction_type, "value") else str(t.transaction_type),
                 "category": t.category or "",
                 "description": t.description or "",
@@ -1469,11 +1473,16 @@ class AssistantService:
             if category
             else f"What was the income for {period}?"
         )
+        breakdown = original_question is not None and any(
+            kw in original_question.lower()
+            for kw in ("breakdown", "details", "show me", "list", "itemis", "detalhe")
+        )
 
         text = await self.ai_router.answer_finance_question(
             question=question,
             tx_rows=tx_rows,
             item_rows=item_rows,
+            breakdown=breakdown,
         )
         return AssistantResponse(intent=AssistantIntent.expense_summary, text=text)
 
@@ -2066,6 +2075,13 @@ class AssistantService:
         if match:
             name_part = match.group(1).strip(" .")
             target_part = match.group(2).strip(" .")
+            # Strip trailing "shopping list" / "lista de compras" so "Online shopping list" → "Online"
+            target_part = re.sub(
+                r"\s+(?:shopping list|shopping|lista de compras|lista)$",
+                "",
+                target_part,
+                flags=re.IGNORECASE,
+            ).strip()
             if target_part.lower() not in _reserved_targets:
                 return {"name": name_part, "target": target_part, "date_text": ""}
         return None
