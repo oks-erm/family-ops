@@ -158,6 +158,29 @@ async def delete_receipt(request: Request, receipt_id: UUID) -> dict[str, bool]:
         return {"deleted": True}
 
 
+@router.delete("/api/transactions/{transaction_id}")
+async def delete_transaction(request: Request, transaction_id: UUID) -> dict[str, bool]:
+    async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+            raise HTTPException(status_code=401, detail="Dashboard login required.")
+        deleted = await FinanceRepository(session).delete_transaction(
+            transaction_id=transaction_id,
+            household_id=household.id,
+        )
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Transaction not found.")
+        await ActivityRepository(session).log(
+            household_id=household.id,
+            user_id=dashboard_user.id,
+            action=ActivityAction.deleted,
+            entity_type="transaction",
+            entity_id=transaction_id,
+            summary="Deleted bank transaction from dashboard.",
+        )
+        return {"deleted": True}
+
+
 @router.delete("/api/shopping/items/{shopping_item_id}")
 async def delete_shopping_item(request: Request, shopping_item_id: UUID) -> dict[str, bool]:
     async with async_session_factory() as session:
@@ -1476,6 +1499,11 @@ async def dashboard_page(request: Request) -> str:
               ${renderCategoryOptions(data.finance_categories || [], item.category)}
             </select>
             <div class="amount">-${escapeHtml(item.amount)}</div>
+            <button class="delete-btn" type="button" aria-label="Delete transaction" title="Delete transaction" data-transaction-id="${escapeHtml(item.id)}">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 7h2v8h-2v-8Zm4 0h2v8h-2v-8ZM6 9h12l-1 12H7L6 9Z" fill="currentColor"/>
+              </svg>
+            </button>
           </div>
         </div>
       `).join("") : `<div class="empty">No expense transactions logged this month.</div>`;
@@ -1650,6 +1678,23 @@ async def dashboard_page(request: Request) -> str:
         }
         toast("Must task deleted.");
         await loadRoutines();
+        return;
+      }
+
+      const transactionDeleteBtn = event.target.closest("[data-transaction-id]");
+      if (transactionDeleteBtn) {
+        const transactionId = transactionDeleteBtn.dataset.transactionId;
+        const confirmed = window.confirm("Delete this bank transaction? You can then re-add it as a receipt for item-level tracking.");
+        if (!confirmed) return;
+        transactionDeleteBtn.disabled = true;
+        const response = await fetch(`/api/transactions/${transactionId}`, { method: "DELETE" });
+        if (!response.ok) {
+          transactionDeleteBtn.disabled = false;
+          toast("Could not delete transaction.");
+          return;
+        }
+        toast("Transaction deleted. You can now add the receipt via the bot.");
+        await loadDashboard();
         return;
       }
 

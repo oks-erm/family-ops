@@ -100,6 +100,25 @@ class FinanceRepository:
         await self.session.refresh(transaction)
         return transaction
 
+    async def delete_transaction(
+        self,
+        *,
+        transaction_id: UUID,
+        household_id: UUID,
+    ) -> bool:
+        result = await self.session.execute(
+            select(FinancialTransaction).where(
+                FinancialTransaction.id == transaction_id,
+                FinancialTransaction.household_id == household_id,
+            )
+        )
+        transaction = result.scalar_one_or_none()
+        if transaction is None:
+            return False
+        await self.session.delete(transaction)
+        await self.session.commit()
+        return True
+
     @staticmethod
     def amount_as_decimal(value: str | None) -> Decimal:
         if not value:
