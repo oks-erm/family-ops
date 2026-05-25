@@ -866,7 +866,7 @@ class DashboardService:
                 continue
             if not DashboardService._valid_quote_for_item(item_store=item_store, quote=quote):
                 continue
-            if item_store and item_store != "anywhere" and DashboardService._normalise(quote.store_name) != item_store:
+            if item_store and item_store not in {"anywhere", "online"} and DashboardService._normalise(quote.store_name) != item_store:
                 continue
             price = DashboardService._decimal_price(quote.price)
             if price is None or price <= 0:

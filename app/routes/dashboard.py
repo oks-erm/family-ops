@@ -1440,7 +1440,7 @@ async def dashboard_page(request: Request) -> str:
                     <button class="link-btn icon-btn" type="button" data-price-toggle="${escapeHtml(item.id)}" title="${item.price ? 'Edit price' : 'Add price'}" aria-label="${item.price ? 'Edit price' : 'Add price'}">${iconSvg(item.price ? "edit" : "add")}</button>
                   </div>
                   <form class="price-form" data-price-form="${escapeHtml(item.id)}">
-                    <input name="store_name" placeholder="Store" value="${escapeHtml(item.store !== "anywhere" ? item.store : "Lidl")}">
+                    <input name="store_name" placeholder="Store" value="${escapeHtml(item.store !== "anywhere" && item.store !== "online" ? item.store : "")}">
                     <input name="price" inputmode="decimal" placeholder="Price">
                     <button type="submit">Save</button>
                   </form>
