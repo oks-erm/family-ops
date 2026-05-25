@@ -1228,7 +1228,7 @@ async def dashboard_page(request: Request) -> str:
         `;
       }).join("") : `<div class="empty">${escapeHtml(emptyText)}</div>`;
     };
-    const palette = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#06b6d4", "#f97316"];
+    const palette = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#06b6d4", "#f97316", "#84cc16"];
     const C = 2 * Math.PI * 42; // SVG circumference for r=42
     const consolidateRows = (rawRows, maxSlices) => {
       const sorted = [...rawRows].sort((a, b) => Number(b.raw_value || 0) - Number(a.raw_value || 0));
