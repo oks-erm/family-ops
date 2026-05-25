@@ -361,41 +361,50 @@ class DashboardService:
         lowered = name.lower()
         groups = {
             "Meat & Fish": (
-                "chicken", "frango", "beef", "pork", "carne", "fish", "peixe",
-                "salmon", "tuna", "atum", "ham", "fiambre", "presunto",
+                "chicken", "frango", "beef", "pork", "porco", "carne", "fish", "peixe",
+                "salmon", "salmao", "salmã", "tuna", "atum", "ham", "fiambre", "presunto",
                 "salsich", "salsicha", "linguica", "chourico", "alheira",
                 "bacalhau", "camarao", "camarão", "lulas", "sardinha",
+                "pescada", "panga", "truta", "dourada", "robalo",
+                "vitela", "peru", "borrego", "entrec", "bife",
             ),
             "Veg": (
-                "broccoli", "brócolo", "tomato", "tomate", "lettuce", "alface",
+                "broccoli", "brocol", "brócolo", "tomato", "tomate", "lettuce", "alface",
                 "onion", "cebola", "pepper", "pimento", "cenoura", "carrot",
                 "vegetable", "espinafre", "espinafres", "couve", "curgete",
                 "beringela", "pepino", "cogumelo", "cogumelos", "feijao",
                 "ervilhas", "beterraba", "alho frances", "funcho", "courgette",
+                "alho", "nabo", "abobora", "abobrinha", "rucula",
             ),
             "Fruit": (
                 "apple", "maçã", "maca", "banana", "orange", "laranja", "avocado",
                 "abacate", "fruit", "berries", "morang", "uva", "pera", "manga",
                 "ananas", "melao", "melão", "kiwi", "melancia", "limao", "limão",
-                "cereja", "mirtilo", "framboesa",
+                "cereja", "mirtil", "framboesa", "tamaras", "figo", "ameixa",
+                "pessego", "abacaxi", "lichia",
             ),
             "Bread & Grains": (
-                "bread", "pão", "rice", "arroz", "pasta", "massa", "oat",
-                "aveia", "flour", "cereal", "lentil", "feijao", "graos",
+                "bread", "pão", "pao", "rice", "arroz", "pasta", "massa", "oat",
+                "aveia", "flour", "farinha", "cereal", "lentil", "lentilha", "graos",
+                "grao", "chickpea", "grao-de-bico", "quinoa", "espelta",
+                "milho", "trigo", "tapioca", "cuscus", "bulgur",
             ),
             "Dairy": (
                 "milk", "leite", "cheese", "queijo", "yogurt", "iogurte",
                 "butter", "manteiga", "cream", "natas", "nata", "requeijao",
-                "requeijão",
+                "requeijão", "cottage", "ovo ", "ovos", "ovo,",
             ),
             "Sweets & Snacks": (
                 "chocolate", "cookie", "biscuit", "bolacha", "sweet", "candy",
                 "snack", "chips", "crisps", "gelado", "bolo", "pastel",
-                "amendoim", "mel",
+                "amendoim", "mel", "caju", "noz", "amendoa", "pinhao",
+                "nuts", "almond", "cashew", "walnut", "pistachio", "pistacio",
+                "granola", "barrinha", "biscoito", "wafer",
             ),
             "Drinks": (
                 "water", "água", "agua", "juice", "sumo", "cola", "tonic",
                 "beer", "wine", "vinho", "cerveja", "refrigerante",
+                "kombucha", "chá", "cha ", "cafe", "coffee",
             ),
         }
         for group, tokens in groups.items():

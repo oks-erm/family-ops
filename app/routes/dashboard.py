@@ -843,34 +843,35 @@ async def dashboard_page(request: Request) -> str:
       border: 1px solid var(--line);
       border-radius: 22px;
       box-shadow: 0 24px 70px rgba(15, 23, 42, .22);
-      padding: 20px;
+      padding: 28px;
     }
     .modal-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 14px;
-      margin-bottom: 16px;
+      margin-bottom: 20px;
     }
     .modal-grid {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      gap: 14px;
-      margin-bottom: 14px;
+      gap: 20px;
+      margin-bottom: 20px;
     }
     .mini-panel {
       border: 1px solid var(--line);
       border-radius: 16px;
       background: var(--surface-soft);
-      padding: 14px;
+      padding: 20px;
     }
+    .mini-panel h2 { margin-bottom: 16px; }
     .pie-chart {
       width: min(280px, 100%);
       height: auto;
       display: block;
       margin: 0 auto 10px;
     }
-    .detail-bars { display: grid; gap: 8px; }
+    .detail-bars { display: grid; gap: 12px; }
     .detail-bar-row {
       display: grid;
       grid-template-columns: minmax(90px, 130px) minmax(100px, 1fr) 84px;
