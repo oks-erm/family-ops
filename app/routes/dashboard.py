@@ -688,13 +688,18 @@ async def dashboard_page(request: Request) -> str:
       justify-content: flex-end;
     }
     .category-select {
-      min-width: 128px;
+      width: 100px;
+      min-width: 0;
+      max-width: 100px;
       border: 1px solid #d8dde6;
       background: #fff;
       color: var(--ink);
       border-radius: 999px;
-      padding: 7px 28px 7px 11px;
+      padding: 7px 22px 7px 11px;
       font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .bar-row {
       display: grid;
