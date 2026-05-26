@@ -525,349 +525,349 @@ async def delete_routine(request: Request, routine_id: UUID) -> dict[str, bool]:
         return {"deleted": True}
 
 
-    @router.get("/api/tasks/day")
-    async def day_tasks_data(request: Request, day: date | None = None) -> dict[str, object]:
-      async with async_session_factory() as session:
-        dashboard_user, household = await _dashboard_context(request, session)
-        if dashboard_user is None or household is None:
-          raise HTTPException(status_code=401, detail="Dashboard login required.")
+@router.get("/api/tasks/day")
+async def day_tasks_data(request: Request, day: date | None = None) -> dict[str, object]:
+  async with async_session_factory() as session:
+    dashboard_user, household = await _dashboard_context(request, session)
+    if dashboard_user is None or household is None:
+      raise HTTPException(status_code=401, detail="Dashboard login required.")
 
-        selected_day = day or now_in_timezone(dashboard_user.timezone).date()
-        task_repository = TaskRepository(session)
-        pending_tasks = await task_repository.list_pending_for_user(
-          user_id=dashboard_user.id,
-          through_date=selected_day,
-        )
-        day_tasks = [task for task in pending_tasks if task.due_date in {None, selected_day}]
+    selected_day = day or now_in_timezone(dashboard_user.timezone).date()
+    task_repository = TaskRepository(session)
+    pending_tasks = await task_repository.list_pending_for_user(
+      user_id=dashboard_user.id,
+      through_date=selected_day,
+    )
+    day_tasks = [task for task in pending_tasks if task.due_date in {None, selected_day}]
 
-        calendar_events = await CalendarService(session).list_events_for_day(
-          household_id=household.id,
-          day=selected_day,
-          timezone=dashboard_user.timezone,
-        )
-        conversation = await PlanningRepository(session).get_conversation(
-          user_id=dashboard_user.id,
-          plan_date=selected_day,
-        )
-        note_events = []
-        note_parts = [part.strip() for part in (conversation.unusual_notes or "").split(";") if part.strip()] if conversation else []
-        for idx, part in enumerate(note_parts):
-          parsed = PlanningService._fixed_events_from_notes(part)
-          for event in parsed:
-            note_events.append(
-              {
-                "title": str(event.get("title") or "Event"),
-                "start": str(event.get("start") or ""),
-                "end": str(event.get("end") or ""),
-                "all_day": bool(event.get("all_day")),
-                "source": "note",
-                "editable": True,
-                "event_ref": f"note:{idx}",
-              }
-            )
-
-        events = [
+    calendar_events = await CalendarService(session).list_events_for_day(
+      household_id=household.id,
+      day=selected_day,
+      timezone=dashboard_user.timezone,
+    )
+    conversation = await PlanningRepository(session).get_conversation(
+      user_id=dashboard_user.id,
+      plan_date=selected_day,
+    )
+    note_events = []
+    note_parts = [part.strip() for part in (conversation.unusual_notes or "").split(";") if part.strip()] if conversation else []
+    for idx, part in enumerate(note_parts):
+      parsed = PlanningService._fixed_events_from_notes(part)
+      for event in parsed:
+        note_events.append(
           {
-            "title": event.title,
-            "start": event.starts_at.strftime("%H:%M"),
-            "end": event.ends_at.strftime("%H:%M"),
-            "all_day": False,
-            "source": "calendar",
-            "editable": False,
+            "title": str(event.get("title") or "Event"),
+            "start": str(event.get("start") or ""),
+            "end": str(event.get("end") or ""),
+            "all_day": bool(event.get("all_day")),
+            "source": "note",
+            "editable": True,
+            "event_ref": f"note:{idx}",
           }
-          for event in calendar_events
-        ]
-        if conversation and conversation.work_start and conversation.work_end:
-          events.append(
-            {
-              "title": "Work",
-              "start": conversation.work_start.strftime("%H:%M"),
-              "end": conversation.work_end.strftime("%H:%M"),
-              "all_day": False,
-              "source": "work",
-              "editable": False,
-            }
-          )
-        events.extend(note_events)
+        )
 
-        return {
-          "day": selected_day.isoformat(),
-          "items": [
-            {
-              "id": str(task.id),
-              "title": task.title,
-              "due_date": task.due_date.isoformat() if task.due_date else None,
-              "category": task.category,
-              "is_must": (task.category or "").strip().casefold() == "routine",
-            }
-            for task in day_tasks
-          ],
-          "events": events,
+    events = [
+      {
+        "title": event.title,
+        "start": event.starts_at.strftime("%H:%M"),
+        "end": event.ends_at.strftime("%H:%M"),
+        "all_day": False,
+        "source": "calendar",
+        "editable": False,
+      }
+      for event in calendar_events
+    ]
+    if conversation and conversation.work_start and conversation.work_end:
+      events.append(
+        {
+          "title": "Work",
+          "start": conversation.work_start.strftime("%H:%M"),
+          "end": conversation.work_end.strftime("%H:%M"),
+          "all_day": False,
+          "source": "work",
+          "editable": False,
         }
+      )
+    events.extend(note_events)
+
+    return {
+      "day": selected_day.isoformat(),
+      "items": [
+        {
+          "id": str(task.id),
+          "title": task.title,
+          "due_date": task.due_date.isoformat() if task.due_date else None,
+          "category": task.category,
+          "is_must": (task.category or "").strip().casefold() == "routine",
+        }
+        for task in day_tasks
+      ],
+      "events": events,
+    }
 
 
-    @router.delete("/api/events/day")
-    async def delete_day_event(request: Request, day: date, event_ref: str) -> dict[str, bool]:
-      async with async_session_factory() as session:
-        dashboard_user, household = await _dashboard_context(request, session)
-        if dashboard_user is None or household is None:
-          raise HTTPException(status_code=401, detail="Dashboard login required.")
-        if not event_ref.startswith("note:"):
-          raise HTTPException(status_code=400, detail="Only note events can be edited.")
-        try:
-          index = int(event_ref.split(":", 1)[1])
-        except (TypeError, ValueError) as exc:
-          raise HTTPException(status_code=400, detail="Invalid event reference.") from exc
+@router.delete("/api/events/day")
+async def delete_day_event(request: Request, day: date, event_ref: str) -> dict[str, bool]:
+  async with async_session_factory() as session:
+    dashboard_user, household = await _dashboard_context(request, session)
+    if dashboard_user is None or household is None:
+      raise HTTPException(status_code=401, detail="Dashboard login required.")
+    if not event_ref.startswith("note:"):
+      raise HTTPException(status_code=400, detail="Only note events can be edited.")
+    try:
+      index = int(event_ref.split(":", 1)[1])
+    except (TypeError, ValueError) as exc:
+      raise HTTPException(status_code=400, detail="Invalid event reference.") from exc
 
-        planning_repo = PlanningRepository(session)
-        conversation = await planning_repo.get_conversation(user_id=dashboard_user.id, plan_date=day)
-        if conversation is None or not conversation.unusual_notes:
-          raise HTTPException(status_code=404, detail="Event not found.")
-        parts = [part.strip() for part in conversation.unusual_notes.split(";") if part.strip()]
-        if index < 0 or index >= len(parts):
-          raise HTTPException(status_code=404, detail="Event not found.")
+    planning_repo = PlanningRepository(session)
+    conversation = await planning_repo.get_conversation(user_id=dashboard_user.id, plan_date=day)
+    if conversation is None or not conversation.unusual_notes:
+      raise HTTPException(status_code=404, detail="Event not found.")
+    parts = [part.strip() for part in conversation.unusual_notes.split(";") if part.strip()]
+    if index < 0 or index >= len(parts):
+      raise HTTPException(status_code=404, detail="Event not found.")
 
-        removed = parts.pop(index)
-        await planning_repo.save_answer(
-          conversation=conversation,
-          message_text=f"Deleted event from dashboard: {removed}",
-          unusual_notes="; ".join(parts),
-          next_state=PlanningConversationState.complete,
-        )
-        await ActivityRepository(session).log(
-          household_id=household.id,
-          user_id=dashboard_user.id,
-          action=ActivityAction.deleted,
-          entity_type="planning_event",
-          entity_id=None,
-          summary=f"Deleted event from dashboard: {removed}",
-        )
-        return {"deleted": True}
-
-
-    @router.patch("/api/events/day/move")
-    async def move_day_event(request: Request, payload: DayEventMoveRequest) -> dict[str, bool]:
-      async with async_session_factory() as session:
-        dashboard_user, household = await _dashboard_context(request, session)
-        if dashboard_user is None or household is None:
-          raise HTTPException(status_code=401, detail="Dashboard login required.")
-        if payload.day == payload.target_day:
-          raise HTTPException(status_code=400, detail="Source and target day must differ.")
-        if not payload.event_ref.startswith("note:"):
-          raise HTTPException(status_code=400, detail="Only note events can be edited.")
-        try:
-          index = int(payload.event_ref.split(":", 1)[1])
-        except (TypeError, ValueError) as exc:
-          raise HTTPException(status_code=400, detail="Invalid event reference.") from exc
-
-        planning_repo = PlanningRepository(session)
-        source = await planning_repo.get_conversation(user_id=dashboard_user.id, plan_date=payload.day)
-        if source is None or not source.unusual_notes:
-          raise HTTPException(status_code=404, detail="Event not found.")
-        source_parts = [part.strip() for part in source.unusual_notes.split(";") if part.strip()]
-        if index < 0 or index >= len(source_parts):
-          raise HTTPException(status_code=404, detail="Event not found.")
-
-        moved = source_parts.pop(index)
-        await planning_repo.save_answer(
-          conversation=source,
-          message_text=f"Moved event from {payload.day.isoformat()} to {payload.target_day.isoformat()}",
-          unusual_notes="; ".join(source_parts),
-          next_state=PlanningConversationState.complete,
-        )
-
-        target = await planning_repo.get_conversation(user_id=dashboard_user.id, plan_date=payload.target_day)
-        if target is None:
-          target = await planning_repo.start_conversation(
-            user_id=dashboard_user.id,
-            household_id=household.id,
-            plan_date=payload.target_day,
-          )
-        target_parts = [part.strip() for part in (target.unusual_notes or "").split(";") if part.strip()]
-        if moved.casefold() not in {part.casefold() for part in target_parts}:
-          target_parts.append(moved)
-        await planning_repo.save_answer(
-          conversation=target,
-          message_text=f"Moved event in from {payload.day.isoformat()}",
-          unusual_notes="; ".join(target_parts),
-          next_state=PlanningConversationState.complete,
-        )
-        await ActivityRepository(session).log(
-          household_id=household.id,
-          user_id=dashboard_user.id,
-          action=ActivityAction.updated,
-          entity_type="planning_event",
-          entity_id=None,
-          summary=f"Moved event to {payload.target_day.isoformat()}: {moved}",
-        )
-        return {"saved": True}
+    removed = parts.pop(index)
+    await planning_repo.save_answer(
+      conversation=conversation,
+      message_text=f"Deleted event from dashboard: {removed}",
+      unusual_notes="; ".join(parts),
+      next_state=PlanningConversationState.complete,
+    )
+    await ActivityRepository(session).log(
+      household_id=household.id,
+      user_id=dashboard_user.id,
+      action=ActivityAction.deleted,
+      entity_type="planning_event",
+      entity_id=None,
+      summary=f"Deleted event from dashboard: {removed}",
+    )
+    return {"deleted": True}
 
 
-    @router.get("/api/planning-defaults")
-    async def planning_defaults_data(request: Request) -> dict[str, object]:
-      async with async_session_factory() as session:
-        dashboard_user, household = await _dashboard_context(request, session)
-        if dashboard_user is None or household is None:
-          raise HTTPException(status_code=401, detail="Dashboard login required.")
-        defaults = await PlanningRepository(session).get_conversation(
-          user_id=dashboard_user.id,
-          plan_date=DEFAULTS_PLAN_DATE,
-        )
-        if defaults is None:
-          return _extract_defaults_values(work_start=None, work_end=None, notes=None)
-        return _extract_defaults_values(
-          work_start=defaults.work_start,
-          work_end=defaults.work_end,
-          notes=defaults.unusual_notes,
-        )
+@router.patch("/api/events/day/move")
+async def move_day_event(request: Request, payload: DayEventMoveRequest) -> dict[str, bool]:
+  async with async_session_factory() as session:
+    dashboard_user, household = await _dashboard_context(request, session)
+    if dashboard_user is None or household is None:
+      raise HTTPException(status_code=401, detail="Dashboard login required.")
+    if payload.day == payload.target_day:
+      raise HTTPException(status_code=400, detail="Source and target day must differ.")
+    if not payload.event_ref.startswith("note:"):
+      raise HTTPException(status_code=400, detail="Only note events can be edited.")
+    try:
+      index = int(payload.event_ref.split(":", 1)[1])
+    except (TypeError, ValueError) as exc:
+      raise HTTPException(status_code=400, detail="Invalid event reference.") from exc
+
+    planning_repo = PlanningRepository(session)
+    source = await planning_repo.get_conversation(user_id=dashboard_user.id, plan_date=payload.day)
+    if source is None or not source.unusual_notes:
+      raise HTTPException(status_code=404, detail="Event not found.")
+    source_parts = [part.strip() for part in source.unusual_notes.split(";") if part.strip()]
+    if index < 0 or index >= len(source_parts):
+      raise HTTPException(status_code=404, detail="Event not found.")
+
+    moved = source_parts.pop(index)
+    await planning_repo.save_answer(
+      conversation=source,
+      message_text=f"Moved event from {payload.day.isoformat()} to {payload.target_day.isoformat()}",
+      unusual_notes="; ".join(source_parts),
+      next_state=PlanningConversationState.complete,
+    )
+
+    target = await planning_repo.get_conversation(user_id=dashboard_user.id, plan_date=payload.target_day)
+    if target is None:
+      target = await planning_repo.start_conversation(
+        user_id=dashboard_user.id,
+        household_id=household.id,
+        plan_date=payload.target_day,
+      )
+    target_parts = [part.strip() for part in (target.unusual_notes or "").split(";") if part.strip()]
+    if moved.casefold() not in {part.casefold() for part in target_parts}:
+      target_parts.append(moved)
+    await planning_repo.save_answer(
+      conversation=target,
+      message_text=f"Moved event in from {payload.day.isoformat()}",
+      unusual_notes="; ".join(target_parts),
+      next_state=PlanningConversationState.complete,
+    )
+    await ActivityRepository(session).log(
+      household_id=household.id,
+      user_id=dashboard_user.id,
+      action=ActivityAction.updated,
+      entity_type="planning_event",
+      entity_id=None,
+      summary=f"Moved event to {payload.target_day.isoformat()}: {moved}",
+    )
+    return {"saved": True}
 
 
-    @router.put("/api/planning-defaults")
-    async def save_planning_defaults(request: Request, payload: PlanningDefaultsRequest) -> dict[str, bool]:
-      async with async_session_factory() as session:
-        dashboard_user, household = await _dashboard_context(request, session)
-        if dashboard_user is None or household is None:
-          raise HTTPException(status_code=401, detail="Dashboard login required.")
-        planning_repo = PlanningRepository(session)
-        defaults = await planning_repo.get_conversation(
-          user_id=dashboard_user.id,
-          plan_date=DEFAULTS_PLAN_DATE,
-        )
-        if defaults is None:
-          defaults = await planning_repo.start_conversation(
-            user_id=dashboard_user.id,
-            household_id=household.id,
-            plan_date=DEFAULTS_PLAN_DATE,
-          )
-        notes = _build_defaults_notes(payload)
-        await planning_repo.save_answer(
-          conversation=defaults,
-          message_text="Updated planning defaults from dashboard",
-          work_start=_parse_hhmm_or_none(payload.work_start),
-          work_end=_parse_hhmm_or_none(payload.work_end),
-          unusual_notes=notes,
-          next_state=PlanningConversationState.complete,
-        )
-        await ActivityRepository(session).log(
-          household_id=household.id,
-          user_id=dashboard_user.id,
-          action=ActivityAction.updated,
-          entity_type="planning_defaults",
-          entity_id=None,
-          summary="Updated planning defaults from dashboard",
-        )
-        return {"saved": True}
+@router.get("/api/planning-defaults")
+async def planning_defaults_data(request: Request) -> dict[str, object]:
+  async with async_session_factory() as session:
+    dashboard_user, household = await _dashboard_context(request, session)
+    if dashboard_user is None or household is None:
+      raise HTTPException(status_code=401, detail="Dashboard login required.")
+    defaults = await PlanningRepository(session).get_conversation(
+      user_id=dashboard_user.id,
+      plan_date=DEFAULTS_PLAN_DATE,
+    )
+    if defaults is None:
+      return _extract_defaults_values(work_start=None, work_end=None, notes=None)
+    return _extract_defaults_values(
+      work_start=defaults.work_start,
+      work_end=defaults.work_end,
+      notes=defaults.unusual_notes,
+    )
 
 
-    @router.post("/api/tasks")
-    async def create_day_task(request: Request, payload: DayTaskRequest) -> dict[str, object]:
-      async with async_session_factory() as session:
-        dashboard_user, household = await _dashboard_context(request, session)
-        if dashboard_user is None or household is None:
-          raise HTTPException(status_code=401, detail="Dashboard login required.")
-        title = payload.title.strip()
-        if not title:
-          raise HTTPException(status_code=400, detail="Title is required.")
-        due = _parse_dashboard_date(payload.due_date, field_name="due") or now_in_timezone(dashboard_user.timezone).date()
+@router.put("/api/planning-defaults")
+async def save_planning_defaults(request: Request, payload: PlanningDefaultsRequest) -> dict[str, bool]:
+  async with async_session_factory() as session:
+    dashboard_user, household = await _dashboard_context(request, session)
+    if dashboard_user is None or household is None:
+      raise HTTPException(status_code=401, detail="Dashboard login required.")
+    planning_repo = PlanningRepository(session)
+    defaults = await planning_repo.get_conversation(
+      user_id=dashboard_user.id,
+      plan_date=DEFAULTS_PLAN_DATE,
+    )
+    if defaults is None:
+      defaults = await planning_repo.start_conversation(
+        user_id=dashboard_user.id,
+        household_id=household.id,
+        plan_date=DEFAULTS_PLAN_DATE,
+      )
+    notes = _build_defaults_notes(payload)
+    await planning_repo.save_answer(
+      conversation=defaults,
+      message_text="Updated planning defaults from dashboard",
+      work_start=_parse_hhmm_or_none(payload.work_start),
+      work_end=_parse_hhmm_or_none(payload.work_end),
+      unusual_notes=notes,
+      next_state=PlanningConversationState.complete,
+    )
+    await ActivityRepository(session).log(
+      household_id=household.id,
+      user_id=dashboard_user.id,
+      action=ActivityAction.updated,
+      entity_type="planning_defaults",
+      entity_id=None,
+      summary="Updated planning defaults from dashboard",
+    )
+    return {"saved": True}
 
-        parsed_events = PlanningService._fixed_events_from_notes(title)
-        if parsed_events:
-          planning_repo = PlanningRepository(session)
-          conversation = await planning_repo.get_conversation(
-            user_id=dashboard_user.id,
-            plan_date=due,
-          )
-          if conversation is None:
-            conversation = await planning_repo.start_conversation(
-              user_id=dashboard_user.id,
-              household_id=household.id,
-              plan_date=due,
-            )
-          note_parts = [part.strip() for part in (conversation.unusual_notes or "").split(";") if part.strip()]
-          if title.casefold() not in {part.casefold() for part in note_parts}:
-            note_parts.append(title)
-          await planning_repo.save_answer(
-            conversation=conversation,
-            message_text=f"Added event from dashboard: {title}",
-            unusual_notes="; ".join(note_parts),
-            next_state=PlanningConversationState.complete,
-          )
-          await ActivityRepository(session).log(
-            household_id=household.id,
-            user_id=dashboard_user.id,
-            action=ActivityAction.created,
-            entity_type="planning_event",
-            entity_id=None,
-            summary=f"Added day event from dashboard: {title}",
-          )
-          return {"saved": True, "kind": "event"}
 
-        task = await TaskRepository(session).create_task(
+@router.post("/api/tasks")
+async def create_day_task(request: Request, payload: DayTaskRequest) -> dict[str, object]:
+  async with async_session_factory() as session:
+    dashboard_user, household = await _dashboard_context(request, session)
+    if dashboard_user is None or household is None:
+      raise HTTPException(status_code=401, detail="Dashboard login required.")
+    title = payload.title.strip()
+    if not title:
+      raise HTTPException(status_code=400, detail="Title is required.")
+    due = _parse_dashboard_date(payload.due_date, field_name="due") or now_in_timezone(dashboard_user.timezone).date()
+
+    parsed_events = PlanningService._fixed_events_from_notes(title)
+    if parsed_events:
+      planning_repo = PlanningRepository(session)
+      conversation = await planning_repo.get_conversation(
+        user_id=dashboard_user.id,
+        plan_date=due,
+      )
+      if conversation is None:
+        conversation = await planning_repo.start_conversation(
           user_id=dashboard_user.id,
           household_id=household.id,
-          title=title,
-          due_date=due,
+          plan_date=due,
         )
-        await ActivityRepository(session).log(
-          household_id=household.id,
-          user_id=dashboard_user.id,
-          action=ActivityAction.created,
-          entity_type="task",
-          entity_id=task.id,
-          summary=f"Added day task from dashboard: {task.title}",
-        )
-        return {"saved": True, "id": str(task.id), "kind": "task"}
+      note_parts = [part.strip() for part in (conversation.unusual_notes or "").split(";") if part.strip()]
+      if title.casefold() not in {part.casefold() for part in note_parts}:
+        note_parts.append(title)
+      await planning_repo.save_answer(
+        conversation=conversation,
+        message_text=f"Added event from dashboard: {title}",
+        unusual_notes="; ".join(note_parts),
+        next_state=PlanningConversationState.complete,
+      )
+      await ActivityRepository(session).log(
+        household_id=household.id,
+        user_id=dashboard_user.id,
+        action=ActivityAction.created,
+        entity_type="planning_event",
+        entity_id=None,
+        summary=f"Added day event from dashboard: {title}",
+      )
+      return {"saved": True, "kind": "event"}
+
+    task = await TaskRepository(session).create_task(
+      user_id=dashboard_user.id,
+      household_id=household.id,
+      title=title,
+      due_date=due,
+    )
+    await ActivityRepository(session).log(
+      household_id=household.id,
+      user_id=dashboard_user.id,
+      action=ActivityAction.created,
+      entity_type="task",
+      entity_id=task.id,
+      summary=f"Added day task from dashboard: {task.title}",
+    )
+    return {"saved": True, "id": str(task.id), "kind": "task"}
 
 
-    @router.patch("/api/tasks/{task_id}/move")
-    async def move_day_task(request: Request, task_id: UUID, payload: DayTaskMoveRequest) -> dict[str, bool]:
-      async with async_session_factory() as session:
-        dashboard_user, household = await _dashboard_context(request, session)
-        if dashboard_user is None or household is None:
-          raise HTTPException(status_code=401, detail="Dashboard login required.")
-        repository = TaskRepository(session)
-        task = await repository.get_user_task(task_id=task_id, user_id=dashboard_user.id)
-        if task is None or task.household_id != household.id:
-          raise HTTPException(status_code=404, detail="Task not found.")
-        if (task.category or "").strip().casefold() == "routine":
-          raise HTTPException(status_code=400, detail="Must tasks repeat daily and cannot be moved.")
-        task.due_date = payload.due_date
-        task.moved_count += 1
-        await session.commit()
-        await session.refresh(task)
-        await ActivityRepository(session).log(
-          household_id=household.id,
-          user_id=dashboard_user.id,
-          action=ActivityAction.updated,
-          entity_type="task",
-          entity_id=task.id,
-          summary=f"Rescheduled task from dashboard: {task.title} -> {task.due_date.isoformat()}",
-        )
-        return {"saved": True}
+@router.patch("/api/tasks/{task_id}/move")
+async def move_day_task(request: Request, task_id: UUID, payload: DayTaskMoveRequest) -> dict[str, bool]:
+  async with async_session_factory() as session:
+    dashboard_user, household = await _dashboard_context(request, session)
+    if dashboard_user is None or household is None:
+      raise HTTPException(status_code=401, detail="Dashboard login required.")
+    repository = TaskRepository(session)
+    task = await repository.get_user_task(task_id=task_id, user_id=dashboard_user.id)
+    if task is None or task.household_id != household.id:
+      raise HTTPException(status_code=404, detail="Task not found.")
+    if (task.category or "").strip().casefold() == "routine":
+      raise HTTPException(status_code=400, detail="Must tasks repeat daily and cannot be moved.")
+    task.due_date = payload.due_date
+    task.moved_count += 1
+    await session.commit()
+    await session.refresh(task)
+    await ActivityRepository(session).log(
+      household_id=household.id,
+      user_id=dashboard_user.id,
+      action=ActivityAction.updated,
+      entity_type="task",
+      entity_id=task.id,
+      summary=f"Rescheduled task from dashboard: {task.title} -> {task.due_date.isoformat()}",
+    )
+    return {"saved": True}
 
 
-    @router.delete("/api/tasks/{task_id}")
-    async def delete_day_task(request: Request, task_id: UUID) -> dict[str, bool]:
-      async with async_session_factory() as session:
-        dashboard_user, household = await _dashboard_context(request, session)
-        if dashboard_user is None or household is None:
-          raise HTTPException(status_code=401, detail="Dashboard login required.")
-        repository = TaskRepository(session)
-        task = await repository.get_user_task(task_id=task_id, user_id=dashboard_user.id)
-        if task is None or task.household_id != household.id:
-          raise HTTPException(status_code=404, detail="Task not found.")
-        task.status = TaskStatus.skipped
-        await session.commit()
-        await session.refresh(task)
-        await ActivityRepository(session).log(
-          household_id=household.id,
-          user_id=dashboard_user.id,
-          action=ActivityAction.deleted,
-          entity_type="task",
-          entity_id=task.id,
-          summary=f"Removed day task from dashboard: {task.title}",
-        )
-        return {"deleted": True}
+@router.delete("/api/tasks/{task_id}")
+async def delete_day_task(request: Request, task_id: UUID) -> dict[str, bool]:
+  async with async_session_factory() as session:
+    dashboard_user, household = await _dashboard_context(request, session)
+    if dashboard_user is None or household is None:
+      raise HTTPException(status_code=401, detail="Dashboard login required.")
+    repository = TaskRepository(session)
+    task = await repository.get_user_task(task_id=task_id, user_id=dashboard_user.id)
+    if task is None or task.household_id != household.id:
+      raise HTTPException(status_code=404, detail="Task not found.")
+    task.status = TaskStatus.skipped
+    await session.commit()
+    await session.refresh(task)
+    await ActivityRepository(session).log(
+      household_id=household.id,
+      user_id=dashboard_user.id,
+      action=ActivityAction.deleted,
+      entity_type="task",
+      entity_id=task.id,
+      summary=f"Removed day task from dashboard: {task.title}",
+    )
+    return {"deleted": True}
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
