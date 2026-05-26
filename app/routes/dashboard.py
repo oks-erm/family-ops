@@ -771,6 +771,8 @@ async def delete_routine(request: Request, routine_id: UUID) -> dict[str, bool]:
         task = await repository.get_user_task(task_id=task_id, user_id=dashboard_user.id)
         if task is None or task.household_id != household.id:
           raise HTTPException(status_code=404, detail="Task not found.")
+        if (task.category or "").strip().casefold() == "routine":
+          raise HTTPException(status_code=400, detail="Must tasks repeat daily and cannot be moved.")
         task.due_date = payload.due_date
         task.moved_count += 1
         await session.commit()
@@ -1028,9 +1030,32 @@ async def dashboard_page(request: Request) -> str:
       gap: 8px;
       align-items: center;
     }
+    #task-metrics {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    #task-metrics .metric {
+      min-height: 80px;
+      padding: 12px 14px;
+    }
+    #task-metrics .metric-label {
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+    #task-metrics .metric-value {
+      font-size: 36px;
+      line-height: 1;
+      font-weight: 700;
+    }
     .routine-form {
-      margin-bottom: 16px;
-      padding-bottom: 16px;
+      margin: 10px 0 14px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface-soft);
+      margin-bottom: 12px;
+      padding-bottom: 10px;
       border-bottom: 1px solid var(--line);
     }
     .routine-form input, .routine-row input {
@@ -1042,10 +1067,14 @@ async def dashboard_page(request: Request) -> str:
       color: var(--ink);
     }
     .routine-row {
-      padding: 10px 0;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      margin-bottom: 8px;
       border-bottom: 1px solid var(--line);
     }
-    .routine-row:last-child { border-bottom: 0; }
+    .routine-row:last-child { border-bottom: 1px solid var(--line); }
     .day-head {
       margin-top: 22px;
       padding-top: 16px;
@@ -1426,6 +1455,8 @@ async def dashboard_page(request: Request) -> str:
       .bar-row { grid-template-columns: 1fr; gap: 7px; padding: 8px 0; }
       .filters { grid-template-columns: 1fr; }
       .routine-form, .routine-row { grid-template-columns: 1fr; }
+      #task-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      #task-metrics .metric-value { font-size: 28px; }
       .day-task-form { grid-template-columns: 1fr; }
       .day-layout { grid-template-columns: 1fr; }
       .defaults-grid { grid-template-columns: 1fr; }
@@ -2155,7 +2186,7 @@ async def dashboard_page(request: Request) -> str:
             <div class="row-sub">${item.is_must ? "Must task" : (item.due_date ? `Due ${escapeHtml(item.due_date)}` : "No due date")}</div>
           </div>
           <div class="day-task-actions">
-            <button class="mini-btn" type="button" data-day-task-move="${escapeHtml(item.id)}">Move</button>
+            ${item.is_must ? "" : `<button class="mini-btn" type="button" data-day-task-move="${escapeHtml(item.id)}">Move</button>`}
             <button class="delete-btn" type="button" data-day-task-delete="${escapeHtml(item.id)}" aria-label="Remove task" title="Remove task">
               <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
                 <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 7h2v8h-2v-8Zm4 0h2v8h-2v-8ZM6 9h12l-1 12H7L6 9Z" fill="currentColor"/>
