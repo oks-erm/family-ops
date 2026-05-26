@@ -6,18 +6,22 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from app.db.models import ActivityAction, Routine, ShoppingItem
+from app.db.models import ActivityAction, Routine, ShoppingItem, TaskStatus
 from app.db.repositories.activity import ActivityRepository
 from app.db.repositories.finance import FinanceRepository
 from app.db.repositories.households import HouseholdRepository
+from app.db.repositories.planning import PlanningRepository
 from app.db.repositories.prices import PriceRepository
 from app.db.repositories.receipts import ReceiptRepository
 from app.db.repositories.routines import RoutineRepository
 from app.db.repositories.shopping import ShoppingRepository
+from app.db.repositories.tasks import TaskRepository
 from app.db.repositories.users import UserRepository
 from app.db.session import async_session_factory
+from app.services.calendar_service import CalendarService
 from app.services.dashboard_service import DashboardService
 from app.services.finance_category_service import FinanceCategoryService
+from app.services.planning_service import PlanningService
 from app.services.price_service import PriceService
 from app.utils.datetime import now_in_timezone
 
@@ -36,6 +40,15 @@ class RoutineRequest(BaseModel):
     duration_minutes: int
     duration_max: int | None = None
     is_active: bool = True
+
+
+class DayTaskRequest(BaseModel):
+  title: str
+  due_date: date | None = None
+
+
+class DayTaskMoveRequest(BaseModel):
+  due_date: date
 
 
 class TransactionCategoryRequest(BaseModel):
@@ -408,6 +421,157 @@ async def delete_routine(request: Request, routine_id: UUID) -> dict[str, bool]:
         return {"deleted": True}
 
 
+    @router.get("/api/tasks/day")
+    async def day_tasks_data(request: Request, day: date | None = None) -> dict[str, object]:
+      async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+          raise HTTPException(status_code=401, detail="Dashboard login required.")
+
+        selected_day = day or now_in_timezone(dashboard_user.timezone).date()
+        task_repository = TaskRepository(session)
+        pending_tasks = await task_repository.list_pending_for_user(
+          user_id=dashboard_user.id,
+          through_date=selected_day,
+        )
+        day_tasks = [task for task in pending_tasks if task.due_date in {None, selected_day}]
+
+        calendar_events = await CalendarService(session).list_events_for_day(
+          household_id=household.id,
+          day=selected_day,
+          timezone=dashboard_user.timezone,
+        )
+        conversation = await PlanningRepository(session).get_conversation(
+          user_id=dashboard_user.id,
+          plan_date=selected_day,
+        )
+        note_events = PlanningService._fixed_events_from_notes(
+          conversation.unusual_notes if conversation else None
+        )
+
+        events = [
+          {
+            "title": event.title,
+            "start": event.starts_at.strftime("%H:%M"),
+            "end": event.ends_at.strftime("%H:%M"),
+            "all_day": False,
+            "source": "calendar",
+          }
+          for event in calendar_events
+        ]
+        if conversation and conversation.work_start and conversation.work_end:
+          events.append(
+            {
+              "title": "Work",
+              "start": conversation.work_start.strftime("%H:%M"),
+              "end": conversation.work_end.strftime("%H:%M"),
+              "all_day": False,
+              "source": "work",
+            }
+          )
+        events.extend(
+          {
+            "title": str(event.get("title") or "Event"),
+            "start": str(event.get("start") or ""),
+            "end": str(event.get("end") or ""),
+            "all_day": bool(event.get("all_day")),
+            "source": "note",
+          }
+          for event in note_events
+        )
+
+        return {
+          "day": selected_day.isoformat(),
+          "items": [
+            {
+              "id": str(task.id),
+              "title": task.title,
+              "due_date": task.due_date.isoformat() if task.due_date else None,
+              "category": task.category,
+              "is_must": (task.category or "").strip().casefold() == "routine",
+            }
+            for task in day_tasks
+          ],
+          "events": events,
+        }
+
+
+    @router.post("/api/tasks")
+    async def create_day_task(request: Request, payload: DayTaskRequest) -> dict[str, object]:
+      async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+          raise HTTPException(status_code=401, detail="Dashboard login required.")
+        title = payload.title.strip()
+        if not title:
+          raise HTTPException(status_code=400, detail="Title is required.")
+        due = payload.due_date or now_in_timezone(dashboard_user.timezone).date()
+        task = await TaskRepository(session).create_task(
+          user_id=dashboard_user.id,
+          household_id=household.id,
+          title=title,
+          due_date=due,
+        )
+        await ActivityRepository(session).log(
+          household_id=household.id,
+          user_id=dashboard_user.id,
+          action=ActivityAction.created,
+          entity_type="task",
+          entity_id=task.id,
+          summary=f"Added day task from dashboard: {task.title}",
+        )
+        return {"saved": True, "id": str(task.id)}
+
+
+    @router.patch("/api/tasks/{task_id}/move")
+    async def move_day_task(request: Request, task_id: UUID, payload: DayTaskMoveRequest) -> dict[str, bool]:
+      async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+          raise HTTPException(status_code=401, detail="Dashboard login required.")
+        repository = TaskRepository(session)
+        task = await repository.get_user_task(task_id=task_id, user_id=dashboard_user.id)
+        if task is None or task.household_id != household.id:
+          raise HTTPException(status_code=404, detail="Task not found.")
+        task.due_date = payload.due_date
+        task.moved_count += 1
+        await session.commit()
+        await session.refresh(task)
+        await ActivityRepository(session).log(
+          household_id=household.id,
+          user_id=dashboard_user.id,
+          action=ActivityAction.updated,
+          entity_type="task",
+          entity_id=task.id,
+          summary=f"Rescheduled task from dashboard: {task.title} -> {task.due_date.isoformat()}",
+        )
+        return {"saved": True}
+
+
+    @router.delete("/api/tasks/{task_id}")
+    async def delete_day_task(request: Request, task_id: UUID) -> dict[str, bool]:
+      async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+          raise HTTPException(status_code=401, detail="Dashboard login required.")
+        repository = TaskRepository(session)
+        task = await repository.get_user_task(task_id=task_id, user_id=dashboard_user.id)
+        if task is None or task.household_id != household.id:
+          raise HTTPException(status_code=404, detail="Task not found.")
+        task.status = TaskStatus.skipped
+        await session.commit()
+        await session.refresh(task)
+        await ActivityRepository(session).log(
+          household_id=household.id,
+          user_id=dashboard_user.id,
+          action=ActivityAction.deleted,
+          entity_type="task",
+          entity_id=task.id,
+          summary=f"Removed day task from dashboard: {task.title}",
+        )
+        return {"deleted": True}
+
+
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page(request: Request) -> str:
     async with async_session_factory() as session:
@@ -644,6 +808,80 @@ async def dashboard_page(request: Request) -> str:
       border-bottom: 1px solid var(--line);
     }
     .routine-row:last-child { border-bottom: 0; }
+    .day-head {
+      margin-top: 22px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+    }
+    .day-picker-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .day-picker-wrap input {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 7px 9px;
+      background: #fff;
+      color: var(--ink);
+    }
+    .day-task-form {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) auto;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .day-task-form input {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 9px;
+      background: #fff;
+      color: var(--ink);
+    }
+    .day-layout {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .day-card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface-soft);
+      padding: 12px;
+    }
+    .section-head.compact { margin-bottom: 8px; }
+    .day-task-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .day-task-row:last-child { border-bottom: 0; }
+    .day-task-actions {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .mini-btn {
+      border: 1px solid #cbd5e1;
+      border-radius: 999px;
+      background: #fff;
+      color: var(--ink);
+      padding: 4px 9px;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .event-row {
+      padding: 8px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .event-row:last-child { border-bottom: 0; }
     .check-label {
       display: inline-flex;
       align-items: center;
@@ -922,6 +1160,10 @@ async def dashboard_page(request: Request) -> str:
       .bar-row { grid-template-columns: 1fr; gap: 7px; padding: 8px 0; }
       .filters { grid-template-columns: 1fr; }
       .routine-form, .routine-row { grid-template-columns: 1fr; }
+      .day-task-form { grid-template-columns: 1fr; }
+      .day-layout { grid-template-columns: 1fr; }
+      .day-task-row { grid-template-columns: 1fr; }
+      .day-task-actions { justify-content: flex-start; }
       .amount { justify-self: start; }
       .row { align-items: start; }
       .price-form { grid-template-columns: 1fr; }
@@ -1037,6 +1279,34 @@ async def dashboard_page(request: Request) -> str:
         <button class="primary-btn" type="submit">Add</button>
       </form>
       <div class="rows" id="routines"></div>
+
+      <div class="section-head day-head">
+        <h2>Day Tasks & Events</h2>
+        <div class="day-picker-wrap">
+          <label for="day-task-date" class="muted">Day</label>
+          <input id="day-task-date" type="date" aria-label="Task and event day">
+        </div>
+      </div>
+
+      <form class="day-task-form" id="day-task-create">
+        <input name="title" placeholder="Add task for selected day" autocomplete="off">
+        <button class="primary-btn" type="submit">Add Task</button>
+      </form>
+
+      <div class="day-layout">
+        <section class="day-card">
+          <div class="section-head compact">
+            <h2>Tasks</h2>
+          </div>
+          <div class="rows" id="day-tasks"></div>
+        </section>
+        <section class="day-card">
+          <div class="section-head compact">
+            <h2>Events</h2>
+          </div>
+          <div class="rows" id="day-events"></div>
+        </section>
+      </div>
     </section>
 
     <section class="panel view hidden" id="activity-view">
@@ -1580,6 +1850,43 @@ async def dashboard_page(request: Request) -> str:
       `).join("") : `<div class="empty">No must tasks configured.</div>`;
     }
 
+    const selectedDay = () => document.querySelector("#day-task-date").value || new Date().toISOString().slice(0, 10);
+
+    async function loadDayAgenda() {
+      const response = await fetch(`/api/tasks/day?day=${encodeURIComponent(selectedDay())}`);
+      if (!response.ok) {
+        toast("Could not load tasks/events for this day.");
+        return;
+      }
+      const data = await response.json();
+      const tasks = Array.isArray(data.items) ? data.items : [];
+      const events = Array.isArray(data.events) ? data.events : [];
+
+      document.querySelector("#day-tasks").innerHTML = tasks.length ? tasks.map(item => `
+        <div class="day-task-row">
+          <div class="row-main">
+            <div class="row-title">${escapeHtml(item.title)}</div>
+            <div class="row-sub">${item.is_must ? "Must task" : (item.due_date ? `Due ${escapeHtml(item.due_date)}` : "No due date")}</div>
+          </div>
+          <div class="day-task-actions">
+            <button class="mini-btn" type="button" data-day-task-move="${escapeHtml(item.id)}">Move</button>
+            <button class="delete-btn" type="button" data-day-task-delete="${escapeHtml(item.id)}" aria-label="Remove task" title="Remove task">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 7h2v8h-2v-8Zm4 0h2v8h-2v-8ZM6 9h12l-1 12H7L6 9Z" fill="currentColor"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      `).join("") : `<div class="empty">No tasks for this day.</div>`;
+
+      document.querySelector("#day-events").innerHTML = events.length ? events.map(item => `
+        <div class="event-row">
+          <div class="row-title">${escapeHtml(item.title)}</div>
+          <div class="row-sub">${item.all_day ? "All day" : `${escapeHtml(item.start)}-${escapeHtml(item.end)}`} · ${escapeHtml(item.source || "event")}</div>
+        </div>
+      `).join("") : `<div class="empty">No events for this day.</div>`;
+    }
+
     document.addEventListener("click", async event => {
       const modalClose = event.target.closest("#category-modal-close");
       if (modalClose || event.target.id === "category-modal") {
@@ -1616,7 +1923,10 @@ async def dashboard_page(request: Request) -> str:
         document.querySelector(`#${tabButton.dataset.viewTarget}`).classList.remove("hidden");
         document.querySelector("#metrics").classList.toggle("hidden", tabButton.dataset.viewTarget !== "overview-view");
         if (tabButton.dataset.viewTarget === "activity-view") loadActivity(1);
-        if (tabButton.dataset.viewTarget === "tasks-view") loadRoutines();
+        if (tabButton.dataset.viewTarget === "tasks-view") {
+          loadRoutines();
+          loadDayAgenda();
+        }
         return;
       }
 
@@ -1684,6 +1994,39 @@ async def dashboard_page(request: Request) -> str:
         }
         toast("Must task deleted.");
         await loadRoutines();
+        return;
+      }
+
+      const dayTaskDelete = event.target.closest("[data-day-task-delete]");
+      if (dayTaskDelete) {
+        const confirmed = window.confirm("Remove this task from the selected day list?");
+        if (!confirmed) return;
+        const response = await fetch(`/api/tasks/${dayTaskDelete.dataset.dayTaskDelete}`, { method: "DELETE" });
+        if (!response.ok) {
+          toast("Could not remove task.");
+          return;
+        }
+        toast("Task removed.");
+        await loadDayAgenda();
+        return;
+      }
+
+      const dayTaskMove = event.target.closest("[data-day-task-move]");
+      if (dayTaskMove) {
+        const suggested = selectedDay();
+        const nextDate = window.prompt("Move task to date (YYYY-MM-DD)", suggested);
+        if (!nextDate) return;
+        const response = await fetch(`/api/tasks/${dayTaskMove.dataset.dayTaskMove}/move`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ due_date: nextDate }),
+        });
+        if (!response.ok) {
+          toast("Could not move task. Use YYYY-MM-DD.");
+          return;
+        }
+        toast("Task moved.");
+        await loadDayAgenda();
         return;
       }
 
@@ -1768,6 +2111,26 @@ async def dashboard_page(request: Request) -> str:
         await loadRoutines();
         return;
       }
+      if (event.target.id === "day-task-create") {
+        event.preventDefault();
+        const formData = new FormData(event.target);
+        const response = await fetch("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: formData.get("title"),
+            due_date: selectedDay(),
+          }),
+        });
+        if (!response.ok) {
+          toast("Could not add day task.");
+          return;
+        }
+        event.target.reset();
+        toast("Task added.");
+        await loadDayAgenda();
+        return;
+      }
       const routineForm = event.target.closest("[data-routine-id]");
       if (routineForm) {
         event.preventDefault();
@@ -1834,6 +2197,12 @@ async def dashboard_page(request: Request) -> str:
         updatePeriodControls();
         loadDashboard();
       });
+    });
+    document.querySelector("#day-task-date").value = new Date().toISOString().slice(0, 10);
+    document.querySelector("#day-task-date").addEventListener("change", () => {
+      if (!document.querySelector("#tasks-view").classList.contains("hidden")) {
+        loadDayAgenda();
+      }
     });
     updatePeriodControls();
 
