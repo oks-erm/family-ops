@@ -44,7 +44,7 @@ class RoutineRequest(BaseModel):
 
 class DayTaskRequest(BaseModel):
   title: str
-  due_date: date | None = None
+  due_date: str | date | None = None
 
 
 class DayTaskMoveRequest(BaseModel):
@@ -82,10 +82,35 @@ def _parse_hhmm_or_none(value: str | None) -> time | None:
   if not text:
     return None
   try:
-    hour, minute = text.split(":", 1)
-    return time(hour=int(hour), minute=int(minute))
+    parts = text.split(":")
+    if len(parts) < 2:
+      raise ValueError("Expected HH:MM or HH:MM:SS")
+    hour = int(parts[0])
+    minute = int(parts[1])
+    return time(hour=hour, minute=minute)
   except (TypeError, ValueError) as exc:
     raise HTTPException(status_code=400, detail=f"Invalid time value: {value}") from exc
+
+
+def _parse_dashboard_date(value: str | date | None, *, field_name: str) -> date | None:
+  if value is None:
+    return None
+  if isinstance(value, date):
+    return value
+  text = value.strip()
+  if not text:
+    return None
+  try:
+    if "-" in text and len(text.split("-", 1)[0]) == 4:
+      return date.fromisoformat(text)
+    for separator in ("/", "-"):
+      if separator in text:
+        left, middle, right = text.split(separator)
+        if len(right) == 4:
+          return date(int(right), int(middle), int(left))
+  except (TypeError, ValueError):
+    pass
+  raise HTTPException(status_code=400, detail=f"Invalid {field_name} date. Use YYYY-MM-DD.")
 
 
 def _build_defaults_notes(payload: PlanningDefaultsRequest) -> str | None:
@@ -743,7 +768,40 @@ async def delete_routine(request: Request, routine_id: UUID) -> dict[str, bool]:
         title = payload.title.strip()
         if not title:
           raise HTTPException(status_code=400, detail="Title is required.")
-        due = payload.due_date or now_in_timezone(dashboard_user.timezone).date()
+        due = _parse_dashboard_date(payload.due_date, field_name="due") or now_in_timezone(dashboard_user.timezone).date()
+
+        parsed_events = PlanningService._fixed_events_from_notes(title)
+        if parsed_events:
+          planning_repo = PlanningRepository(session)
+          conversation = await planning_repo.get_conversation(
+            user_id=dashboard_user.id,
+            plan_date=due,
+          )
+          if conversation is None:
+            conversation = await planning_repo.start_conversation(
+              user_id=dashboard_user.id,
+              household_id=household.id,
+              plan_date=due,
+            )
+          note_parts = [part.strip() for part in (conversation.unusual_notes or "").split(";") if part.strip()]
+          if title.casefold() not in {part.casefold() for part in note_parts}:
+            note_parts.append(title)
+          await planning_repo.save_answer(
+            conversation=conversation,
+            message_text=f"Added event from dashboard: {title}",
+            unusual_notes="; ".join(note_parts),
+            next_state=PlanningConversationState.complete,
+          )
+          await ActivityRepository(session).log(
+            household_id=household.id,
+            user_id=dashboard_user.id,
+            action=ActivityAction.created,
+            entity_type="planning_event",
+            entity_id=None,
+            summary=f"Added day event from dashboard: {title}",
+          )
+          return {"saved": True, "kind": "event"}
+
         task = await TaskRepository(session).create_task(
           user_id=dashboard_user.id,
           household_id=household.id,
@@ -758,7 +816,7 @@ async def delete_routine(request: Request, routine_id: UUID) -> dict[str, bool]:
           entity_id=task.id,
           summary=f"Added day task from dashboard: {task.title}",
         )
-        return {"saved": True, "id": str(task.id)}
+        return {"saved": True, "id": str(task.id), "kind": "task"}
 
 
     @router.patch("/api/tasks/{task_id}/move")
@@ -1606,8 +1664,8 @@ async def dashboard_page(request: Request) -> str:
       </div>
 
       <form class="day-task-form" id="day-task-create">
-        <input name="title" placeholder="Add task for selected day" autocomplete="off">
-        <button class="primary-btn" type="submit">Add Task</button>
+        <input name="title" placeholder="Add task or event for selected day" autocomplete="off">
+        <button class="primary-btn" type="submit">Add</button>
       </form>
 
       <div class="day-layout">
@@ -2167,7 +2225,30 @@ async def dashboard_page(request: Request) -> str:
       `).join("") : `<div class="empty">No must tasks configured.</div>`;
     }
 
-    const selectedDay = () => document.querySelector("#day-task-date").value || new Date().toISOString().slice(0, 10);
+    const normalizeDayValue = value => {
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+      if (/^\\d{4}-\\d{2}-\\d{2}$/.test(raw)) return raw;
+      const slash = raw.match(/^(\\d{1,2})[/](\\d{1,2})[/](\\d{4})$/);
+      if (slash) {
+        const day = slash[1].padStart(2, "0");
+        const month = slash[2].padStart(2, "0");
+        return `${slash[3]}-${month}-${day}`;
+      }
+      const dash = raw.match(/^(\\d{1,2})-(\\d{1,2})-(\\d{4})$/);
+      if (dash) {
+        const day = dash[1].padStart(2, "0");
+        const month = dash[2].padStart(2, "0");
+        return `${dash[3]}-${month}-${day}`;
+      }
+      return raw;
+    };
+
+    const selectedDay = () => {
+      const input = document.querySelector("#day-task-date");
+      const normalized = normalizeDayValue(input?.value || "");
+      return normalized || new Date().toISOString().slice(0, 10);
+    };
 
     async function loadDayAgenda() {
       const response = await fetch(`/api/tasks/day?day=${encodeURIComponent(selectedDay())}`);
@@ -2503,11 +2584,12 @@ async def dashboard_page(request: Request) -> str:
           }),
         });
         if (!response.ok) {
-          toast("Could not add day task.");
+          toast("Could not add day item.");
           return;
         }
+        const result = await response.json();
         event.target.reset();
-        toast("Task added.");
+        toast(result.kind === "event" ? "Event added." : "Task added.");
         await loadDayAgenda();
         return;
       }
