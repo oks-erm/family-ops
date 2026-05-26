@@ -598,6 +598,11 @@ class AssistantService:
             )
         existing_notes = conversation.unusual_notes or ""
         note = text.strip()
+        should_create_task = (
+            self._looks_like_activity(text)
+            and not self._looks_like_schedule_note(text)
+            and not self._looks_like_event_happening(text)
+        )
         duplicate_event = self._find_duplicate_fixed_event(existing_notes=existing_notes, note=note)
         if duplicate_event is not None:
             title, start, end = duplicate_event
@@ -608,16 +613,17 @@ class AssistantService:
                     "I did not add a duplicate."
                 ),
             )
-        combined_notes = note
-        if existing_notes and note.casefold() not in existing_notes.casefold():
-            combined_notes = f"{existing_notes}; {note}"
-        await self.planning_repository.save_answer(
-            conversation=conversation,
-            message_text=text,
-            unusual_notes=combined_notes,
-            next_state=PlanningConversationState.complete,
-        )
-        if self._looks_like_activity(text) and not self._looks_like_schedule_note(text):
+        if not should_create_task:
+            combined_notes = note
+            if existing_notes and note.casefold() not in existing_notes.casefold():
+                combined_notes = f"{existing_notes}; {note}"
+            await self.planning_repository.save_answer(
+                conversation=conversation,
+                message_text=text,
+                unusual_notes=combined_notes,
+                next_state=PlanningConversationState.complete,
+            )
+        if should_create_task:
             cleaned_title = self._clean_task_title(text)
             existing_task = await self.task_repository.find_pending_by_title(
                 user_id=user_id,
@@ -629,8 +635,14 @@ class AssistantService:
                     household_id=household_id,
                     title=cleaned_title,
                     due_date=plan_date,
+                    category=self._daypart_category_from_text(text),
                 )
         plan_text = await self._generate_daily_plan_text(user_id=user_id, plan_date=plan_date)
+        if should_create_task:
+            return AssistantResponse(
+                intent=AssistantIntent.task_created,
+                text=f"Added as a task for {plan_date.isoformat()}.\n\n" + plan_text,
+            )
         return AssistantResponse(
             intent=AssistantIntent.planning_note,
             text=f"Stored as a planning note for {plan_date.isoformat()}.\n\n" + plan_text,
@@ -901,11 +913,13 @@ class AssistantService:
         if due_date is None:
             due_date = self._parse_due_date(title, user.timezone)
         cleaned_title = self._clean_task_title(title)
+        daypart_category = self._daypart_category_from_text(title)
         task = await self.task_repository.create_task(
             user_id=user_id,
             household_id=await self._household_id_for_user(user_id=user_id),
             title=cleaned_title,
             due_date=due_date,
+            category=daypart_category,
         )
         due_text = task.due_date.isoformat() if task.due_date else "no due date"
         return AssistantResponse(
@@ -1124,7 +1138,13 @@ class AssistantService:
         }
         for task in tasks:
             if task.title.strip().casefold() not in routine_titles_lower:
-                planned_tasks.append(task.title)
+                planned_tasks.append(
+                    PlannedTaskInput(
+                        title=task.title,
+                        must=False,
+                        preferred_window=self._daypart_from_task_category(task.category),
+                    )
+                )
         plan = planning_service.build_daily_plan(
             PlanningInput(
                 user_id=user_id,
@@ -2515,6 +2535,8 @@ class AssistantService:
     _ACTION_VERBS = (
         "cook",
         "clean",
+        "record",
+        "film",
         "call",
         "email",
         "send",
@@ -2543,6 +2565,18 @@ class AssistantService:
         "nap",
     )
 
+    _EVENT_MARKERS = (
+        "birthday",
+        "anniversary",
+        "wedding",
+        "appointment",
+        "meeting",
+        "event",
+        "party",
+        "holiday",
+        "church",
+    )
+
     @staticmethod
     def _looks_like_shopping_request(text: str) -> bool:
         lowered = text.lower().strip()
@@ -2565,9 +2599,42 @@ class AssistantService:
         return any(verb in lowered for verb in AssistantService._ACTION_VERBS)
 
     @staticmethod
+    def _looks_like_event_happening(text: str) -> bool:
+        lowered = text.lower()
+        has_event_marker = any(marker in lowered for marker in AssistantService._EVENT_MARKERS)
+        has_action = any(verb in lowered for verb in AssistantService._ACTION_VERBS)
+        return has_event_marker and not has_action
+
+    @staticmethod
     def _looks_like_schedule_note(text: str) -> bool:
         lowered = text.lower()
         return bool(
             re.search(r"\b(?:go to sleep|sleep|bed|wake up)\b", lowered)
             and re.search(r"\b(?:at\s*)?(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\b", lowered)
         )
+
+    @staticmethod
+    def _extract_daypart_hint(text: str) -> str | None:
+        lowered = text.lower()
+        if re.search(r"\b(morning|in the morning|this morning|manhã|manha)\b", lowered):
+            return "morning"
+        if re.search(r"\b(afternoon|in the afternoon|this afternoon|tarde)\b", lowered):
+            return "afternoon"
+        if re.search(r"\b(evening|in the evening|this evening|tonight|noite)\b", lowered):
+            return "evening"
+        return None
+
+    @staticmethod
+    def _daypart_category_from_text(text: str) -> str | None:
+        hint = AssistantService._extract_daypart_hint(text)
+        return f"daypart:{hint}" if hint else None
+
+    @staticmethod
+    def _daypart_from_task_category(category: str | None) -> str | None:
+        if not category:
+            return None
+        normalized = category.strip().lower()
+        if normalized.startswith("daypart:"):
+            value = normalized.split(":", 1)[1]
+            return value if value in {"morning", "afternoon", "evening"} else None
+        return None

@@ -17,6 +17,7 @@ class PlannedTaskInput:
     title: str
     duration_minutes: int | None = None
     must: bool = False
+    preferred_window: str | None = None
 
 
 @dataclass(frozen=True)
@@ -258,6 +259,7 @@ class PlanningService:
         for task in sorted_tasks[:8]:
             title, minutes = PlanningService._task_duration(task)
             category = PlanningService._task_category(title)
+            preferred_window = PlanningService._preferred_window(task, title)
             if previous_category == category and category in {"physical", "errand"}:
                 suggested.append(
                     {
@@ -266,7 +268,11 @@ class PlanningService:
                     }
                 )
                 continue
-            slot = PlanningService._reserve_first_slot_that_fits(windows, minutes)
+            slot = PlanningService._reserve_first_slot_that_fits(
+                windows,
+                minutes,
+                preferred_window=preferred_window,
+            )
             suggested.append(
                 {
                     "title": title,
@@ -275,6 +281,19 @@ class PlanningService:
             )
             previous_category = category
         return suggested
+
+    @staticmethod
+    def _preferred_window(task: str | PlannedTaskInput, title: str) -> str | None:
+        if isinstance(task, PlannedTaskInput) and task.preferred_window:
+            return task.preferred_window
+        lowered = title.lower()
+        if re.search(r"\b(morning|manhã|manha)\b", lowered):
+            return "morning"
+        if re.search(r"\b(afternoon|tarde)\b", lowered):
+            return "afternoon"
+        if re.search(r"\b(evening|tonight|noite)\b", lowered):
+            return "evening"
+        return None
 
     @staticmethod
     def _task_duration(task: str | PlannedTaskInput) -> tuple[str, int]:
@@ -336,7 +355,18 @@ class PlanningService:
     def _reserve_first_slot_that_fits(
         windows: list[dict[str, time]],
         minutes: int,
+        preferred_window: str | None = None,
     ) -> tuple[time, time] | None:
+        if preferred_window:
+            for window in windows:
+                start = window["start"]
+                end = window["end"]
+                if not PlanningService._window_matches_preference(start=start, end=end, preference=preferred_window):
+                    continue
+                if PlanningService._minutes_between(start, end) >= minutes:
+                    slot_end = PlanningService._add_minutes(start, minutes)
+                    window["start"] = slot_end
+                    return start, slot_end
         for window in windows:
             start = window["start"]
             end = window["end"]
@@ -345,6 +375,18 @@ class PlanningService:
                 window["start"] = slot_end
                 return start, slot_end
         return None
+
+    @staticmethod
+    def _window_matches_preference(*, start: time, end: time, preference: str) -> bool:
+        start_minutes = start.hour * 60 + start.minute
+        end_minutes = end.hour * 60 + end.minute
+        if preference == "morning":
+            return start_minutes < 12 * 60 and end_minutes > 5 * 60
+        if preference == "afternoon":
+            return start_minutes < 18 * 60 and end_minutes > 12 * 60
+        if preference == "evening":
+            return end_minutes > 18 * 60
+        return True
 
     @staticmethod
     def _parse_hhmm(value: str) -> time:
