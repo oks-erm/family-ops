@@ -86,6 +86,30 @@ For local OAuth testing, ensure your Google OAuth client includes:
 http://localhost:8000/auth/google/callback
 ```
 
+## Dashboard Overview
+
+The web dashboard is available at `/dashboard` after Google sign-in through the Telegram linking flow.
+
+Current dashboard capabilities include:
+
+- Daily agenda panel with must tasks, day tasks, and events.
+- Task actions (add, complete/skip, delete, and move when allowed).
+- Event actions for day-level planning events (delete/move for note-based events).
+- Planning defaults management (work window, wake/sleep times, commute, meal assumptions).
+- Finance and receipt analytics views.
+
+## Telegram Commands
+
+Core bot commands:
+
+- `/start` Create or refresh the Telegram user profile.
+- `/invite` Generate or view the household invite code.
+- `/join CODE` Join an existing household using an invite code.
+- `/dashboard_link` Generate a short-lived link to connect Google login for dashboard access.
+- `/ical URL` Attach an iCal feed URL for calendar sync.
+
+Everything else is natural-language driven in regular messages (for example tasks, planning, shopping, and finance capture).
+
 ## AI Provider Strategy
 
 Default behavior is deterministic-first to reduce cost and improve predictability.
