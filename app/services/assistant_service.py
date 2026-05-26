@@ -232,10 +232,21 @@ class AssistantService:
 
         planning_note = self._parse_planning_note(text)
         if planning_note is not None:
+            note_text, explicit_date = planning_note
+            if (
+                self._looks_like_activity(note_text)
+                and not self._looks_like_schedule_note(note_text)
+                and not self._looks_like_event_happening(note_text)
+            ):
+                return await self._create_task(
+                    user_id=user_id,
+                    title=note_text,
+                    due_date=explicit_date,
+                )
             return await self._store_planning_note(
                 user_id=user_id,
-                text=planning_note[0],
-                explicit_date=planning_note[1],
+                text=note_text,
+                explicit_date=explicit_date,
             )
 
         task_title = self._parse_task_creation(text)
@@ -808,13 +819,16 @@ class AssistantService:
                 ]
             )
             include_tasks_in_text = period == "tomorrow"
+            plan_text = await self._generate_daily_plan_text(
+                user_id=user_id,
+                plan_date=start,
+                include_tasks=include_tasks_in_text,
+            )
+            if task_actions:
+                plan_text = self._strip_tasks_section_from_plan_text(plan_text)
             return AssistantResponse(
                 intent=AssistantIntent.planning_note,
-                text=await self._generate_daily_plan_text(
-                    user_id=user_id,
-                    plan_date=start,
-                    include_tasks=include_tasks_in_text,
-                ),
+                text=plan_text,
                 metadata={"task_actions": task_actions},
             )
 
@@ -2631,6 +2645,14 @@ class AssistantService:
             re.search(r"\b(?:go to sleep|sleep|bed|wake up)\b", lowered)
             and re.search(r"\b(?:at\s*)?(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\b", lowered)
         )
+
+    @staticmethod
+    def _strip_tasks_section_from_plan_text(text: str) -> str:
+        lines = text.splitlines()
+        for idx, line in enumerate(lines):
+            if line.strip().lower() == "tasks":
+                return "\n".join(lines[:idx]).rstrip()
+        return text.rstrip()
 
     @staticmethod
     def _extract_daypart_hint(text: str) -> str | None:
