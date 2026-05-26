@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ShoppingItem, ShoppingItemStatus
@@ -44,10 +44,8 @@ class ShoppingRepository:
             .where(
                 ShoppingItem.household_id == household_id,
                 ShoppingItem.status == ShoppingItemStatus.pending,
-                or_(
-                    ShoppingItem.store_name_raw.is_(None),
-                    ShoppingItem.store_name_raw.ilike(normalized_store),
-                ),
+                ShoppingItem.store_name_raw.ilike(normalized_store),
+            )
             )
             .order_by(ShoppingItem.created_at)
         )

@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.db.models import ActivityAction, DailyPlanStatus, PlanningConversationState
+from app.db.models import ActivityAction, DailyPlanStatus, PlanningConversationState, TaskStatus
 from app.db.repositories.activity import ActivityRepository
 from app.db.repositories.finance import FinanceRepository
 from app.db.repositories.households import HouseholdRepository
@@ -28,6 +28,10 @@ from app.services.shopping_service import ParsedShoppingItem, ShoppingService
 # Per-user cache: remembers the most-recent finance query so a bare "Breakdown"
 # follow-up can re-run it with itemised output without repeating the question.
 _last_finance_query: dict[str, dict] = {}
+
+# Per-user pending removal candidates: when multiple tasks fuzzy-match a removal
+# request, the candidates are stored here and the user selects by number.
+_pending_removals: dict[str, list[dict]] = {}
 
 
 class AssistantIntent(StrEnum):
@@ -65,6 +69,17 @@ class AssistantService:
         self.ai_router = AiRouter(settings)
 
     async def handle_text(self, *, user_id: UUID, text: str) -> AssistantResponse:
+        # Removal confirmation: if user replies with a number after a multi-match removal.
+        stripped_text = text.strip()
+        if stripped_text.isdigit():
+            pending = _pending_removals.get(str(user_id))
+            if pending:
+                choice = int(stripped_text) - 1
+                _pending_removals.pop(str(user_id), None)
+                if 0 <= choice < len(pending):
+                    return await self._confirm_remove_task(user_id=user_id, task_info=pending[choice])
+                return AssistantResponse(intent=AssistantIntent.unknown, text="Invalid selection.")
+
         # Deterministic move parser runs first — "move X to Y" is unambiguous and the AI
         # tends to misclassify it as shopping_summary or going_to_store.
         move_request = self._parse_move_request(text)
@@ -447,9 +462,7 @@ class AssistantService:
             note = f"{item} from {start_time.strftime('%H:%M')} to {end_time.strftime('%H:%M')}"
             return await self._store_planning_note(user_id=user_id, text=note, explicit_date=plan_date)
         if intent == "task_created" and item:
-            normalized_date_ref = "today" if date_ref == "tonight" else date_ref
-            title = f"{item} {normalized_date_ref}".strip() if normalized_date_ref in {"today", "tomorrow"} else item
-            return await self._create_task(user_id=user_id, title=title)
+            return await self._create_task(user_id=user_id, title=item, due_date=plan_date)
         if intent == "mark_task_done" and item:
             return await self._mark_task_done(user_id=user_id, title=item, completed_on=plan_date)
         if intent == "planning_note":
@@ -464,7 +477,11 @@ class AssistantService:
         if intent == "going_to_store" and (store_name or item):
             return await self._list_store_items(user_id=user_id, store_name=store_name or item)
         if intent == "remove_item" and item:
-            return await self._remove_item(user_id=user_id, request={"name": item, "target": target or "any"})
+            return await self._remove_item(
+                user_id=user_id,
+                request={"name": item, "target": target or "any"},
+                due_date=plan_date,
+            )
         if intent == "move_item" and item:
             if target in {"shopping", "task", "plan"}:
                 move_target = target
@@ -738,15 +755,15 @@ class AssistantService:
 
         if period in {"today", "tomorrow", "day"}:
             action_tasks = await self._actionable_tasks_for_day(user_id=user_id, day=start)
+            task_actions = (
+                []
+                if period == "tomorrow"
+                else [{"id": str(task.id), "title": task.title} for task in action_tasks[:8]]
+            )
             return AssistantResponse(
                 intent=AssistantIntent.planning_note,
                 text=await self._generate_daily_plan_text(user_id=user_id, plan_date=start),
-                metadata={
-                    "task_actions": [
-                        {"id": str(task.id), "title": task.title}
-                        for task in action_tasks[:8]
-                    ]
-                },
+                metadata={"task_actions": task_actions},
             )
 
         tasks = await self.task_repository.list_pending_for_user(user_id=user_id, through_date=end)
@@ -837,11 +854,12 @@ class AssistantService:
                 )
         return await self.task_repository.list_pending_for_user(user_id=user_id, through_date=day)
 
-    async def _create_task(self, *, user_id: UUID, title: str) -> AssistantResponse:
+    async def _create_task(self, *, user_id: UUID, title: str, due_date: date | None = None) -> AssistantResponse:
         user = await UserRepository(self.session).get_by_id(user_id=user_id)
         if user is None:
             raise RuntimeError("User must exist before assistant actions can run.")
-        due_date = self._parse_due_date(title, user.timezone)
+        if due_date is None:
+            due_date = self._parse_due_date(title, user.timezone)
         cleaned_title = self._clean_task_title(title)
         task = await self.task_repository.create_task(
             user_id=user_id,
@@ -1053,7 +1071,14 @@ class AssistantService:
                     must=bool(schedule.get("must", True)),
                 )
             )
-        planned_tasks.extend(task.title for task in tasks)
+        routine_titles_lower = {
+            t.title.strip().casefold()
+            for t in planned_tasks
+            if isinstance(t, PlannedTaskInput)
+        }
+        for task in tasks:
+            if task.title.strip().casefold() not in routine_titles_lower:
+                planned_tasks.append(task.title)
         plan = planning_service.build_daily_plan(
             PlanningInput(
                 user_id=user_id,
@@ -1244,7 +1269,35 @@ class AssistantService:
             text=f"Marked as bought: {item_text}.",
         )
 
-    async def _remove_item(self, *, user_id: UUID, request: dict[str, str]) -> AssistantResponse:
+    async def _confirm_remove_task(self, *, user_id: UUID, task_info: dict) -> AssistantResponse:
+        household_id = await self._household_id_for_user(user_id=user_id)
+        task = await self.task_repository.get_user_task(
+            task_id=task_info["id"], user_id=user_id
+        )
+        if task is None or task.status != TaskStatus.pending:
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text=f"Task '{task_info['title']}' is no longer pending.",
+            )
+        task.status = TaskStatus.skipped
+        await self.session.commit()
+        await self.session.refresh(task)
+        await self.activity_repository.log(
+            household_id=household_id,
+            user_id=user_id,
+            action=ActivityAction.deleted,
+            entity_type="task",
+            entity_id=task.id,
+            summary=f"Removed task: {task.title}",
+        )
+        return AssistantResponse(
+            intent=AssistantIntent.item_removed,
+            text=f"Removed: {task.title}.",
+        )
+
+    async def _remove_item(
+        self, *, user_id: UUID, request: dict[str, str], due_date: date | None = None
+    ) -> AssistantResponse:
         name = request["name"]
         target = request["target"]
         household_id = await self._household_id_for_user(user_id=user_id)
@@ -1271,22 +1324,44 @@ class AssistantService:
                 )
 
         if target in {"task", "plan", "any"}:
-            removed_task = await self.task_repository.remove_pending_by_title(
+            candidates = await self.task_repository.find_all_pending_fuzzy(
                 user_id=user_id,
                 title=name,
+                due_date=due_date,
             )
-            if removed_task is not None:
+            if len(candidates) == 1:
+                task = candidates[0]
+                task.status = TaskStatus.skipped
+                await self.session.commit()
+                await self.session.refresh(task)
                 await self.activity_repository.log(
                     household_id=household_id,
                     user_id=user_id,
                     action=ActivityAction.deleted,
                     entity_type="task",
-                    entity_id=removed_task.id,
-                    summary=f"Removed task: {removed_task.title}",
+                    entity_id=task.id,
+                    summary=f"Removed task: {task.title}",
                 )
                 return AssistantResponse(
                     intent=AssistantIntent.item_removed,
-                    text=f"Removed from tasks: {removed_task.title}.",
+                    text=f"Removed: {task.title}.",
+                )
+            if len(candidates) > 1:
+                _pending_removals[str(user_id)] = [
+                    {
+                        "id": task.id,
+                        "title": task.title,
+                        "due_date": task.due_date.isoformat() if task.due_date else None,
+                    }
+                    for task in candidates
+                ]
+                lines = ["Multiple matches found — which one?"]
+                for i, task in enumerate(candidates, 1):
+                    due = f" (due {task.due_date.isoformat()})" if task.due_date else ""
+                    lines.append(f"{i}. {task.title}{due}")
+                return AssistantResponse(
+                    intent=AssistantIntent.unknown,
+                    text="\n".join(lines),
                 )
 
         return AssistantResponse(
@@ -1610,7 +1685,13 @@ class AssistantService:
 
     @staticmethod
     def _clean_task_title(title: str) -> str:
-        return re.sub(r"\b(today|tomorrow|this week)\b", "", title, flags=re.IGNORECASE).strip(" .")
+        return re.sub(
+            r"\b(today|tonight|tomorrow|this week|this morning|this afternoon|this evening|"
+            r"in the evening|in the morning|in the afternoon|later today|later tonight)\b",
+            "",
+            title,
+            flags=re.IGNORECASE,
+        ).strip(" .")
 
     @staticmethod
     def _parse_due_date(title: str, timezone: str) -> date | None:

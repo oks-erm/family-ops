@@ -73,6 +73,40 @@ class TaskRepository:
         result = await self.session.execute(select(Task).where(Task.id == task_id, Task.user_id == user_id))
         return result.scalar_one_or_none()
 
+    async def find_all_pending_fuzzy(
+        self,
+        *,
+        user_id: UUID,
+        title: str,
+        due_date: date | None = None,
+    ) -> list[Task]:
+        """Return all pending tasks that fuzzy-match the title, optionally filtered by due date."""
+        normalized = title.strip().lower()
+        canonical = self._canonical_title(title)
+        query = select(Task).where(
+            Task.user_id == user_id,
+            Task.status == TaskStatus.pending,
+        )
+        if due_date is not None:
+            query = query.where(Task.due_date == due_date)
+        result = await self.session.execute(
+            query.order_by(Task.due_date.nulls_last(), Task.created_at)
+        )
+        matches = []
+        for task in result.scalars().all():
+            task_title = task.title.strip().lower()
+            task_canonical = self._canonical_title(task.title)
+            if (
+                task_title == normalized
+                or normalized in task_title
+                or task_title in normalized
+                or task_canonical == canonical
+                or canonical in task_canonical
+                or task_canonical in canonical
+            ):
+                matches.append(task)
+        return matches
+
     async def find_pending_by_title(self, *, user_id: UUID, title: str) -> Task | None:
         normalized = title.strip().lower()
         canonical = self._canonical_title(title)
