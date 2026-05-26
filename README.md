@@ -1,41 +1,71 @@
 # Family Copilot
 
-Telegram-first household and routine assistant MVP.
+Family Copilot is a production-focused household operations assistant built around Telegram, with a FastAPI backend, planning engine, shared household workflows, and a web dashboard.
 
-## Stack
+It combines deterministic command routing with optional AI-assisted understanding to keep critical flows predictable while still supporting natural-language interaction.
+
+## Highlights
+
+- Telegram-first assistant for daily operations (tasks, shopping, planning, and finance capture).
+- Household collaboration model with invite-based access and shared state.
+- Daily planning pipeline with free-window calculation, fixed events, and actionable task scheduling.
+- Finance ingestion from text, receipts, and screenshots, with dashboard analytics.
+- Calendar integration (iCal and Google OAuth start flow).
+- Production deployment via Docker Compose and GitHub Actions.
+
+## Architecture
+
+Core components:
+
+- API and web layer: FastAPI app with dashboard/auth/calendar routes.
+- Bot runtime: aiogram-based Telegram bot running in the same service lifecycle.
+- Data layer: async SQLAlchemy repositories on PostgreSQL.
+- Schema management: Alembic migrations.
+- Scheduling layer: APScheduler jobs for daily/weekly/monthly automation.
+- AI routing layer: deterministic-first intent handling with pluggable providers for light/heavy tasks.
+
+## Tech Stack
 
 - Python 3.12
 - FastAPI
 - aiogram 3
 - PostgreSQL
-- SQLAlchemy 2.0 async
+- SQLAlchemy 2.0 (async)
 - Alembic
 - APScheduler
 - Docker Compose
 
-## Local Setup
+## Repository Layout
 
-1. Create your environment file:
+- `app/bot` Telegram handlers and keyboards
+- `app/routes` FastAPI routes for dashboard, auth, and calendar
+- `app/services` assistant, planning, shopping, finance, scheduler, and integrations
+- `app/db/repositories` data access layer
+- `alembic` migration history
+
+## Local Development
+
+1. Create environment file from template.
 
 ```bash
 cp .env.example .env
 ```
 
-2. Edit `.env` and set `TELEGRAM_BOT_TOKEN`.
+2. Set required secrets in `.env` (at minimum `TELEGRAM_BOT_TOKEN`).
 
-3. Start Postgres and the app:
+3. Start services.
 
 ```bash
 docker compose up --build
 ```
 
-4. Run migrations in another terminal:
+4. Run database migrations.
 
 ```bash
 docker compose exec app alembic upgrade head
 ```
 
-5. Check the API:
+5. Verify service health.
 
 ```bash
 curl http://localhost:8000/health
@@ -43,127 +73,89 @@ curl http://localhost:8000/health
 
 6. Open Telegram and send `/start` to your bot.
 
-## Household and Dashboard Access
+## Authentication and Access Model
 
-Telegram access is invite-based at the household level:
+- Telegram identity is created/updated via `/start`.
+- Household membership is invite-based using `/invite` and `/join CODE`.
+- Dashboard access is tied to Telegram identity through `/dashboard_link` and Google login.
+- The dashboard only authorizes Google accounts linked through the Telegram flow.
 
-- `/start` creates or updates the Telegram user.
-- `/invite` shows the household invite code.
-- Another Telegram user joins with `/join CODE`.
-- `/dashboard_link` creates a 30-minute link that connects that Telegram user to a Google account.
-- `/dashboard` requires Google login and only allows Google emails linked through `/dashboard_link`.
-
-For local Google login, add this redirect URI to the Google OAuth client:
+For local OAuth testing, ensure your Google OAuth client includes:
 
 ```text
 http://localhost:8000/auth/google/callback
 ```
 
-## Optional pgAdmin
+## AI Provider Strategy
 
-```bash
-docker compose --profile devtools up pgadmin
-```
+Default behavior is deterministic-first to reduce cost and improve predictability.
 
-pgAdmin runs at `http://localhost:5050`.
+- `AI_LIGHT_PROVIDER=deterministic` for high-confidence command handling.
+- Optional light providers: `ollama` or `gemini` for classification/routing.
+- Heavy provider (default `openai`) reserved for higher-complexity tasks.
 
-## AI Cost Policy
-
-The app is designed to avoid paid AI calls by default:
-
-- Deterministic parsing handles high-confidence commands and is free.
-- Light optional AI can use local Ollama or Gemini Flash-Lite for conversational intent routing.
-- OpenAI is reserved for heavy tasks, such as receipt extraction or complex planning, and is not used by the current shopping intake.
-- The Telegram assistant executes AI output through local services; the model classifies intent or asks a clarification instead of writing directly to the database.
-
-Useful settings:
+Example provider settings:
 
 ```env
 AI_LIGHT_PROVIDER=deterministic
 AI_HEAVY_PROVIDER=openai
-OLLAMA_MODEL=llama3.2:3b
-GEMINI_MODEL=gemini-3.1-flash-lite
 OPENAI_MODEL=gpt-5-mini
+GEMINI_MODEL=gemini-3.1-flash-lite
+OLLAMA_MODEL=llama3.2:3b
 ```
 
-To run local Ollama through Compose:
+Optional local Ollama profile:
 
 ```bash
 docker compose --profile local-ai up -d ollama
 docker compose exec ollama ollama pull llama3.2:3b
 ```
 
-Then set:
+## Configuration
 
-```env
-AI_LIGHT_PROVIDER=ollama
-```
+Refer to `.env.example` for the complete variable list.
 
-To use Gemini for light classification instead:
-
-```env
-AI_LIGHT_PROVIDER=gemini
-GEMINI_API_KEY=your_google_ai_studio_key
-GEMINI_MODEL=gemini-3.1-flash-lite
-```
-
-## Current MVP Scope
-
-Implemented:
-
-- `/health` FastAPI endpoint
-- Telegram `/start` onboarding
-- Natural-language Telegram text intake for early assistant behavior
-- Shopping phrases like `Need eggs from Lidl`, `Buy rice anywhere`, and `Going to Lidl`
-- Shopping cleanup phrases like `Got broccoli` or `Bought milk and eggs`
-- Receipt photo extraction through Gemini first, with confirmation before saving or clearing shopping items
-- Receipt spend questions like `How much did we spend on groceries this week?`
-- Store spend questions like `How much did we spend at Aldi this month?`
-- Manual expense/income messages like `petrol €54`, `eat out €43`, or `salary €1500`
-- Bank screenshot extraction for expenses and income through Gemini vision
-- Minimal `/dashboard` analytics page with duplicate receipt deletion and stored weekly finance/health recommendations
-- Dashboard category spend, income/expense chart, shopping price quotes, and Activity Log tab
-- Weekly supermarket price/promotion scan for pending shopping items
-- Natural task creation with Telegram completion buttons, e.g. `Task: call dentist tomorrow`
-- Evening planning prompt, morning daily plan, and evening review scheduled flows
-- Per-user daily plans generated from work answers, that user's open tasks, shared shopping, and cached calendar events
-- iCal feed storage and sync with `/ical FEED_URL` in Telegram or `POST /calendar/ical`
-- Google Calendar OAuth scaffolding through `GET /calendar/google/start`
-- Google dashboard login with Telegram-linked household access through `/dashboard_link`
-- Mandatory month-end grocery summary scheduled on the last day of each month
-- Household-shared shopping lists, receipts, and grocery analytics
-- Invite-based household access with `/invite` and `/join CODE`
-- Async SQLAlchemy setup
-- Alembic schema for users, stores, tasks, task completions, shopping items, daily plans, planning conversations, receipts, calendars, and receipt items
-
-Deferred:
-
-- Google Calendar token refresh
-- Receipt correction UI beyond confirm/discard
-- HTTPS reverse proxy
-- Production backup jobs
-
-## Environment Variables
+Common required variables:
 
 - `APP_ENV`
 - `DATABASE_URL`
 - `TELEGRAM_BOT_TOKEN`
-- `OPENAI_API_KEY`
 - `DEFAULT_TIMEZONE`
 - `PUBLIC_BASE_URL`
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
-- `GOOGLE_REDIRECT_URI`
-- `DASHBOARD_GOOGLE_REDIRECT_URI`
 - `DASHBOARD_SESSION_SECRET`
-- `MONTHLY_SUMMARY_TIME`
-- `PLANNING_EVENING_TIME`
-- `MORNING_PLAN_TIME`
-- `EVENING_REVIEW_TIME`
-- `WEEKLY_RECOMMENDATION_TIME`
+- Google OAuth settings (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, redirect URIs)
 
-`DATABASE_URL` should use `postgres` as the hostname inside Docker Compose and `localhost` when running the app directly on your machine.
+Database hostname guidance:
 
-## Deploy Later
+- Inside Docker Compose: use `postgres`.
+- Running app directly on host: use `localhost`.
 
-The same Docker Compose shape is intended to run on a Hetzner VPS. For production, persist the Postgres volume, add Caddy or Nginx for HTTPS, point Telegram webhooks to `https://domain.com/telegram/webhook`, and add database backups.
+## Security and Privacy
+
+This repository intentionally avoids hardcoding credentials.
+
+- Never commit `.env`, API keys, bot tokens, OAuth client secrets, or private keys.
+- Use GitHub Secrets (or equivalent secret manager) for CI/CD and production values.
+- Keep example values in `.env.example` non-sensitive and local-safe.
+- Rotate any credential immediately if it appears in logs, screenshots, or chat transcripts.
+
+## Deployment
+
+Production deployment uses:
+
+- GitHub Actions workflow for build and deploy.
+- GHCR image publishing.
+- Docker Compose runtime on a VPS.
+
+Typical flow:
+
+1. Push to `main`.
+2. CI builds and pushes image tags.
+3. Deploy job updates server `.env` image tag and restarts stack.
+
+## Roadmap
+
+- Google Calendar token refresh lifecycle
+- Extended receipt correction UX
+- Hardened backup/restore runbooks
+- Additional observability and operational dashboards
