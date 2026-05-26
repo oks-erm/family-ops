@@ -758,7 +758,14 @@ class AssistantService:
             task_actions = (
                 []
                 if period == "tomorrow"
-                else [{"id": str(task.id), "title": task.title} for task in action_tasks[:8]]
+                else [
+                    {
+                        "id": str(task.id),
+                        "title": task.title,
+                        "can_move": (task.category or "").strip().casefold() != "routine",
+                    }
+                    for task in action_tasks[:8]
+                ]
             )
             return AssistantResponse(
                 intent=AssistantIntent.planning_note,

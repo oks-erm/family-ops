@@ -34,12 +34,8 @@ async def handle_text_message(message: Message) -> None:
             text=message.text,
         )
 
-    if response.intent == AssistantIntent.task_created and response.metadata:
-        task_id = str(response.metadata["task_id"])
-        await message.answer(
-            response.text,
-            reply_markup=task_action_keyboard(task_id),
-        )
+    if response.intent == AssistantIntent.task_created:
+        await message.answer(response.text)
         return
 
     await message.answer(response.text)
@@ -49,5 +45,8 @@ async def handle_text_message(message: Message) -> None:
                 continue
             await message.answer(
                 str(item["title"]),
-                reply_markup=task_action_keyboard(str(item["id"])),
+                reply_markup=task_action_keyboard(
+                    str(item["id"]),
+                    allow_move=bool(item.get("can_move", True)),
+                ),
             )

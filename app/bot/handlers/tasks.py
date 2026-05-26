@@ -44,6 +44,14 @@ async def handle_task_action(callback: CallbackQuery) -> None:
         )
         household = await HouseholdRepository(session).ensure_household_for_user(user=user)
         today = now_in_timezone(user.timezone).date()
+        if action == "move":
+            existing_task = await TaskRepository(session).get_user_task(task_id=task_id, user_id=user.id)
+            if existing_task is None:
+                await callback.answer("Task not found.")
+                return
+            if (existing_task.category or "").strip().casefold() == "routine":
+                await callback.answer("Daily must tasks already appear tomorrow automatically.")
+                return
         task = await TaskRepository(session).apply_action(
             task_id=task_id,
             user_id=user.id,
