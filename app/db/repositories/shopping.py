@@ -46,7 +46,6 @@ class ShoppingRepository:
                 ShoppingItem.status == ShoppingItemStatus.pending,
                 ShoppingItem.store_name_raw.ilike(normalized_store),
             )
-            )
             .order_by(ShoppingItem.created_at)
         )
         return list(result.scalars().all())
