@@ -1,12 +1,12 @@
 from calendar import monthrange
-from datetime import date
+from datetime import date, time
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from app.db.models import ActivityAction, Routine, ShoppingItem, TaskStatus
+from app.db.models import ActivityAction, PlanningConversationState, Routine, ShoppingItem, TaskStatus
 from app.db.repositories.activity import ActivityRepository
 from app.db.repositories.finance import FinanceRepository
 from app.db.repositories.households import HouseholdRepository
@@ -49,6 +49,85 @@ class DayTaskRequest(BaseModel):
 
 class DayTaskMoveRequest(BaseModel):
   due_date: date
+
+
+class DayEventMoveRequest(BaseModel):
+  day: date
+  event_ref: str
+  target_day: date
+
+
+class PlanningDefaultsRequest(BaseModel):
+  work_start: str | None = None
+  work_end: str | None = None
+  wake_time: str | None = None
+  bed_time: str | None = None
+  commute_start: str | None = None
+  commute_end: str | None = None
+  breakfast_start: str | None = None
+  breakfast_end: str | None = None
+  lunch_start: str | None = None
+  lunch_end: str | None = None
+  dinner_start: str | None = None
+  dinner_end: str | None = None
+
+
+DEFAULTS_PLAN_DATE = date(1900, 1, 1)
+
+
+def _parse_hhmm_or_none(value: str | None) -> time | None:
+  if value is None:
+    return None
+  text = value.strip()
+  if not text:
+    return None
+  try:
+    hour, minute = text.split(":", 1)
+    return time(hour=int(hour), minute=int(minute))
+  except (TypeError, ValueError) as exc:
+    raise HTTPException(status_code=400, detail=f"Invalid time value: {value}") from exc
+
+
+def _build_defaults_notes(payload: PlanningDefaultsRequest) -> str | None:
+  notes: list[str] = []
+  if payload.wake_time:
+    notes.append(f"wake up at {payload.wake_time.strip()}")
+  if payload.bed_time:
+    notes.append(f"go to sleep at {payload.bed_time.strip()}")
+  if payload.commute_start and payload.commute_end:
+    notes.append(f"commute from {payload.commute_start.strip()} to {payload.commute_end.strip()}")
+  if payload.breakfast_start and payload.breakfast_end:
+    notes.append(f"breakfast from {payload.breakfast_start.strip()} to {payload.breakfast_end.strip()}")
+  if payload.lunch_start and payload.lunch_end:
+    notes.append(f"lunch from {payload.lunch_start.strip()} to {payload.lunch_end.strip()}")
+  if payload.dinner_start and payload.dinner_end:
+    notes.append(f"dinner from {payload.dinner_start.strip()} to {payload.dinner_end.strip()}")
+  return "; ".join(notes) if notes else None
+
+
+def _extract_defaults_values(*, work_start: time | None, work_end: time | None, notes: str | None) -> dict[str, object]:
+  import re
+
+  text = notes or ""
+
+  def find(pattern: str) -> str | None:
+    match = re.search(pattern, text, flags=re.IGNORECASE)
+    return match.group(1) if match else None
+
+  return {
+    "work_start": work_start.strftime("%H:%M") if work_start else None,
+    "work_end": work_end.strftime("%H:%M") if work_end else None,
+    "wake_time": find(r"wake up at\s+(\d{1,2}:\d{2})"),
+    "bed_time": find(r"go to sleep at\s+(\d{1,2}:\d{2})"),
+    "commute_start": find(r"commute from\s+(\d{1,2}:\d{2})"),
+    "commute_end": find(r"commute from\s+\d{1,2}:\d{2}\s+to\s+(\d{1,2}:\d{2})"),
+    "breakfast_start": find(r"breakfast from\s+(\d{1,2}:\d{2})"),
+    "breakfast_end": find(r"breakfast from\s+\d{1,2}:\d{2}\s+to\s+(\d{1,2}:\d{2})"),
+    "lunch_start": find(r"lunch from\s+(\d{1,2}:\d{2})"),
+    "lunch_end": find(r"lunch from\s+\d{1,2}:\d{2}\s+to\s+(\d{1,2}:\d{2})"),
+    "dinner_start": find(r"dinner from\s+(\d{1,2}:\d{2})"),
+    "dinner_end": find(r"dinner from\s+\d{1,2}:\d{2}\s+to\s+(\d{1,2}:\d{2})"),
+  }
 
 
 class TransactionCategoryRequest(BaseModel):
@@ -445,9 +524,22 @@ async def delete_routine(request: Request, routine_id: UUID) -> dict[str, bool]:
           user_id=dashboard_user.id,
           plan_date=selected_day,
         )
-        note_events = PlanningService._fixed_events_from_notes(
-          conversation.unusual_notes if conversation else None
-        )
+        note_events = []
+        note_parts = [part.strip() for part in (conversation.unusual_notes or "").split(";") if part.strip()] if conversation else []
+        for idx, part in enumerate(note_parts):
+          parsed = PlanningService._fixed_events_from_notes(part)
+          for event in parsed:
+            note_events.append(
+              {
+                "title": str(event.get("title") or "Event"),
+                "start": str(event.get("start") or ""),
+                "end": str(event.get("end") or ""),
+                "all_day": bool(event.get("all_day")),
+                "source": "note",
+                "editable": True,
+                "event_ref": f"note:{idx}",
+              }
+            )
 
         events = [
           {
@@ -456,6 +548,7 @@ async def delete_routine(request: Request, routine_id: UUID) -> dict[str, bool]:
             "end": event.ends_at.strftime("%H:%M"),
             "all_day": False,
             "source": "calendar",
+            "editable": False,
           }
           for event in calendar_events
         ]
@@ -467,18 +560,10 @@ async def delete_routine(request: Request, routine_id: UUID) -> dict[str, bool]:
               "end": conversation.work_end.strftime("%H:%M"),
               "all_day": False,
               "source": "work",
+              "editable": False,
             }
           )
-        events.extend(
-          {
-            "title": str(event.get("title") or "Event"),
-            "start": str(event.get("start") or ""),
-            "end": str(event.get("end") or ""),
-            "all_day": bool(event.get("all_day")),
-            "source": "note",
-          }
-          for event in note_events
-        )
+        events.extend(note_events)
 
         return {
           "day": selected_day.isoformat(),
@@ -494,6 +579,159 @@ async def delete_routine(request: Request, routine_id: UUID) -> dict[str, bool]:
           ],
           "events": events,
         }
+
+
+    @router.delete("/api/events/day")
+    async def delete_day_event(request: Request, day: date, event_ref: str) -> dict[str, bool]:
+      async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+          raise HTTPException(status_code=401, detail="Dashboard login required.")
+        if not event_ref.startswith("note:"):
+          raise HTTPException(status_code=400, detail="Only note events can be edited.")
+        try:
+          index = int(event_ref.split(":", 1)[1])
+        except (TypeError, ValueError) as exc:
+          raise HTTPException(status_code=400, detail="Invalid event reference.") from exc
+
+        planning_repo = PlanningRepository(session)
+        conversation = await planning_repo.get_conversation(user_id=dashboard_user.id, plan_date=day)
+        if conversation is None or not conversation.unusual_notes:
+          raise HTTPException(status_code=404, detail="Event not found.")
+        parts = [part.strip() for part in conversation.unusual_notes.split(";") if part.strip()]
+        if index < 0 or index >= len(parts):
+          raise HTTPException(status_code=404, detail="Event not found.")
+
+        removed = parts.pop(index)
+        await planning_repo.save_answer(
+          conversation=conversation,
+          message_text=f"Deleted event from dashboard: {removed}",
+          unusual_notes="; ".join(parts),
+          next_state=PlanningConversationState.complete,
+        )
+        await ActivityRepository(session).log(
+          household_id=household.id,
+          user_id=dashboard_user.id,
+          action=ActivityAction.deleted,
+          entity_type="planning_event",
+          entity_id=None,
+          summary=f"Deleted event from dashboard: {removed}",
+        )
+        return {"deleted": True}
+
+
+    @router.patch("/api/events/day/move")
+    async def move_day_event(request: Request, payload: DayEventMoveRequest) -> dict[str, bool]:
+      async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+          raise HTTPException(status_code=401, detail="Dashboard login required.")
+        if payload.day == payload.target_day:
+          raise HTTPException(status_code=400, detail="Source and target day must differ.")
+        if not payload.event_ref.startswith("note:"):
+          raise HTTPException(status_code=400, detail="Only note events can be edited.")
+        try:
+          index = int(payload.event_ref.split(":", 1)[1])
+        except (TypeError, ValueError) as exc:
+          raise HTTPException(status_code=400, detail="Invalid event reference.") from exc
+
+        planning_repo = PlanningRepository(session)
+        source = await planning_repo.get_conversation(user_id=dashboard_user.id, plan_date=payload.day)
+        if source is None or not source.unusual_notes:
+          raise HTTPException(status_code=404, detail="Event not found.")
+        source_parts = [part.strip() for part in source.unusual_notes.split(";") if part.strip()]
+        if index < 0 or index >= len(source_parts):
+          raise HTTPException(status_code=404, detail="Event not found.")
+
+        moved = source_parts.pop(index)
+        await planning_repo.save_answer(
+          conversation=source,
+          message_text=f"Moved event from {payload.day.isoformat()} to {payload.target_day.isoformat()}",
+          unusual_notes="; ".join(source_parts),
+          next_state=PlanningConversationState.complete,
+        )
+
+        target = await planning_repo.get_conversation(user_id=dashboard_user.id, plan_date=payload.target_day)
+        if target is None:
+          target = await planning_repo.start_conversation(
+            user_id=dashboard_user.id,
+            household_id=household.id,
+            plan_date=payload.target_day,
+          )
+        target_parts = [part.strip() for part in (target.unusual_notes or "").split(";") if part.strip()]
+        if moved.casefold() not in {part.casefold() for part in target_parts}:
+          target_parts.append(moved)
+        await planning_repo.save_answer(
+          conversation=target,
+          message_text=f"Moved event in from {payload.day.isoformat()}",
+          unusual_notes="; ".join(target_parts),
+          next_state=PlanningConversationState.complete,
+        )
+        await ActivityRepository(session).log(
+          household_id=household.id,
+          user_id=dashboard_user.id,
+          action=ActivityAction.updated,
+          entity_type="planning_event",
+          entity_id=None,
+          summary=f"Moved event to {payload.target_day.isoformat()}: {moved}",
+        )
+        return {"saved": True}
+
+
+    @router.get("/api/planning-defaults")
+    async def planning_defaults_data(request: Request) -> dict[str, object]:
+      async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+          raise HTTPException(status_code=401, detail="Dashboard login required.")
+        defaults = await PlanningRepository(session).get_conversation(
+          user_id=dashboard_user.id,
+          plan_date=DEFAULTS_PLAN_DATE,
+        )
+        if defaults is None:
+          return _extract_defaults_values(work_start=None, work_end=None, notes=None)
+        return _extract_defaults_values(
+          work_start=defaults.work_start,
+          work_end=defaults.work_end,
+          notes=defaults.unusual_notes,
+        )
+
+
+    @router.put("/api/planning-defaults")
+    async def save_planning_defaults(request: Request, payload: PlanningDefaultsRequest) -> dict[str, bool]:
+      async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+          raise HTTPException(status_code=401, detail="Dashboard login required.")
+        planning_repo = PlanningRepository(session)
+        defaults = await planning_repo.get_conversation(
+          user_id=dashboard_user.id,
+          plan_date=DEFAULTS_PLAN_DATE,
+        )
+        if defaults is None:
+          defaults = await planning_repo.start_conversation(
+            user_id=dashboard_user.id,
+            household_id=household.id,
+            plan_date=DEFAULTS_PLAN_DATE,
+          )
+        notes = _build_defaults_notes(payload)
+        await planning_repo.save_answer(
+          conversation=defaults,
+          message_text="Updated planning defaults from dashboard",
+          work_start=_parse_hhmm_or_none(payload.work_start),
+          work_end=_parse_hhmm_or_none(payload.work_end),
+          unusual_notes=notes,
+          next_state=PlanningConversationState.complete,
+        )
+        await ActivityRepository(session).log(
+          household_id=household.id,
+          user_id=dashboard_user.id,
+          action=ActivityAction.updated,
+          entity_type="planning_defaults",
+          entity_id=None,
+          summary="Updated planning defaults from dashboard",
+        )
+        return {"saved": True}
 
 
     @router.post("/api/tasks")
@@ -831,6 +1069,28 @@ async def dashboard_page(request: Request) -> str:
       gap: 8px;
       margin-bottom: 14px;
     }
+    .defaults-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface-soft);
+    }
+    .defaults-grid label {
+      display: grid;
+      gap: 4px;
+    }
+    .defaults-grid input {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 7px 8px;
+      background: #fff;
+      color: var(--ink);
+    }
     .day-task-form input {
       min-width: 0;
       border: 1px solid var(--line);
@@ -882,6 +1142,12 @@ async def dashboard_page(request: Request) -> str:
       border-bottom: 1px solid var(--line);
     }
     .event-row:last-child { border-bottom: 0; }
+    .event-actions {
+      margin-top: 6px;
+      display: inline-flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
     .check-label {
       display: inline-flex;
       align-items: center;
@@ -1162,6 +1428,7 @@ async def dashboard_page(request: Request) -> str:
       .routine-form, .routine-row { grid-template-columns: 1fr; }
       .day-task-form { grid-template-columns: 1fr; }
       .day-layout { grid-template-columns: 1fr; }
+      .defaults-grid { grid-template-columns: 1fr; }
       .day-task-row { grid-template-columns: 1fr; }
       .day-task-actions { justify-content: flex-start; }
       .amount { justify-self: start; }
@@ -1279,6 +1546,25 @@ async def dashboard_page(request: Request) -> str:
         <button class="primary-btn" type="submit">Add</button>
       </form>
       <div class="rows" id="routines"></div>
+
+      <div class="section-head day-head">
+        <h2>Defaults</h2>
+      </div>
+      <form class="defaults-grid" id="defaults-form">
+        <label><span class="muted">Work start</span><input name="work_start" type="time"></label>
+        <label><span class="muted">Work end</span><input name="work_end" type="time"></label>
+        <label><span class="muted">Wake up</span><input name="wake_time" type="time"></label>
+        <label><span class="muted">Bedtime</span><input name="bed_time" type="time"></label>
+        <label><span class="muted">Commute start</span><input name="commute_start" type="time"></label>
+        <label><span class="muted">Commute end</span><input name="commute_end" type="time"></label>
+        <label><span class="muted">Breakfast start</span><input name="breakfast_start" type="time"></label>
+        <label><span class="muted">Breakfast end</span><input name="breakfast_end" type="time"></label>
+        <label><span class="muted">Lunch start</span><input name="lunch_start" type="time"></label>
+        <label><span class="muted">Lunch end</span><input name="lunch_end" type="time"></label>
+        <label><span class="muted">Dinner start</span><input name="dinner_start" type="time"></label>
+        <label><span class="muted">Dinner end</span><input name="dinner_end" type="time"></label>
+        <div><button class="primary-btn" type="submit">Save Defaults</button></div>
+      </form>
 
       <div class="section-head day-head">
         <h2>Day Tasks & Events</h2>
@@ -1883,8 +2169,31 @@ async def dashboard_page(request: Request) -> str:
         <div class="event-row">
           <div class="row-title">${escapeHtml(item.title)}</div>
           <div class="row-sub">${item.all_day ? "All day" : `${escapeHtml(item.start)}-${escapeHtml(item.end)}`} · ${escapeHtml(item.source || "event")}</div>
+          ${item.editable ? `
+            <div class="event-actions">
+              <button class="mini-btn" type="button" data-day-event-move="${escapeHtml(item.event_ref || "")}">Move</button>
+              <button class="delete-btn" type="button" data-day-event-delete="${escapeHtml(item.event_ref || "")}" aria-label="Delete event" title="Delete event">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                  <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 7h2v8h-2v-8Zm4 0h2v8h-2v-8ZM6 9h12l-1 12H7L6 9Z" fill="currentColor"/>
+                </svg>
+              </button>
+            </div>
+          ` : ""}
         </div>
       `).join("") : `<div class="empty">No events for this day.</div>`;
+    }
+
+    async function loadDefaults() {
+      const response = await fetch("/api/planning-defaults");
+      if (!response.ok) {
+        toast("Could not load defaults.");
+        return;
+      }
+      const data = await response.json();
+      const form = document.querySelector("#defaults-form");
+      Object.entries(data).forEach(([key, value]) => {
+        if (form.elements[key]) form.elements[key].value = value || "";
+      });
     }
 
     document.addEventListener("click", async event => {
@@ -1925,6 +2234,7 @@ async def dashboard_page(request: Request) -> str:
         if (tabButton.dataset.viewTarget === "activity-view") loadActivity(1);
         if (tabButton.dataset.viewTarget === "tasks-view") {
           loadRoutines();
+          loadDefaults();
           loadDayAgenda();
         }
         return;
@@ -2030,6 +2340,45 @@ async def dashboard_page(request: Request) -> str:
         return;
       }
 
+      const dayEventDelete = event.target.closest("[data-day-event-delete]");
+      if (dayEventDelete) {
+        const confirmed = window.confirm("Delete this event from the selected day?");
+        if (!confirmed) return;
+        const response = await fetch(
+          `/api/events/day?day=${encodeURIComponent(selectedDay())}&event_ref=${encodeURIComponent(dayEventDelete.dataset.dayEventDelete)}`,
+          { method: "DELETE" },
+        );
+        if (!response.ok) {
+          toast("Could not delete event.");
+          return;
+        }
+        toast("Event deleted.");
+        await loadDayAgenda();
+        return;
+      }
+
+      const dayEventMove = event.target.closest("[data-day-event-move]");
+      if (dayEventMove) {
+        const nextDate = window.prompt("Move event to date (YYYY-MM-DD)", selectedDay());
+        if (!nextDate) return;
+        const response = await fetch("/api/events/day/move", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            day: selectedDay(),
+            event_ref: dayEventMove.dataset.dayEventMove,
+            target_day: nextDate,
+          }),
+        });
+        if (!response.ok) {
+          toast("Could not move event. Use YYYY-MM-DD.");
+          return;
+        }
+        toast("Event moved.");
+        await loadDayAgenda();
+        return;
+      }
+
       const transactionDeleteBtn = event.target.closest("[data-transaction-id]");
       if (transactionDeleteBtn) {
         const transactionId = transactionDeleteBtn.dataset.transactionId;
@@ -2128,6 +2477,32 @@ async def dashboard_page(request: Request) -> str:
         }
         event.target.reset();
         toast("Task added.");
+        await loadDayAgenda();
+        return;
+      }
+      if (event.target.id === "defaults-form") {
+        event.preventDefault();
+        const formData = new FormData(event.target);
+        const payload = {};
+        [
+          "work_start", "work_end", "wake_time", "bed_time",
+          "commute_start", "commute_end",
+          "breakfast_start", "breakfast_end",
+          "lunch_start", "lunch_end",
+          "dinner_start", "dinner_end",
+        ].forEach(key => {
+          payload[key] = String(formData.get(key) || "").trim() || null;
+        });
+        const response = await fetch("/api/planning-defaults", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          toast("Could not save defaults.");
+          return;
+        }
+        toast("Defaults saved.");
         await loadDayAgenda();
         return;
       }

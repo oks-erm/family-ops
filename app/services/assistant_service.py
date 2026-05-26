@@ -1089,6 +1089,10 @@ class AssistantService:
         if user is None:
             raise RuntimeError("User must exist before planning can run.")
         household_id = await self._household_id_for_user(user_id=user_id)
+        defaults_conversation = await self.planning_repository.get_conversation(
+            user_id=user_id,
+            plan_date=date(1900, 1, 1),
+        )
         conversation = await self.planning_repository.get_conversation(
             user_id=user_id,
             plan_date=plan_date,
@@ -1113,6 +1117,21 @@ class AssistantService:
 
         today = now_in_timezone(user.timezone).date()
         current_time = now_in_timezone(user.timezone).time() if plan_date == today else None
+
+        effective_work_start = (
+            (conversation.work_start if conversation else None)
+            or (defaults_conversation.work_start if defaults_conversation else None)
+        )
+        effective_work_end = (
+            (conversation.work_end if conversation else None)
+            or (defaults_conversation.work_end if defaults_conversation else None)
+        )
+        defaults_notes = (defaults_conversation.unusual_notes or "").strip() if defaults_conversation else ""
+        day_notes = (conversation.unusual_notes or "").strip() if conversation else ""
+        if defaults_notes and day_notes:
+            effective_notes = f"{defaults_notes}; {day_notes}"
+        else:
+            effective_notes = day_notes or defaults_notes or None
 
         planning_service = PlanningService()
         planned_tasks: list[str | PlannedTaskInput] = []
@@ -1149,9 +1168,9 @@ class AssistantService:
             PlanningInput(
                 user_id=user_id,
                 plan_date=plan_date,
-                work_start=conversation.work_start if conversation else None,
-                work_end=conversation.work_end if conversation else None,
-                unusual_notes=conversation.unusual_notes if conversation else None,
+                work_start=effective_work_start,
+                work_end=effective_work_end,
+                unusual_notes=effective_notes,
                 tasks=planned_tasks,
                 calendar_events=calendar_events,
                 current_time=current_time,
@@ -1161,9 +1180,9 @@ class AssistantService:
             user_id=user_id,
             household_id=household_id,
             plan_date=plan_date,
-            work_start=conversation.work_start if conversation else None,
-            work_end=conversation.work_end if conversation else None,
-            unusual_notes=conversation.unusual_notes if conversation else None,
+            work_start=effective_work_start,
+            work_end=effective_work_end,
+            unusual_notes=effective_notes,
             plan=plan,
             status=DailyPlanStatus.draft,
         )
