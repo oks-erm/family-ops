@@ -101,6 +101,13 @@ class AssistantService:
                     original_question=text,
                 )
 
+        # Deterministic store query override: explicit shopping questions like
+        # "what do I need to buy online/from Lidl" should never fall back to
+        # full shopping summary output.
+        explicit_store = self._extract_store_from_shopping_query(text)
+        if explicit_store is not None and self._looks_like_store_shopping_question(text):
+            return await self._list_store_items(user_id=user_id, store_name=explicit_store)
+
         ai_result = await self.ai_router.classify_light_intent(text=text)
         ai_response = await self._handle_ai_classification(
             user_id=user_id,
@@ -2120,6 +2127,21 @@ class AssistantService:
             if store_name.lower().endswith(suffix):
                 store_name = store_name[: -len(suffix)].strip()
         return store_name or None
+
+    @staticmethod
+    def _looks_like_store_shopping_question(text: str) -> bool:
+        lowered = text.lower().strip()
+        question_markers = (
+            "what do i need to buy",
+            "what should i buy",
+            "what do we need to buy",
+            "shopping list",
+            "o que preciso comprar",
+            "o que precisamos comprar",
+            "o que falta comprar",
+            "lista de compras",
+        )
+        return any(marker in lowered for marker in question_markers)
 
     @staticmethod
     def _parse_planning_note(text: str) -> tuple[str, date | None] | None:
