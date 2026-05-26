@@ -1,3 +1,5 @@
+import re
+
 from aiogram import F, Router
 from aiogram.types import Message
 
@@ -8,6 +10,12 @@ from app.db.session import async_session_factory
 from app.services.assistant_service import AssistantIntent, AssistantService
 
 router = Router()
+
+
+def _strip_tasks_section(text: str) -> str:
+    # When per-task action buttons are rendered separately, remove the inline
+    # Tasks block from the plan text to avoid duplicate content.
+    return re.sub(r"\n\nTasks\n[\s\S]*$", "", text).rstrip()
 
 
 @router.message(F.text & ~F.text.startswith("/"))
@@ -38,9 +46,14 @@ async def handle_text_message(message: Message) -> None:
         await message.answer(response.text)
         return
 
-    await message.answer(response.text)
-    if response.metadata and isinstance(response.metadata.get("task_actions"), list):
-        for item in response.metadata["task_actions"]:
+    task_actions = response.metadata.get("task_actions") if response.metadata else None
+    text_to_send = response.text
+    if isinstance(task_actions, list) and task_actions:
+        text_to_send = _strip_tasks_section(text_to_send)
+
+    await message.answer(text_to_send)
+    if isinstance(task_actions, list):
+        for item in task_actions:
             if not isinstance(item, dict) or not item.get("id") or not item.get("title"):
                 continue
             await message.answer(

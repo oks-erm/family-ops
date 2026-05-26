@@ -164,7 +164,7 @@ class AssistantService:
                 return await self._add_shopping_item(user_id=user_id, item=shopping_items[0])
             return await self._add_shopping_items(user_id=user_id, items=shopping_items)
 
-        store_name = self.shopping_service.parse_store_visit(text)
+        store_name = self.shopping_service.parse_store_visit(text) or self._extract_store_from_shopping_query(text)
         if store_name is not None:
             return await self._list_store_items(user_id=user_id, store_name=store_name)
 
@@ -500,7 +500,11 @@ class AssistantService:
                 request={"name": item, "target": move_target},
             )
         if intent == "shopping_summary":
-            store_hint = store_name or self.shopping_service.parse_store_visit(text)
+            store_hint = (
+                store_name
+                or self.shopping_service.parse_store_visit(text)
+                or self._extract_store_from_shopping_query(text)
+            )
             if store_hint:
                 return await self._list_store_items(user_id=user_id, store_name=store_hint)
             return await self._shopping_summary(user_id=user_id)
@@ -2083,6 +2087,39 @@ class AssistantService:
             or "o que precisamos comprar" in lowered
             or "o que falta comprar" in lowered
         )
+
+    @staticmethod
+    def _extract_store_from_shopping_query(text: str) -> str | None:
+        lowered = text.lower().strip()
+        if not any(token in lowered for token in ("buy", "shopping", "need", "comprar", "preciso", "falta")):
+            return None
+        if "online" in lowered:
+            return "online"
+        match = re.search(
+            r"\b(?:from|at|in|no|na|em)\s+([a-zA-Z0-9À-ÿ' -]+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        store_name = match.group(1).strip(" ?!.")
+        for suffix in (
+            " this week",
+            " this month",
+            " this year",
+            " week",
+            " month",
+            " year",
+            " esta semana",
+            " este mes",
+            " este mês",
+            " semana",
+            " mes",
+            " mês",
+        ):
+            if store_name.lower().endswith(suffix):
+                store_name = store_name[: -len(suffix)].strip()
+        return store_name or None
 
     @staticmethod
     def _parse_planning_note(text: str) -> tuple[str, date | None] | None:
