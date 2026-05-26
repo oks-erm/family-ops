@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import re
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,16 @@ class ShoppingService:
             if lowered.startswith(prefix):
                 store_name = normalized[len(prefix) :].strip()
                 return store_name or None
+        if "online" in lowered and ("buy" in lowered or "shopping" in lowered or "comprar" in lowered):
+            return "online"
+        store_query = re.search(
+            r"\b(?:from|at|in|no|na|em)\s+([a-zA-Z0-9À-ÿ' -]+)\??$",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if store_query and any(token in lowered for token in ("buy", "shopping", "comprar")):
+            store_name = store_query.group(1).strip(" ?!.")
+            return store_name or None
         return None
 
     def parse_purchased_items(self, text: str) -> list[str]:

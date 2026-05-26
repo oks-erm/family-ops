@@ -50,7 +50,7 @@ class PlanningService:
             "suggested_tasks": self._suggest_tasks(planning_input.tasks, free_windows),
         }
 
-    def render_plan_message(self, plan: dict[str, object]) -> str:
+    def render_plan_message(self, plan: dict[str, object], *, include_tasks: bool = True) -> str:
         lines = [f"Plan for {plan['date']}"]
         work_block = plan.get("work_block") or {}
         if isinstance(work_block, dict) and (work_block.get("start") or work_block.get("end")):
@@ -63,7 +63,10 @@ class PlanningService:
             lines.append("")
             lines.append("Fixed events")
             for event in fixed_events:
-                lines.append(f"- {event['start']}-{event['end']}: {event['title']}")
+                if event.get("all_day"):
+                    lines.append(f"- All day: {event['title']}")
+                else:
+                    lines.append(f"- {event['start']}-{event['end']}: {event['title']}")
 
         free_windows = plan.get("free_windows") or []
         if free_windows:
@@ -73,20 +76,21 @@ class PlanningService:
                 lines.append(f"- {window['start']}-{window['end']}")
 
         tasks = plan.get("suggested_tasks") or []
-        if tasks:
-            lines.append("")
-            lines.append("Tasks")
-            for task in tasks:
-                title = task["title"] if isinstance(task, dict) else str(task)
-                window = task.get("window") if isinstance(task, dict) else None
-                if window == "alternative":
-                    lines.append(f"  or {title}")
-                else:
-                    lines.append(f"- {title}" + (f" ({window})" if window and window != "flexible" else ""))
-        elif not fixed_events and not plan.get("notes"):
-            lines.append("")
-            lines.append("Tasks")
-            lines.append("- No pending tasks.")
+        if include_tasks:
+            if tasks:
+                lines.append("")
+                lines.append("Tasks")
+                for task in tasks:
+                    title = task["title"] if isinstance(task, dict) else str(task)
+                    window = task.get("window") if isinstance(task, dict) else None
+                    if window == "alternative":
+                        lines.append(f"  or {title}")
+                    else:
+                        lines.append(f"- {title}" + (f" ({window})" if window and window != "flexible" else ""))
+            elif not fixed_events and not plan.get("notes"):
+                lines.append("")
+                lines.append("Tasks")
+                lines.append("- No pending tasks.")
 
         return "\n".join(lines)
 
@@ -148,6 +152,26 @@ class PlanningService:
         for part in notes.split(";"):
             text = part.strip()
             if not text:
+                continue
+            all_day_match = re.search(r"\b(all day|birthday|anniversary)\b", text, flags=re.IGNORECASE)
+            if all_day_match:
+                title = re.sub(
+                    r"\b(?:all day|for today|for tomorrow|today|tomorrow|tonight)\b",
+                    "",
+                    text,
+                    flags=re.IGNORECASE,
+                ).strip(" .,:-")
+                if not title:
+                    title = "All-day event"
+                events.append(
+                    {
+                        "title": title[:80],
+                        "start": "00:00",
+                        "end": "23:59",
+                        "source": "note",
+                        "all_day": True,
+                    }
+                )
                 continue
             match = re.search(
                 r"(?P<title>.+?)(?:\s+(?:from|between))?\s+(?P<start>2[0-3]|[01]?\d)(?:(?::|\.|h)(?P<start_min>[0-5]\d))?\s*(?:to|and|-)\s*(?P<end>2[0-3]|[01]?\d)(?:(?::|\.|h)(?P<end_min>[0-5]\d))?",

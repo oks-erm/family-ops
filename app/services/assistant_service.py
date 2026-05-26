@@ -500,6 +500,9 @@ class AssistantService:
                 request={"name": item, "target": move_target},
             )
         if intent == "shopping_summary":
+            store_hint = store_name or self.shopping_service.parse_store_visit(text)
+            if store_hint:
+                return await self._list_store_items(user_id=user_id, store_name=store_hint)
             return await self._shopping_summary(user_id=user_id)
         if intent == "expense_query":
             ai_kind = str(data.get("kind") or "spend").strip().lower()
@@ -767,9 +770,14 @@ class AssistantService:
                     for task in action_tasks[:8]
                 ]
             )
+            include_tasks_in_text = period == "tomorrow"
             return AssistantResponse(
                 intent=AssistantIntent.planning_note,
-                text=await self._generate_daily_plan_text(user_id=user_id, plan_date=start),
+                text=await self._generate_daily_plan_text(
+                    user_id=user_id,
+                    plan_date=start,
+                    include_tasks=include_tasks_in_text,
+                ),
                 metadata={"task_actions": task_actions},
             )
 
@@ -1031,7 +1039,13 @@ class AssistantService:
             text=f"{action_text}: {task.title}.\n\nUpdated plan:\n\n" + plan_text,
         )
 
-    async def _generate_daily_plan_text(self, *, user_id: UUID, plan_date: date) -> str:
+    async def _generate_daily_plan_text(
+        self,
+        *,
+        user_id: UUID,
+        plan_date: date,
+        include_tasks: bool = True,
+    ) -> str:
         user = await UserRepository(self.session).get_by_id(user_id=user_id)
         if user is None:
             raise RuntimeError("User must exist before planning can run.")
@@ -1108,7 +1122,7 @@ class AssistantService:
             plan=plan,
             status=DailyPlanStatus.draft,
         )
-        return planning_service.render_plan_message(plan)
+        return planning_service.render_plan_message(plan, include_tasks=include_tasks)
 
     async def _add_shopping_item(
         self,
@@ -1386,15 +1400,35 @@ class AssistantService:
         due_date = self._date_from_text(request.get("date_text", ""), user.timezone)
 
         if target == "tomorrow":
+            from app.utils.datetime import now_in_timezone
+
+            target_day = due_date or self._tomorrow_for_user_timezone(user.timezone)
             moved = await self.task_repository.move_pending_by_title(
                 user_id=user_id,
                 title=name,
-                due_date=due_date or self._tomorrow_for_user_timezone(user.timezone),
+                due_date=target_day,
             )
             if moved is None:
+                source_day = now_in_timezone(user.timezone).date()
+                moved_event = await self._move_planning_event_between_days(
+                    user_id=user_id,
+                    household_id=household_id,
+                    title=name,
+                    source_day=source_day,
+                    target_day=target_day,
+                )
+                if moved_event is None:
+                    return AssistantResponse(
+                        intent=AssistantIntent.unknown,
+                        text=f"I could not find a pending task or planning event called '{name}' to move.",
+                    )
+                updated_plan = await self._generate_daily_plan_text(user_id=user_id, plan_date=target_day)
                 return AssistantResponse(
-                    intent=AssistantIntent.unknown,
-                    text=f"I could not find a pending task called '{name}' to move.",
+                    intent=AssistantIntent.item_moved,
+                    text=(
+                        f"Moved event to {target_day.isoformat()}: {name}.\n\n"
+                        f"Updated plan:\n\n{updated_plan}"
+                    ),
                 )
             await self.activity_repository.log(
                 household_id=household_id,
@@ -1493,6 +1527,67 @@ class AssistantService:
             intent=AssistantIntent.item_moved,
             text=f"Moved {reassigned.name} to {store_label}.",
         )
+
+    async def _move_planning_event_between_days(
+        self,
+        *,
+        user_id: UUID,
+        household_id: UUID,
+        title: str,
+        source_day: date,
+        target_day: date,
+    ) -> str | None:
+        source = await self.planning_repository.get_conversation(user_id=user_id, plan_date=source_day)
+        if source is None or not source.unusual_notes:
+            return None
+
+        parts = [part.strip() for part in source.unusual_notes.split(";") if part.strip()]
+        if not parts:
+            return None
+
+        target_title = self._normalize_event_title(title)
+        moved_part = None
+        remaining_parts: list[str] = []
+        for part in parts:
+            event = PlanningService._fixed_events_from_notes(part)
+            event_title = self._normalize_event_title(event[0]["title"]) if event else ""
+            part_title = self._normalize_event_title(part)
+            is_match = (
+                (event and (target_title in event_title or event_title in target_title))
+                or (target_title in part_title or part_title in target_title)
+            )
+            if moved_part is None and is_match:
+                moved_part = part
+                continue
+            remaining_parts.append(part)
+
+        if moved_part is None:
+            return None
+
+        await self.planning_repository.save_answer(
+            conversation=source,
+            message_text=f"Moved event out: {title}",
+            unusual_notes="; ".join(remaining_parts),
+            next_state=PlanningConversationState.complete,
+        )
+
+        target = await self.planning_repository.get_conversation(user_id=user_id, plan_date=target_day)
+        if target is None:
+            target = await self.planning_repository.start_conversation(
+                user_id=user_id,
+                household_id=household_id,
+                plan_date=target_day,
+            )
+        target_parts = [part.strip() for part in (target.unusual_notes or "").split(";") if part.strip()]
+        if moved_part.casefold() not in {part.casefold() for part in target_parts}:
+            target_parts.append(moved_part)
+        await self.planning_repository.save_answer(
+            conversation=target,
+            message_text=f"Moved event in: {title}",
+            unusual_notes="; ".join(target_parts),
+            next_state=PlanningConversationState.complete,
+        )
+        return moved_part
 
     async def _expense_summary(
         self,
@@ -1971,6 +2066,12 @@ class AssistantService:
     @staticmethod
     def _is_shopping_summary_query(text: str) -> bool:
         lowered = text.lower().strip(" ?!.")
+        if ("online" in lowered and ("buy" in lowered or "shopping" in lowered or "comprar" in lowered)):
+            return False
+        if re.search(r"\b(?:from|at|in|no|na|em)\s+[a-zA-Z0-9À-ÿ' -]+$", lowered) and (
+            "buy" in lowered or "shopping" in lowered or "comprar" in lowered
+        ):
+            return False
         return (
             "what do i need to buy" in lowered
             or "what do we need to buy" in lowered
@@ -2034,10 +2135,14 @@ class AssistantService:
     def _parse_fixed_event_note(text: str) -> tuple[str, date | None] | None:
         stripped = text.strip()
         lowered = stripped.lower()
-        if not re.search(
-            r"\b(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\s*(?:to|and|-)\s*(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\b",
-            lowered,
-        ):
+        has_time_range = bool(
+            re.search(
+                r"\b(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\s*(?:to|and|-)\s*(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\b",
+                lowered,
+            )
+        )
+        has_all_day_marker = bool(re.search(r"\b(all day|birthday|anniversary)\b", lowered))
+        if not has_time_range and not has_all_day_marker:
             return None
         event_markers = (
             "change of plans",
@@ -2055,6 +2160,8 @@ class AssistantService:
             "meeting",
             "church",
             "party",
+            "birthday",
+            "anniversary",
         )
         if not any(marker in lowered for marker in event_markers):
             return None
