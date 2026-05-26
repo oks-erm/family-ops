@@ -101,6 +101,20 @@ class AssistantService:
                     original_question=text,
                 )
 
+        # Explicit event command: handle deterministically so "event ... all day"
+        # does not fall through to the generic unknown response.
+        explicit_event_note = self._parse_explicit_event_phrase(text)
+        if explicit_event_note is not None:
+            if not self._has_explicit_day_reference(text):
+                return AssistantResponse(
+                    intent=AssistantIntent.planning_note,
+                    text="I can add that as an event. For which day: today or tomorrow?",
+                )
+            return await self._store_planning_note(
+                user_id=user_id,
+                text=explicit_event_note,
+            )
+
         # Deterministic store query override: explicit shopping questions like
         # "what do I need to buy online/from Lidl" should never fall back to
         # full shopping summary output.
@@ -2164,6 +2178,23 @@ class AssistantService:
         ):
             return stripped, None
         return None
+
+    @staticmethod
+    def _parse_explicit_event_phrase(text: str) -> str | None:
+        stripped = text.strip()
+        match = re.match(r"^(?:event|evento)\s+(.+)$", stripped, flags=re.IGNORECASE)
+        if not match:
+            return None
+        note = match.group(1).strip(" .")
+        return note or None
+
+    @staticmethod
+    def _has_explicit_day_reference(text: str) -> bool:
+        lowered = text.lower()
+        return bool(
+            re.search(r"\b(today|tomorrow|tonight|hoje|amanha|amanhã)\b", lowered)
+            or re.search(r"\b20\d{2}-\d{2}-\d{2}\b", lowered)
+        )
 
     @staticmethod
     def _parse_remove_event_request(text: str) -> tuple[str, date | None] | None:
