@@ -1,5 +1,3 @@
-import re
-
 from aiogram import F, Router
 from aiogram.types import Message
 
@@ -15,7 +13,11 @@ router = Router()
 def _strip_tasks_section(text: str) -> str:
     # When per-task action buttons are rendered separately, remove the inline
     # Tasks block from the plan text to avoid duplicate content.
-    return re.sub(r"\n\nTasks\n[\s\S]*$", "", text).rstrip()
+    lines = text.splitlines()
+    for idx, line in enumerate(lines):
+        if line.strip().lower() == "tasks":
+            return "\n".join(lines[:idx]).rstrip()
+    return text.rstrip()
 
 
 @router.message(F.text & ~F.text.startswith("/"))
