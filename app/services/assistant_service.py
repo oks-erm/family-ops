@@ -80,12 +80,6 @@ class AssistantService:
                     return await self._confirm_remove_task(user_id=user_id, task_info=pending[choice])
                 return AssistantResponse(intent=AssistantIntent.unknown, text="Invalid selection.")
 
-        # Deterministic move parser runs first — "move X to Y" is unambiguous and the AI
-        # tends to misclassify it as shopping_summary or going_to_store.
-        move_request = self._parse_move_request(text)
-        if move_request is not None:
-            return await self._move_item(user_id=user_id, request=move_request)
-
         # Breakdown follow-up must also run before the AI so "Breakdown" / "Detalhe"
         # is not intercepted by the AI's clarify/unknown handler.
         _BREAKDOWN_WORDS = ("breakdown", "details", "detalhe", "detalhes", "listar")
@@ -100,6 +94,19 @@ class AssistantService:
                     category=cached.get("category"),
                     original_question=text,
                 )
+
+        ai_result = await self.ai_router.classify_light_intent(text=text)
+        ai_response = await self._handle_ai_classification(
+            user_id=user_id,
+            text=text,
+            data=ai_result.data,
+        )
+        if ai_response is not None:
+            return ai_response
+
+        move_request = self._parse_move_request(text)
+        if move_request is not None:
+            return await self._move_item(user_id=user_id, request=move_request)
 
         # Explicit event command: handle deterministically so "event ... all day"
         # does not fall through to the generic unknown response.
@@ -121,15 +128,6 @@ class AssistantService:
         explicit_store = self._extract_store_from_shopping_query(text)
         if explicit_store is not None and self._looks_like_store_shopping_question(text):
             return await self._list_store_items(user_id=user_id, store_name=explicit_store)
-
-        ai_result = await self.ai_router.classify_light_intent(text=text)
-        ai_response = await self._handle_ai_classification(
-            user_id=user_id,
-            text=text,
-            data=ai_result.data,
-        )
-        if ai_response is not None:
-            return ai_response
 
         conversational_response = self._parse_conversational(text)
         if conversational_response is not None:
@@ -500,12 +498,15 @@ class AssistantService:
         if intent == "planning_note":
             return await self._store_planning_note(user_id=user_id, text=text, explicit_date=plan_date)
         if intent == "add_shopping_item" and item:
-            return await self._add_shopping_item(
-                user_id=user_id,
-                item=ParsedShoppingItem(name=item, store_name=store_name),
-            )
+            shopping_items = self._shopping_items_from_ai(item=item, store_name=store_name)
+            if len(shopping_items) > 1:
+                return await self._add_shopping_items(user_id=user_id, items=shopping_items)
+            return await self._add_shopping_item(user_id=user_id, item=shopping_items[0])
         if intent == "mark_shopping_purchased" and item:
-            return await self._mark_purchased(user_id=user_id, item_names=[item])
+            return await self._mark_purchased(
+                user_id=user_id,
+                item_names=self._shopping_item_names_from_ai(item),
+            )
         if intent == "going_to_store" and (store_name or item):
             return await self._list_store_items(user_id=user_id, store_name=store_name or item)
         if intent == "remove_item" and item:
@@ -553,9 +554,75 @@ class AssistantService:
                 category=ai_category,
                 original_question=text,
             )
+        if intent == "finance_transaction":
+            return await self._add_ai_finance_transaction(
+                user_id=user_id,
+                data=data,
+                fallback_text=text,
+            )
         if intent in {"unknown", "clarify"} and reply:
             return AssistantResponse(intent=AssistantIntent.unknown, text=reply)
         return None
+
+    def _shopping_items_from_ai(self, *, item: str, store_name: str | None) -> list[ParsedShoppingItem]:
+        names = self._shopping_item_names_from_ai(item)
+        return [ParsedShoppingItem(name=name, store_name=store_name) for name in names]
+
+    @staticmethod
+    def _shopping_item_names_from_ai(item: str) -> list[str]:
+        cleaned = item.strip(" .")
+        if not cleaned:
+            return []
+        if "," not in cleaned and ";" not in cleaned and "\n" not in cleaned:
+            return [AssistantService._clean_ai_item_name(cleaned)]
+        parts = re.split(r"[,;\n]+", cleaned)
+        return [AssistantService._clean_ai_item_name(part) for part in parts if AssistantService._clean_ai_item_name(part)]
+
+    @staticmethod
+    def _clean_ai_item_name(value: str) -> str:
+        text = value.strip(" .")
+        for quote in ("\"", "'", "“", "”", "‘", "’"):
+            text = text.replace(quote, "")
+        return text.strip(" .")
+
+    async def _add_ai_finance_transaction(
+        self,
+        *,
+        user_id: UUID,
+        data: dict[str, object],
+        fallback_text: str,
+    ) -> AssistantResponse | None:
+        amount = str(data.get("amount") or "").strip()
+        description = str(data.get("item") or data.get("title") or "").strip()
+        if not amount or not description:
+            return None
+        from app.services.finance_service import ParsedFinanceMessage
+        from app.db.models import TransactionType
+
+        raw_kind = str(data.get("kind") or data.get("transaction_type") or "").strip().lower()
+        is_income = raw_kind == "income"
+        finance_service = FinanceService(self.session, self.ai_router.settings)
+        category = str(data.get("category") or "").strip()
+        if not category or category not in finance_service.category_service.categories():
+            category = finance_service.category_service.category_for(description, is_income=is_income)
+        parsed = ParsedFinanceMessage(
+            transaction_type=TransactionType.income if is_income else TransactionType.expense,
+            description=finance_service.clean_transaction_description(description or fallback_text),
+            amount=finance_service.clean_amount(amount) or amount,
+            category=category,
+            merchant=finance_service.clean_transaction_description(description or fallback_text),
+        )
+        user = await UserRepository(self.session).get_by_id(user_id=user_id)
+        if user is None:
+            raise RuntimeError("User must exist before finance actions can run.")
+        from app.utils.datetime import now_in_timezone
+
+        response_text = await finance_service.add_manual_transaction(
+            user_id=user_id,
+            parsed=parsed,
+            occurred_on=now_in_timezone(user.timezone).date(),
+        )
+        return AssistantResponse(intent=AssistantIntent.finance_transaction, text=response_text)
 
     async def _date_from_ai_ref(self, *, user_id: UUID, date_ref: str) -> date | None:
         if not date_ref:

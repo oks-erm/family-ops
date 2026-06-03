@@ -59,16 +59,16 @@ class ShoppingService:
             item = remainder[:split_at]
             store = remainder[split_at + len(separator) :]
             if store.strip().lower() in {"anywhere", "qualquer sitio", "qualquer sítio", "qualquer loja"}:
-                return ParsedShoppingItem(name=item.strip(), store_name=None)
-            return ParsedShoppingItem(name=item.strip(), store_name=store.strip())
+                return ParsedShoppingItem(name=self._clean_item_name(item), store_name=None)
+            return ParsedShoppingItem(name=self._clean_item_name(item), store_name=store.strip())
         anywhere_suffix = self._anywhere_suffix(remainder_lower)
         if anywhere_suffix is not None:
-            return ParsedShoppingItem(name=remainder[: -len(anywhere_suffix)].strip(), store_name=None)
+            return ParsedShoppingItem(name=self._clean_item_name(remainder[: -len(anywhere_suffix)]), store_name=None)
         trailing_store = self._trailing_store(remainder)
         if trailing_store is not None:
             item_name, store_name = trailing_store
             return ParsedShoppingItem(name=item_name, store_name=store_name)
-        return ParsedShoppingItem(name=remainder, store_name=None)
+        return ParsedShoppingItem(name=self._clean_item_name(remainder), store_name=None)
 
     def parse_store_visit(self, text: str) -> str | None:
         normalized = text.strip()
@@ -123,12 +123,19 @@ class ShoppingService:
 
     def _split_items(self, text: str) -> list[str]:
         """Split on commas only — 'and'/'e' in product names (e.g. 'salt and pepper') must not be split."""
-        return [item.strip(" .") for item in text.split(",") if item.strip(" .")]
+        return [self._clean_item_name(item) for item in text.split(",") if self._clean_item_name(item)]
 
     def _split_purchased_items(self, text: str) -> list[str]:
         """Split purchased items list; 'and'/'e' treated as list separators here."""
         cleaned = text.replace(" and ", ",").replace(" e ", ",")
-        return [item.strip(" .") for item in cleaned.split(",") if item.strip(" .")]
+        return [self._clean_item_name(item) for item in cleaned.split(",") if self._clean_item_name(item)]
+
+    @staticmethod
+    def _clean_item_name(value: str) -> str:
+        text = value.strip().strip(" .")
+        for quote in ("\"", "'", "“", "”", "‘", "’"):
+            text = text.replace(quote, "")
+        return text.strip(" .")
 
     @staticmethod
     def _store_separator(lowered_text: str) -> tuple[int, str] | None:
@@ -153,7 +160,7 @@ class ShoppingService:
             if lowered.endswith(suffix):
                 item_name = cleaned[: -len(suffix)].strip(" .")
                 if item_name:
-                    return item_name, cls._display_store_name(store)
+                    return cls._clean_item_name(item_name), cls._display_store_name(store)
         return None
 
     @staticmethod
@@ -213,5 +220,3 @@ class ShoppingService:
             "organize ",
             "wash ",
         )
-
-

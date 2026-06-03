@@ -162,8 +162,8 @@ class FinanceService:
         match = re.search(r"(.+?)\s+([€¢]?\s*\d+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?\s*(?:eur|€|¢))\s*$", stripped, re.I)
         if not match:
             return None
-        description = match.group(1).strip(" :.-")
-        amount = self._clean_amount(match.group(2))
+        description = self.clean_transaction_description(match.group(1))
+        amount = self.clean_amount(match.group(2))
         if amount is None or not description:
             return None
         lowered = description.lower()
@@ -198,8 +198,10 @@ class FinanceService:
         )
 
     def _parsed_from_extracted(self, item: dict[str, Any]) -> ParsedFinanceMessage | None:
-        description = str(item.get("description") or item.get("merchant") or "").strip()
-        amount = self._clean_amount(item.get("amount"))
+        description = self.clean_transaction_description(
+            str(item.get("description") or item.get("merchant") or "")
+        )
+        amount = self.clean_amount(item.get("amount"))
         if not description or amount is None:
             return None
         raw_type = str(item.get("transaction_type") or "").lower()
@@ -227,7 +229,7 @@ class FinanceService:
         )
 
     @staticmethod
-    def _clean_amount(value: Any) -> str | None:
+    def clean_amount(value: Any) -> str | None:
         if value is None:
             return None
         text = str(value).lower().replace("eur", "").replace("€", "").replace("¢", "").strip()
@@ -237,6 +239,18 @@ class FinanceService:
         except InvalidOperation:
             return None
         return str(amount.quantize(Decimal("0.01")))
+
+    @staticmethod
+    def clean_transaction_description(value: str) -> str:
+        text = value.strip(" :.-")
+        text = re.sub(
+            r"^(?:expense|spent|spend|paid|pay|income|received|recebi|despesa|gasto|gastei|rendimento|entrada)\s+",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(r"\s+", " ", text).strip(" :.-")
+        return text
 
     @staticmethod
     def _parse_date(value: Any) -> date | None:

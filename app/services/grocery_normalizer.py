@@ -48,6 +48,11 @@ class GroceryNormalizer:
         "detergente": "detergent",
         "guardanapos": "napkin",
         "guardanapo": "napkin",
+        "toalhitas": "wipe",
+        "toalhita": "wipe",
+        "lencos": "wipe",
+        "lenços": "wipe",
+        "wipes": "wipe",
         "molho tomate": "tomato sauce",
         "molho de tomate": "tomato sauce",
         "papel higienico": "toilet paper",
@@ -82,6 +87,8 @@ class GroceryNormalizer:
         "cerejas": "cherry",
         "mirtilo": "blueberry",
         "mirtilos": "blueberry",
+        "pessego": "peach",
+        "pessegos": "peach",
         # vegetables
         "cenoura": "carrot",
         "cenouras": "carrot",
@@ -101,6 +108,8 @@ class GroceryNormalizer:
         "ervilha": "pea",
         "beterraba": "beetroot",
         "alface": "lettuce",
+        "repolho": "cabbage",
+        "repolho branco": "cabbage",
         "pimento": "pepper",
         "pimentos": "pepper",
         # meat / fish
@@ -117,10 +126,14 @@ class GroceryNormalizer:
         "lulas": "squid",
         "sardinhas": "sardine",
         "sardinha": "sardine",
+        "carne picada": "ground meat",
         # dairy
         "natas": "cream",
         "nata": "cream",
         "requeijao": "ricotta",
+        # bread
+        "massa mae": "sourdough",
+        "massa mãe": "sourdough",
     }
 
     _drop_words = {
@@ -147,6 +160,7 @@ class GroceryNormalizer:
         "unidades",
         # Portuguese prepositions/articles common in grocery names
         "de",
+        "e",
         "da",
         "do",
         "das",
@@ -167,6 +181,13 @@ class GroceryNormalizer:
         "magra",
         "gordo",
         "gorda",
+        "branco",
+        "branca",
+        "brancos",
+        "brancas",
+        "cara",
+        "maos",
+        "mãos",
     }
 
     def normalize(self, value: str) -> str:

@@ -1,3 +1,4 @@
+from difflib import SequenceMatcher
 from uuid import UUID
 
 from sqlalchemy import select
@@ -152,4 +153,32 @@ class ShoppingRepository:
             return True
         item_tokens = set(item_name.split())
         target_tokens = set(target_name.split())
-        return bool(item_tokens and target_tokens and item_tokens.issubset(target_tokens))
+        if not item_tokens or not target_tokens:
+            return False
+        if item_tokens.issubset(target_tokens):
+            return True
+        if target_tokens.issubset(item_tokens):
+            return not self._only_generic_tokens(target_tokens)
+        overlap = item_tokens & target_tokens
+        if len(overlap) / min(len(item_tokens), len(target_tokens)) >= 0.67:
+            return True
+        return SequenceMatcher(None, item_name, target_name).ratio() >= 0.78
+
+    @staticmethod
+    def _only_generic_tokens(tokens: set[str]) -> bool:
+        generic = {
+            "water",
+            "cheese",
+            "bread",
+            "meat",
+            "milk",
+            "sauce",
+            "juice",
+            "oil",
+            "fish",
+            "fruit",
+            "vegetable",
+            "veg",
+            "food",
+        }
+        return bool(tokens) and tokens.issubset(generic)
