@@ -105,7 +105,7 @@ async def google_calendar_callback(
         await CalendarRepository(session).upsert_google_connection(
             user_id=user.id,
             household_id=household.id,
-            external_account_id=None,
+            external_account_id=settings.google_calendar_id.strip() or "primary",
             access_token=token_data.get("access_token"),
             refresh_token=token_data.get("refresh_token"),
             token_expires_at=token_expires_at,

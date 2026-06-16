@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime, time, timedelta
+from urllib.parse import quote
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -70,13 +71,16 @@ class CalendarService:
         now = datetime.now(UTC)
         time_min = (now - timedelta(days=7)).isoformat().replace("+00:00", "Z")
         time_max = (now + timedelta(days=45)).isoformat().replace("+00:00", "Z")
+        settings = get_settings()
         async with httpx.AsyncClient(timeout=12) as client:
             for connection in connections:
                 access_token = await self._google_access_token(client=client, connection=connection)
                 if not access_token:
                     continue
+                calendar_id = (connection.external_account_id or settings.google_calendar_id or "primary").strip()
+                calendar_path = quote(calendar_id, safe="")
                 response = await client.get(
-                    "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+                    f"https://www.googleapis.com/calendar/v3/calendars/{calendar_path}/events",
                     params={
                         "singleEvents": "true",
                         "orderBy": "startTime",

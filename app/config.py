@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     google_client_id: str | None = Field(default=None, alias="GOOGLE_CLIENT_ID")
     google_client_secret: str | None = Field(default=None, alias="GOOGLE_CLIENT_SECRET")
     google_redirect_uri: str | None = Field(default=None, alias="GOOGLE_REDIRECT_URI")
+    google_calendar_id: str = Field(default="primary", alias="GOOGLE_CALENDAR_ID")
     dashboard_google_redirect_uri: str | None = Field(
         default=None,
         alias="DASHBOARD_GOOGLE_REDIRECT_URI",
