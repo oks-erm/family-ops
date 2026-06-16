@@ -1,9 +1,11 @@
 from datetime import UTC, datetime, timedelta
+import secrets
 from urllib.parse import urlencode
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
 
 from app.config import get_settings
 from app.db.repositories.calendar import CalendarRepository
@@ -27,16 +29,22 @@ async def _dashboard_context(session):
 
 
 @router.get("/google/start")
-async def google_calendar_start() -> dict[str, str]:
+async def google_calendar_start(request: Request) -> RedirectResponse:
     settings = get_settings()
     if not settings.google_client_id or not settings.google_redirect_uri:
         raise HTTPException(status_code=400, detail="Google OAuth env vars are not configured.")
 
     async with async_session_factory() as session:
-        user, _ = await _dashboard_context(session)
+        google_email = request.session.get("google_email")
+        if not google_email:
+            raise HTTPException(status_code=401, detail="Sign in to the dashboard before connecting Google Calendar.")
+        user = await UserRepository(session).get_by_google_email(google_email=str(google_email))
         if user is None:
             raise HTTPException(status_code=404, detail="No onboarded user found.")
 
+    state = secrets.token_urlsafe(24)
+    request.session["calendar_oauth_state"] = state
+    request.session["calendar_oauth_user_id"] = str(user.id)
     query = urlencode(
         {
             "client_id": settings.google_client_id,
@@ -45,24 +53,35 @@ async def google_calendar_start() -> dict[str, str]:
             "scope": " ".join(GOOGLE_SCOPES),
             "access_type": "offline",
             "prompt": "consent",
-            "state": str(user.id),
+            "state": state,
         }
     )
-    return {"authorization_url": f"https://accounts.google.com/o/oauth2/v2/auth?{query}"}
+    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{query}")
 
 
 @router.get("/google/callback")
 async def google_calendar_callback(
+    request: Request,
     *,
     code: str = Query(...),
     state: str = Query(...),
-) -> dict[str, str]:
+) -> RedirectResponse:
     settings = get_settings()
     if not settings.google_client_id or not settings.google_client_secret or not settings.google_redirect_uri:
         raise HTTPException(status_code=400, detail="Google OAuth env vars are not configured.")
 
     async with async_session_factory() as session:
-        user = await UserRepository(session).get_by_id(user_id=UUID(state))
+        expected_state = request.session.pop("calendar_oauth_state", None)
+        user_id_raw = request.session.pop("calendar_oauth_user_id", None)
+        if expected_state == state and user_id_raw:
+            user_id = UUID(str(user_id_raw))
+        else:
+            # Legacy fallback for old links created before session-bound calendar OAuth.
+            try:
+                user_id = UUID(state)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="Invalid or expired calendar OAuth state.") from exc
+        user = await UserRepository(session).get_by_id(user_id=user_id)
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for OAuth state.")
         household = await HouseholdRepository(session).ensure_household_for_user(user=user)
@@ -92,7 +111,8 @@ async def google_calendar_callback(
             token_expires_at=token_expires_at,
             scopes=GOOGLE_SCOPES,
         )
-        return {"status": "connected"}
+        await CalendarService(session).sync_google_connections(household_id=household.id)
+        return RedirectResponse("/dashboard?calendar=connected")
 
 
 @router.post("/ical")

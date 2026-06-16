@@ -1,14 +1,15 @@
 import logging
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import select
 
 from app.bot.keyboards import task_action_keyboard
 from app.config import Settings
-from app.db.models import DailyPlanStatus, PlanningConversationState
+from app.db.models import DailyPlanStatus, PlanningConversation, PlanningConversationState
 from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.planning import PlanningRepository
 from app.db.repositories.routines import RoutineRepository
@@ -53,6 +54,12 @@ class SchedulerService:
             self.sync_calendars,
             CronTrigger(minute="*/30", timezone=ZoneInfo(self.settings.default_timezone)),
             id="sync_calendars",
+            replace_existing=True,
+        )
+        self.scheduler.add_job(
+            self.cleanup_stale_planning_prompts,
+            CronTrigger(minute="*/30", timezone=ZoneInfo(self.settings.default_timezone)),
+            id="cleanup_stale_planning_prompts",
             replace_existing=True,
         )
         self.scheduler.add_job(
@@ -141,10 +148,25 @@ class SchedulerService:
                     conversation.state = next_state
                     conversation.raw_notes = [
                         *(conversation.raw_notes or []),
-                        {"state": "scheduled", "text": prompt_key},
+                        {
+                            "state": "scheduled",
+                            "text": prompt_key,
+                            "sent_at": datetime.now(UTC).isoformat(),
+                        },
                     ]
                     await session.commit()
-                    await self.bot.send_message(chat_id=user.telegram_chat_id, text=prompt_text)
+                    sent_message = await self.bot.send_message(chat_id=user.telegram_chat_id, text=prompt_text)
+                    conversation.raw_notes = [
+                        *(conversation.raw_notes or []),
+                        {
+                            "state": "scheduled_message",
+                            "text": prompt_key,
+                            "chat_id": user.telegram_chat_id,
+                            "message_id": sent_message.message_id,
+                            "sent_at": datetime.now(UTC).isoformat(),
+                        },
+                    ]
+                    await session.commit()
                 except Exception:
                     logger.exception("Failed to send evening planning prompt to user %s", user.id)
 
@@ -194,11 +216,49 @@ class SchedulerService:
                                 reply_markup=task_action_keyboard(str(task.id)),
                             )
                     else:
-                        await self.bot.send_message(chat_id=user.telegram_chat_id, text="Evening review: no open tasks for today.")
+                        logger.info("Skipping empty evening review for user %s.", user.id)
                     plan.status = DailyPlanStatus.reviewed
                     await session.commit()
                 except Exception:
                     logger.exception("Failed to send evening review to user %s", user.id)
+
+    async def cleanup_stale_planning_prompts(self) -> None:
+        if self.bot is None:
+            return
+        cutoff = datetime.now(UTC) - timedelta(hours=6)
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(PlanningConversation).where(
+                    PlanningConversation.state != PlanningConversationState.complete,
+                    PlanningConversation.updated_at < cutoff,
+                )
+            )
+            conversations = list(result.scalars().all())
+            for conversation in conversations:
+                try:
+                    for note in conversation.raw_notes or []:
+                        if not isinstance(note, dict) or note.get("state") != "scheduled_message":
+                            continue
+                        chat_id = note.get("chat_id")
+                        message_id = note.get("message_id")
+                        if chat_id is None or message_id is None:
+                            continue
+                        try:
+                            await self.bot.delete_message(chat_id=int(chat_id), message_id=int(message_id))
+                        except Exception:
+                            logger.info("Could not delete stale planning prompt %s.", message_id)
+                    conversation.state = PlanningConversationState.complete
+                    conversation.raw_notes = [
+                        *(conversation.raw_notes or []),
+                        {
+                            "state": "expired",
+                            "text": "Planning prompt expired after 6 hours without response.",
+                            "expired_at": datetime.now(UTC).isoformat(),
+                        },
+                    ]
+                    await session.commit()
+                except Exception:
+                    logger.exception("Failed to expire stale planning conversation %s", conversation.id)
 
     async def sync_calendars(self) -> None:
         async with async_session_factory() as session:
@@ -328,18 +388,8 @@ class SchedulerService:
         planning_service = PlanningService()
         await self.bot.send_message(
             chat_id=user.telegram_chat_id,
-            text=planning_service.render_plan_message(existing_plan.plan),
+            text=planning_service.render_morning_brief(existing_plan.plan),
         )
-        actionable_tasks = await task_repository.list_pending_for_user(
-            user_id=user.id,
-            through_date=today,
-        )
-        for task in actionable_tasks[:8]:
-            await self.bot.send_message(
-                chat_id=user.telegram_chat_id,
-                text=task.title,
-                reply_markup=task_action_keyboard(str(task.id)),
-            )
         existing_plan.status = DailyPlanStatus.sent
         await session.commit()
 

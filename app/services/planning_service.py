@@ -95,6 +95,49 @@ class PlanningService:
 
         return "\n".join(lines)
 
+    def render_morning_brief(self, plan: dict[str, object]) -> str:
+        lines = ["Today"]
+        work_block = plan.get("work_block") or {}
+        if isinstance(work_block, dict) and (work_block.get("start") or work_block.get("end")):
+            lines.append(f"Work: {work_block.get('start') or '?'}-{work_block.get('end') or '?'}")
+
+        fixed_events = [
+            event
+            for event in (plan.get("fixed_events") or [])
+            if isinstance(event, dict) and str(event.get("source") or "").lower() != "work"
+        ]
+        if fixed_events:
+            event_labels = []
+            for event in fixed_events[:4]:
+                if event.get("all_day"):
+                    event_labels.append(f"{event['title']} all day")
+                else:
+                    event_labels.append(f"{event['start']}-{event['end']} {event['title']}")
+            if len(fixed_events) > 4:
+                event_labels.append(f"+{len(fixed_events) - 4} more")
+            lines.append("Busy: " + "; ".join(event_labels))
+
+        free_windows = plan.get("free_windows") or []
+        if free_windows:
+            lines.append(
+                "Free: "
+                + ", ".join(f"{window['start']}-{window['end']}" for window in free_windows[:3])
+            )
+
+        tasks = plan.get("suggested_tasks") or []
+        task_titles = []
+        for task in tasks[:4]:
+            if not isinstance(task, dict):
+                task_titles.append(str(task))
+                continue
+            title = str(task.get("title") or "").strip()
+            if title:
+                task_titles.append(title)
+        if task_titles:
+            lines.append("Could do: " + ", ".join(task_titles))
+
+        return "\n".join(lines)
+
     def _fixed_events(self, planning_input: PlanningInput) -> list[dict[str, str]]:
         events = []
         if planning_input.work_start and planning_input.work_end:

@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db.models import CalendarProvider
 from app.db.repositories.calendar import CalendarRepository
 from app.services.planning_service import CalendarEventInput
@@ -71,7 +72,8 @@ class CalendarService:
         time_max = (now + timedelta(days=45)).isoformat().replace("+00:00", "Z")
         async with httpx.AsyncClient(timeout=12) as client:
             for connection in connections:
-                if not connection.access_token:
+                access_token = await self._google_access_token(client=client, connection=connection)
+                if not access_token:
                     continue
                 response = await client.get(
                     "https://www.googleapis.com/calendar/v3/calendars/primary/events",
@@ -81,7 +83,7 @@ class CalendarService:
                         "timeMin": time_min,
                         "timeMax": time_max,
                     },
-                    headers={"Authorization": f"Bearer {connection.access_token}"},
+                    headers={"Authorization": f"Bearer {access_token}"},
                 )
                 response.raise_for_status()
                 for item in response.json().get("items", []):
@@ -102,6 +104,39 @@ class CalendarService:
                     )
                     synced += 1
         return synced
+
+    async def _google_access_token(self, *, client: httpx.AsyncClient, connection) -> str | None:
+        if not connection.access_token and not connection.refresh_token:
+            return None
+        expires_at = connection.token_expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if connection.access_token and (expires_at is None or expires_at > datetime.now(UTC) + timedelta(minutes=2)):
+            return connection.access_token
+        if not connection.refresh_token:
+            return connection.access_token
+
+        settings = get_settings()
+        if not settings.google_client_id or not settings.google_client_secret:
+            return connection.access_token
+        response = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": settings.google_client_id,
+                "client_secret": settings.google_client_secret,
+                "refresh_token": connection.refresh_token,
+                "grant_type": "refresh_token",
+            },
+        )
+        response.raise_for_status()
+        token_data = response.json()
+        connection.access_token = token_data.get("access_token") or connection.access_token
+        expires_in = int(token_data.get("expires_in") or 0)
+        if expires_in:
+            connection.token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+        await self.session.commit()
+        await self.session.refresh(connection)
+        return connection.access_token
 
     def _parse_ics_events(self, ics_text: str) -> list[dict[str, object]]:
         unfolded = self._unfold_ics(ics_text)

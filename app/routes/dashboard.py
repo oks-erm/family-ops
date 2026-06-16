@@ -1067,6 +1067,7 @@ async def dashboard_page(request: Request) -> str:
       fill: none;
     }
     .link-btn:hover { color: var(--ink); border-color: #cbd5e1; }
+    a.link-btn { text-decoration: none; display: inline-flex; align-items: center; }
     .rows { display: grid; gap: 6px; }
     .filters {
       display: grid;
@@ -1538,6 +1539,7 @@ async def dashboard_page(request: Request) -> str:
         </nav>
       </div>
       <div class="top-actions">
+        <a class="link-btn" href="/calendar/google/start">Connect calendar</a>
         <select class="month-control" id="scope-filter" aria-label="Dashboard period type">
           <option value="month">Month</option>
           <option value="range">Range</option>

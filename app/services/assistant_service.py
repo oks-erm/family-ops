@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 import re
 from uuid import UUID
@@ -395,7 +395,10 @@ class AssistantService:
         from app.utils.datetime import now_in_timezone
 
         today = now_in_timezone(user.timezone).date()
-        if conversation.plan_date <= today:
+        updated_at = conversation.updated_at
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=UTC)
+        if conversation.plan_date <= today or updated_at < datetime.now(UTC) - timedelta(hours=6):
             conversation.state = PlanningConversationState.complete
             await self.session.commit()
             return None

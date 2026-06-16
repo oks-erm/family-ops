@@ -44,17 +44,32 @@ class CalendarRepository:
         token_expires_at: datetime | None,
         scopes: list[str],
     ) -> CalendarConnection:
-        connection = CalendarConnection(
-            user_id=user_id,
-            household_id=household_id,
-            provider=CalendarProvider.google,
-            external_account_id=external_account_id,
-            access_token=access_token,
-            refresh_token=refresh_token,
-            token_expires_at=token_expires_at,
-            scopes=scopes,
+        result = await self.session.execute(
+            select(CalendarConnection).where(
+                CalendarConnection.user_id == user_id,
+                CalendarConnection.provider == CalendarProvider.google,
+                CalendarConnection.external_account_id == external_account_id,
+            )
         )
-        self.session.add(connection)
+        connection = result.scalars().first()
+        if connection is None:
+            connection = CalendarConnection(
+                user_id=user_id,
+                household_id=household_id,
+                provider=CalendarProvider.google,
+                external_account_id=external_account_id,
+                access_token=access_token,
+                refresh_token=refresh_token,
+                token_expires_at=token_expires_at,
+                scopes=scopes,
+            )
+            self.session.add(connection)
+        else:
+            connection.household_id = household_id
+            connection.access_token = access_token or connection.access_token
+            connection.refresh_token = refresh_token or connection.refresh_token
+            connection.token_expires_at = token_expires_at
+            connection.scopes = scopes
         await self.session.commit()
         await self.session.refresh(connection)
         return connection
