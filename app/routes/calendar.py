@@ -19,6 +19,11 @@ router = APIRouter(prefix="/calendar", tags=["calendar"])
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
 
+def _calendar_redirect_uri() -> str:
+    settings = get_settings()
+    return f"{settings.public_base_url.rstrip('/')}/calendar/google/callback"
+
+
 async def _dashboard_context(request: Request, session):
     google_email = request.session.get("google_email")
     if not google_email:
@@ -34,8 +39,8 @@ async def _dashboard_context(request: Request, session):
 @router.get("/google/start")
 async def google_calendar_start(request: Request) -> RedirectResponse:
     settings = get_settings()
-    if not settings.google_client_id or not settings.google_redirect_uri:
-        raise HTTPException(status_code=400, detail="Google OAuth env vars are not configured.")
+    if not settings.google_client_id:
+        raise HTTPException(status_code=400, detail="GOOGLE_CLIENT_ID is not configured.")
 
     async with async_session_factory() as session:
         google_email = request.session.get("google_email")
@@ -51,7 +56,7 @@ async def google_calendar_start(request: Request) -> RedirectResponse:
     query = urlencode(
         {
             "client_id": settings.google_client_id,
-            "redirect_uri": settings.google_redirect_uri,
+            "redirect_uri": _calendar_redirect_uri(),
             "response_type": "code",
             "scope": " ".join(GOOGLE_SCOPES),
             "access_type": "offline",
@@ -70,7 +75,7 @@ async def google_calendar_callback(
     state: str = Query(...),
 ) -> RedirectResponse:
     settings = get_settings()
-    if not settings.google_client_id or not settings.google_client_secret or not settings.google_redirect_uri:
+    if not settings.google_client_id or not settings.google_client_secret:
         raise HTTPException(status_code=400, detail="Google OAuth env vars are not configured.")
 
     async with async_session_factory() as session:
@@ -96,7 +101,7 @@ async def google_calendar_callback(
                     "code": code,
                     "client_id": settings.google_client_id,
                     "client_secret": settings.google_client_secret,
-                    "redirect_uri": settings.google_redirect_uri,
+                    "redirect_uri": _calendar_redirect_uri(),
                     "grant_type": "authorization_code",
                 },
             )
