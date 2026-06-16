@@ -190,7 +190,7 @@ class DashboardService:
     def _by_store(self, receipts: list[object]) -> list[dict[str, str]]:
         totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
         for receipt in receipts:
-            totals[receipt.shop_name or "Unknown"] += self.receipt_repository.amount_as_decimal(
+            totals[self._normalize_store_name(receipt.shop_name)] += self.receipt_repository.amount_as_decimal(
                 receipt.total_amount
             )
         return [
@@ -305,7 +305,7 @@ class DashboardService:
     ) -> list[dict[str, object]]:
         totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
         for receipt in receipts:
-            totals[receipt.shop_name or "Unknown"] += self.receipt_repository.amount_as_decimal(
+            totals[self._normalize_store_name(receipt.shop_name)] += self.receipt_repository.amount_as_decimal(
                 receipt.total_amount
             )
         for transaction in transactions:
@@ -313,7 +313,7 @@ class DashboardService:
                 continue
             if transaction.category != "Food":
                 continue
-            store = transaction.merchant or transaction.description
+            store = self._normalize_store_name(transaction.merchant or transaction.description)
             totals[store or "Unknown"] += self.finance_repository.amount_as_decimal(
                 transaction.amount
             )
@@ -328,13 +328,23 @@ class DashboardService:
                     continue
                 all_items.append((item, amount))
 
-        unique_names = list({item.name for item, _ in all_items})
+        local_mapping = {item.name: self._food_group(item.name) for item, _ in all_items}
+        unknown_names = sorted(
+            {
+                item_name
+                for item_name, category in local_mapping.items()
+                if category == "Other Food"
+            }
+        )
         ai_router = AiRouter(get_settings())
-        ai_mapping = await ai_router.classify_food_items(unique_names)
+        ai_mapping = await ai_router.classify_food_items(unknown_names)
 
         totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
         for item, amount in all_items:
-            category = ai_mapping.get(item.name) or self._food_group(item.name)
+            category = local_mapping.get(item.name) or "Other Food"
+            if category == "Other Food":
+                category = ai_mapping.get(item.name) or category
+            category = self._normalize_food_group(category)
             totals[category] += amount
         return self._breakdown_rows(totals)
 
@@ -389,9 +399,11 @@ class DashboardService:
                 "broccoli", "brocol", "brócolo", "tomato", "tomate", "lettuce", "alface",
                 "onion", "cebola", "pepper", "pimento", "cenoura", "carrot",
                 "vegetable", "espinafre", "espinafres", "couve", "curgete",
-                "beringela", "pepino", "cogumelo", "cogumelos", "feijao",
-                "ervilhas", "beterraba", "alho frances", "funcho", "courgette",
-                "alho", "nabo", "abobora", "abobrinha", "rucula",
+                "beringela", "pepino", "cogumelo", "cogumelos",
+                "beterraba", "alho frances", "funcho", "courgette",
+                "alho", "nabo", "abobora", "abóbora", "abobrinha", "rucula",
+                "rúcula", "repolho", "cabbage", "brassica", "batata", "potato",
+                "salsa", "coentros", "hortela", "hortelã", "manjeric",
             ),
             "Fruit & Nuts": (
                 "apple", "maçã", "maca", "banana", "orange", "laranja", "avocado",
@@ -406,12 +418,15 @@ class DashboardService:
                 "bread", "pão", "pao", "rice", "arroz", "pasta", "massa", "oat",
                 "aveia", "flour", "farinha", "cereal", "lentil", "lentilha", "graos",
                 "grao", "chickpea", "grao-de-bico", "quinoa", "espelta",
-                "milho", "trigo", "tapioca", "cuscus", "bulgur",
+                "milho", "trigo", "tapioca", "cuscus", "bulgur", "feijão",
+                "feijao", "beans", "grão", "grao", "ervilha", "ervilhas",
+                "tortilha", "wrap", "granola", "muesli",
             ),
             "Dairy": (
                 "milk", "leite", "cheese", "queijo", "yogurt", "iogurte",
                 "butter", "manteiga", "cream", "natas", "nata", "requeijao",
-                "requeijão", "cottage",
+                "requeijão", "cottage", "mozzarella", "mozarela", "parmesao",
+                "parmesão", "gouda", "philadelphia", "skyr", "kefir",
             ),
             "Sweets": (
                 "chocolate", "cookie", "biscuit", "bolacha", "sweet", "candy",
@@ -420,18 +435,68 @@ class DashboardService:
             ),
             "Snacks": (
                 "snack", "chips", "crisps", "pipoca", "nachos", "pretzel",
-                "granola", "barrinha", "cracker",
+                "barrinha", "cracker", "aperitivo", "batatas fritas", "tremoço",
+                "tremoco",
             ),
             "Drinks": (
                 "water", "água", "agua", "juice", "sumo", "cola", "tonic",
                 "beer", "wine", "vinho", "cerveja", "refrigerante",
                 "kombucha", "chá", "cha ", "cafe", "coffee",
             ),
+            "Oils & Condiments": (
+                "azeite", "oil", "óleo", "oleo", "vinagre", "vinegar", "molho",
+                "sauce", "tomato sauce", "polpa", "ketchup", "maionese", "mustard",
+                "mostarda", "sal", "salt", "pimenta", "pepper", "spice", "tempero",
+                "canela", "oregano", "orégano", "paprika", "caril", "curry",
+                "soja", "soy", "mel", "honey",
+            ),
+            "Household & Hygiene": (
+                "detergente", "detergent", "limpeza", "cleaner", "saco lixo",
+                "papel higienico", "papel higiénico", "toalhita", "toalhitas",
+                "wipes", "guardanapo", "guardanapos", "lenço", "lenco",
+                "shampoo", "champo", "sabonete", "gel banho", "toothpaste",
+                "pasta dentes", "desodorizante", "fralda", "fraldas",
+            ),
         }
         for group, tokens in groups.items():
             if any(token in lowered for token in tokens):
                 return group
         return "Other Food"
+
+    @staticmethod
+    def _normalize_food_group(category: str) -> str:
+        normalized = category.strip()
+        aliases = {
+            "other": "Other Food",
+            "other food": "Other Food",
+            "condiments": "Oils & Condiments",
+            "oils": "Oils & Condiments",
+            "sauces": "Oils & Condiments",
+            "hygiene": "Household & Hygiene",
+            "household": "Household & Hygiene",
+            "household chemicals": "Household & Hygiene",
+            "cleaning": "Household & Hygiene",
+        }
+        return aliases.get(normalized.casefold(), normalized)
+
+    @staticmethod
+    def _normalize_store_name(name: str | None) -> str:
+        raw = (name or "").strip()
+        if not raw:
+            return "Unknown"
+        lowered = raw.casefold()
+        store_aliases = {
+            "Continente": ("continente", "modelo continente", "continente modelo", "bom dia"),
+            "Lidl": ("lidl",),
+            "ALDI": ("aldi",),
+            "Pingo Doce": ("pingo doce",),
+            "Mercadona": ("mercadona",),
+            "Mini Mix": ("mini mix", "minimix", "mini mi"),
+        }
+        for canonical, tokens in store_aliases.items():
+            if any(token in lowered for token in tokens):
+                return canonical
+        return raw
 
     def _income_by_category(self, transactions: list[object]) -> list[dict[str, str]]:
         totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))

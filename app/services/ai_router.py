@@ -184,7 +184,8 @@ class AiRouter:
             return {}
         categories = (
             "Protein, Veg, Fruit & Nuts, Bread & Carbs, "
-            "Dairy, Sweets, Snacks, Drinks, Other Food"
+            "Dairy, Sweets, Snacks, Drinks, Oils & Condiments, "
+            "Household & Hygiene, Other Food"
         )
         items_json = json.dumps(item_names, ensure_ascii=False)
         prompt = (
@@ -200,8 +201,9 @@ class AiRouter:
             "- Sweets: chocolate, candy, ice cream, cakes, pastries, honey, jams\n"
             "- Snacks: crisps, chips, popcorn, crackers, snack bars, aperitivo\n"
             "- Drinks: water, juice, soft drinks, beer, wine, spirits, coffee, tea\n"
-            "- Other Food: oils, condiments, sauces, spices, cleaning products, "
-            "  hygiene, or anything not fitting above\n"
+            "- Oils & Condiments: oil, olive oil, sauces, tomato sauce, vinegar, spices, salt, pepper\n"
+            "- Household & Hygiene: cleaning products, wipes, paper goods, shampoo, soap, toothpaste, cosmetics\n"
+            "- Other Food: only use when no category above fits\n"
             "Items may be in Portuguese, English, or brand names. "
             "Return only compact JSON with no markdown: "
             '{"item name as given": "Category", ...}\n'
