@@ -1,3 +1,4 @@
+import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
@@ -15,6 +16,7 @@ from app.db.session import async_session_factory
 from app.services.calendar_service import CalendarService
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
+logger = logging.getLogger(__name__)
 
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
@@ -22,6 +24,10 @@ GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 def _calendar_redirect_uri() -> str:
     settings = get_settings()
     return f"{settings.public_base_url.rstrip('/')}/calendar/google/callback"
+
+
+def _dashboard_calendar_redirect(status: str) -> RedirectResponse:
+    return RedirectResponse(f"/dashboard?calendar={status}", status_code=303)
 
 
 async def _dashboard_context(request: Request, session):
@@ -94,33 +100,62 @@ async def google_calendar_callback(
             raise HTTPException(status_code=404, detail="User not found for OAuth state.")
         household = await HouseholdRepository(session).ensure_household_for_user(user=user)
 
-        async with httpx.AsyncClient(timeout=12) as client:
-            response = await client.post(
-                "https://oauth2.googleapis.com/token",
-                data={
-                    "code": code,
-                    "client_id": settings.google_client_id,
-                    "client_secret": settings.google_client_secret,
-                    "redirect_uri": _calendar_redirect_uri(),
-                    "grant_type": "authorization_code",
-                },
+        try:
+            async with httpx.AsyncClient(timeout=12) as client:
+                response = await client.post(
+                    "https://oauth2.googleapis.com/token",
+                    data={
+                        "code": code,
+                        "client_id": settings.google_client_id,
+                        "client_secret": settings.google_client_secret,
+                        "redirect_uri": _calendar_redirect_uri(),
+                        "grant_type": "authorization_code",
+                    },
+                )
+        except httpx.HTTPError:
+            logger.exception("Google Calendar OAuth token request failed.")
+            return _dashboard_calendar_redirect("auth-request-failed")
+
+        if not response.is_success:
+            logger.warning(
+                "Google Calendar OAuth token exchange was rejected.",
+                extra={"status_code": response.status_code},
             )
-            response.raise_for_status()
+            return _dashboard_calendar_redirect("auth-failed")
+
+        try:
             token_data = response.json()
+        except ValueError:
+            logger.warning("Google Calendar OAuth token response was not JSON.")
+            return _dashboard_calendar_redirect("auth-failed")
+
+        if not token_data.get("access_token"):
+            logger.warning("Google Calendar OAuth token response did not include an access token.")
+            return _dashboard_calendar_redirect("auth-failed")
 
         expires_in = int(token_data.get("expires_in") or 0)
         token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in) if expires_in else None
         await CalendarRepository(session).upsert_google_connection(
             user_id=user.id,
             household_id=household.id,
-            external_account_id=(household.google_calendar_id or settings.google_calendar_id).strip() or "primary",
+            external_account_id=(household.google_calendar_id or settings.google_calendar_id or "primary").strip(),
             access_token=token_data.get("access_token"),
             refresh_token=token_data.get("refresh_token"),
             token_expires_at=token_expires_at,
             scopes=GOOGLE_SCOPES,
         )
-        await CalendarService(session).sync_google_connections(household_id=household.id)
-        return RedirectResponse("/dashboard?calendar=connected")
+        try:
+            await CalendarService(session).sync_google_connections(household_id=household.id)
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "Google Calendar OAuth succeeded but initial calendar sync was rejected.",
+                extra={"status_code": exc.response.status_code},
+            )
+            return _dashboard_calendar_redirect("connected-sync-failed")
+        except httpx.HTTPError:
+            logger.exception("Google Calendar OAuth succeeded but initial calendar sync failed.")
+            return _dashboard_calendar_redirect("connected-sync-failed")
+        return _dashboard_calendar_redirect("connected")
 
 
 @router.post("/ical")

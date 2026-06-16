@@ -2218,6 +2218,22 @@ async def dashboard_page(request: Request) -> str:
         return fallback;
       }
     }
+    function showCalendarStatusFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      const calendarStatus = params.get("calendar");
+      if (!calendarStatus) return;
+      const messages = {
+        connected: "Google Calendar connected.",
+        "connected-sync-failed": "Google Calendar connected, but the first sync failed. Check the calendar ID and press Sync now.",
+        "auth-failed": "Google Calendar authorization failed. Please try Connect Google again.",
+        "auth-request-failed": "Google Calendar authorization could not reach Google. Please try again.",
+      };
+      toast(messages[calendarStatus] || "Calendar connection finished.");
+      params.delete("calendar");
+      const cleanQuery = params.toString();
+      const cleanUrl = `${window.location.pathname}${cleanQuery ? `?${cleanQuery}` : ""}${window.location.hash}`;
+      window.history.replaceState({}, "", cleanUrl);
+    }
 
     async function loadDashboard() {
       document.querySelector("#status").textContent = "Updating";
@@ -2957,6 +2973,7 @@ async def dashboard_page(request: Request) -> str:
       document.querySelector("#status").textContent = "Could not load";
       toast("Dashboard data could not be loaded.");
     });
+    showCalendarStatusFromUrl();
   </script>
 </body>
 </html>
