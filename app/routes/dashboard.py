@@ -1875,6 +1875,7 @@ async def dashboard_page(request: Request) -> str:
         </label>
         <div class="settings-actions">
           <button class="primary-btn" type="submit">Save</button>
+          <a class="link-btn" href="/calendar/google/start" id="calendar-connect-link">Connect Google</a>
           <button class="link-btn" type="button" id="calendar-sync-now">Sync now</button>
           <span class="muted" id="calendar-settings-status"></span>
         </div>
@@ -2169,18 +2170,26 @@ async def dashboard_page(request: Request) -> str:
     async function loadCalendarSettings() {
       const status = document.querySelector("#calendar-settings-status");
       status.textContent = "Loading";
-      const response = await fetch("/api/calendar/settings");
-      if (!response.ok) {
-        status.textContent = "";
+      try {
+        const response = await fetch("/api/calendar/settings");
+        if (!response.ok) {
+          status.textContent = await responseErrorMessage(response, "Could not load calendar settings.");
+          toast("Could not load calendar settings.");
+          return;
+        }
+        const data = await response.json();
+        const connected = Boolean(data.connected);
+        document.querySelector("#google-calendar-id").value = data.google_calendar_id || "primary";
+        document.querySelector("#calendar-modal-subtitle").textContent = connected
+          ? `${data.connection_count} Google connection${data.connection_count === 1 ? "" : "s"} connected`
+          : "Google is not connected yet";
+        document.querySelector("#calendar-connect-link").classList.toggle("hidden", connected);
+        document.querySelector("#calendar-sync-now").disabled = !connected;
+        status.textContent = connected ? "" : "Save the calendar ID, then connect Google.";
+      } catch {
+        status.textContent = "Could not load calendar settings.";
         toast("Could not load calendar settings.");
-        return;
       }
-      const data = await response.json();
-      document.querySelector("#google-calendar-id").value = data.google_calendar_id || "primary";
-      document.querySelector("#calendar-modal-subtitle").textContent = data.connected
-        ? `${data.connection_count} Google connection${data.connection_count === 1 ? "" : "s"} connected`
-        : "Google is not connected yet";
-      status.textContent = "";
     }
     const openCalendarModal = async () => {
       document.querySelector("#calendar-modal").classList.add("open");
@@ -2201,6 +2210,14 @@ async def dashboard_page(request: Request) -> str:
       window.clearTimeout(window.toastTimer);
       window.toastTimer = window.setTimeout(() => el.classList.remove("show"), 2400);
     };
+    async function responseErrorMessage(response, fallback) {
+      try {
+        const data = await response.json();
+        return data.detail || data.error || fallback;
+      } catch {
+        return fallback;
+      }
+    }
 
     async function loadDashboard() {
       document.querySelector("#status").textContent = "Updating";
@@ -2505,18 +2522,28 @@ async def dashboard_page(request: Request) -> str:
 
       const calendarSync = event.target.closest("#calendar-sync-now");
       if (calendarSync) {
+        if (calendarSync.disabled) return;
         calendarSync.disabled = true;
         document.querySelector("#calendar-settings-status").textContent = "Syncing";
-        const response = await fetch("/api/calendar/sync", { method: "POST" });
-        if (!response.ok) {
-          toast("Could not sync calendar.");
-        } else {
+        try {
+          const response = await fetch("/api/calendar/sync", { method: "POST" });
+          if (!response.ok) {
+            const message = await responseErrorMessage(response, "Could not sync calendar.");
+            document.querySelector("#calendar-settings-status").textContent = message;
+            toast(message);
+            return;
+          }
           const result = await response.json();
           toast(`Synced ${result.google_events} Google event(s), ${result.ical_events} iCal event(s).`);
+          document.querySelector("#calendar-settings-status").textContent = "Calendar synced.";
           await loadDayAgenda();
+        } catch {
+          document.querySelector("#calendar-settings-status").textContent = "Could not sync calendar.";
+          toast("Could not sync calendar.");
+        } finally {
+          const connected = document.querySelector("#calendar-connect-link").classList.contains("hidden");
+          calendarSync.disabled = !connected;
         }
-        document.querySelector("#calendar-settings-status").textContent = "";
-        calendarSync.disabled = false;
         return;
       }
 
@@ -2821,21 +2848,34 @@ async def dashboard_page(request: Request) -> str:
       if (event.target.id === "calendar-settings-form") {
         event.preventDefault();
         const formData = new FormData(event.target);
-        const response = await fetch("/api/calendar/settings", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            google_calendar_id: formData.get("google_calendar_id"),
-          }),
-        });
-        if (!response.ok) {
+        const saveButton = event.target.querySelector('button[type="submit"]');
+        saveButton.disabled = true;
+        document.querySelector("#calendar-settings-status").textContent = "Saving";
+        try {
+          const response = await fetch("/api/calendar/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              google_calendar_id: formData.get("google_calendar_id"),
+            }),
+          });
+          if (!response.ok) {
+            const message = await responseErrorMessage(response, "Could not save calendar ID.");
+            document.querySelector("#calendar-settings-status").textContent = message;
+            toast(message);
+            return;
+          }
+          const result = await response.json();
+          document.querySelector("#google-calendar-id").value = result.google_calendar_id;
+          toast("Calendar ID saved.");
+          document.querySelector("#calendar-settings-status").textContent = "Calendar ID saved. Connect Google next.";
+          await loadCalendarSettings();
+        } catch {
+          document.querySelector("#calendar-settings-status").textContent = "Could not save calendar ID.";
           toast("Could not save calendar ID.");
-          return;
+        } finally {
+          saveButton.disabled = false;
         }
-        const result = await response.json();
-        document.querySelector("#google-calendar-id").value = result.google_calendar_id;
-        toast("Calendar ID saved.");
-        await loadCalendarSettings();
         return;
       }
       const routineForm = event.target.closest("[data-routine-id]");
