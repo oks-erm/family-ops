@@ -16,7 +16,7 @@ from app.services.calendar_service import CalendarService
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 
-GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
 
 async def _dashboard_context(request: Request, session):

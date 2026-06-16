@@ -83,6 +83,18 @@ class CalendarRepository:
         result = await self.session.execute(query.order_by(CalendarConnection.created_at))
         return list(result.scalars().all())
 
+    async def first_google_connection(self, *, household_id: UUID) -> CalendarConnection | None:
+        result = await self.session.execute(
+            select(CalendarConnection)
+            .where(
+                CalendarConnection.household_id == household_id,
+                CalendarConnection.provider == CalendarProvider.google,
+            )
+            .order_by(CalendarConnection.created_at)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def update_google_calendar_id_for_household(
         self,
         *,
@@ -159,3 +171,7 @@ class CalendarRepository:
             .order_by(CalendarEventCache.starts_at)
         )
         return list(result.scalars().all())
+
+    async def delete_cached_event(self, *, event: CalendarEventCache) -> None:
+        await self.session.delete(event)
+        await self.session.commit()

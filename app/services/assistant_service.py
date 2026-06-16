@@ -3,6 +3,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 import re
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,7 +18,12 @@ from app.db.repositories.routines import RoutineRepository
 from app.db.repositories.tasks import TaskRepository
 from app.db.repositories.users import UserRepository
 from app.db.repositories.shopping import ShoppingRepository
-from app.services.calendar_service import CalendarService
+from app.services.calendar_service import (
+    CalendarEventMatchError,
+    CalendarNotConnectedError,
+    CalendarService,
+    CalendarWritePermissionError,
+)
 from app.services.ai_router import AiRouter
 from app.services.analytics_service import AnalyticsService
 from app.services.finance_service import FinanceService
@@ -103,6 +109,33 @@ class AssistantService:
         )
         if ai_response is not None:
             return ai_response
+
+        calendar_request = await self._parse_explicit_calendar_request(user_id=user_id, text=text)
+        if calendar_request is not None:
+            action = calendar_request["action"]
+            if action == "add":
+                return await self._add_calendar_event(
+                    user_id=user_id,
+                    title=calendar_request["title"],
+                    event_date=calendar_request["date"],
+                    start_time=calendar_request["start_time"],
+                    end_time=calendar_request["end_time"],
+                )
+            if action == "update":
+                return await self._update_calendar_event(
+                    user_id=user_id,
+                    title=calendar_request["title"],
+                    event_date=calendar_request["date"],
+                    start_time=calendar_request["start_time"],
+                    end_time=calendar_request["end_time"],
+                    new_title=None,
+                )
+            if action == "delete":
+                return await self._delete_calendar_event(
+                    user_id=user_id,
+                    title=calendar_request["title"],
+                    event_date=calendar_request["date"],
+                )
 
         move_request = self._parse_move_request(text)
         if move_request is not None:
@@ -430,6 +463,9 @@ class AssistantService:
             "mark_task_done",
             "remove_item",
             "move_item",
+            "add_calendar_event",
+            "update_calendar_event",
+            "remove_calendar_event",
             "expense_query",
             "smalltalk",
             "capability_question",
@@ -465,6 +501,7 @@ class AssistantService:
         store_name = str(data.get("store_name") or "").strip() or None
         target = str(data.get("target") or "any").strip().lower()
         source = str(data.get("source") or "").strip().lower()
+        new_title = str(data.get("new_title") or "").strip() or None
         reply = str(data.get("reply") or "").strip()
         start_time = self._parse_ai_time(data.get("start_time"))
         end_time = self._parse_ai_time(data.get("end_time"))
@@ -494,6 +531,29 @@ class AssistantService:
         if intent == "fixed_event" and item and start_time is not None and end_time is not None:
             note = f"{item} from {start_time.strftime('%H:%M')} to {end_time.strftime('%H:%M')}"
             return await self._store_planning_note(user_id=user_id, text=note, explicit_date=plan_date)
+        if intent == "add_calendar_event" and item:
+            return await self._add_calendar_event(
+                user_id=user_id,
+                title=item,
+                event_date=plan_date,
+                start_time=start_time,
+                end_time=end_time,
+            )
+        if intent == "update_calendar_event" and item:
+            return await self._update_calendar_event(
+                user_id=user_id,
+                title=item,
+                event_date=plan_date,
+                start_time=start_time,
+                end_time=end_time,
+                new_title=new_title,
+            )
+        if intent == "remove_calendar_event" and item:
+            return await self._delete_calendar_event(
+                user_id=user_id,
+                title=item,
+                event_date=plan_date,
+            )
         if intent == "task_created" and item:
             return await self._create_task(user_id=user_id, title=item, due_date=plan_date)
         if intent == "mark_task_done" and item:
@@ -778,6 +838,189 @@ class AssistantService:
             intent=AssistantIntent.planning_note,
             text=f"Removed from {day.isoformat()}: {title}.\n\n" + plan_text,
         )
+
+    async def _add_calendar_event(
+        self,
+        *,
+        user_id: UUID,
+        title: str,
+        event_date: date | None,
+        start_time: time | None,
+        end_time: time | None,
+    ) -> AssistantResponse:
+        user = await UserRepository(self.session).get_by_id(user_id=user_id)
+        if user is None:
+            raise RuntimeError("User must exist before assistant actions can run.")
+        if event_date is None:
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text="Which day should I add it to the calendar: today or tomorrow?",
+            )
+        if start_time is None:
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text="What time should I put it in the calendar?",
+            )
+        if end_time is None:
+            end_time = (datetime.combine(event_date, start_time) + timedelta(hours=1)).time()
+        starts_at, ends_at = self._calendar_datetimes(
+            day=event_date,
+            start_time=start_time,
+            end_time=end_time,
+            timezone=user.timezone,
+        )
+        household_id = await self._household_id_for_user(user_id=user_id)
+        try:
+            event = await CalendarService(self.session).create_google_event(
+                household_id=household_id,
+                user_id=user_id,
+                title=title,
+                starts_at=starts_at,
+                ends_at=ends_at,
+                timezone=user.timezone,
+            )
+        except (CalendarNotConnectedError, CalendarWritePermissionError, CalendarEventMatchError) as exc:
+            return self._calendar_error_response(exc)
+        await self.activity_repository.log(
+            household_id=household_id,
+            user_id=user_id,
+            action=ActivityAction.created,
+            entity_type="calendar",
+            entity_id=None,
+            summary=f"Added calendar event from chat: {event.title}",
+        )
+        return AssistantResponse(
+            intent=AssistantIntent.planning_note,
+            text=(
+                "Added to calendar:\n"
+                f"- {event.starts_at.strftime('%Y-%m-%d %H:%M')}-{event.ends_at.strftime('%H:%M')}: {event.title}"
+            ),
+        )
+
+    async def _update_calendar_event(
+        self,
+        *,
+        user_id: UUID,
+        title: str,
+        event_date: date | None,
+        start_time: time | None,
+        end_time: time | None,
+        new_title: str | None,
+    ) -> AssistantResponse:
+        user = await UserRepository(self.session).get_by_id(user_id=user_id)
+        if user is None:
+            raise RuntimeError("User must exist before assistant actions can run.")
+        if event_date is None:
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text="Which day's calendar event should I change?",
+            )
+        starts_at = ends_at = None
+        if start_time is not None:
+            if end_time is None:
+                end_time = (datetime.combine(event_date, start_time) + timedelta(hours=1)).time()
+            starts_at, ends_at = self._calendar_datetimes(
+                day=event_date,
+                start_time=start_time,
+                end_time=end_time,
+                timezone=user.timezone,
+            )
+        household_id = await self._household_id_for_user(user_id=user_id)
+        try:
+            event = await CalendarService(self.session).update_google_event(
+                household_id=household_id,
+                user_id=user_id,
+                title=title,
+                day=event_date,
+                timezone=user.timezone,
+                new_title=new_title,
+                starts_at=starts_at,
+                ends_at=ends_at,
+            )
+        except (CalendarNotConnectedError, CalendarWritePermissionError, CalendarEventMatchError) as exc:
+            return self._calendar_error_response(exc)
+        await self.activity_repository.log(
+            household_id=household_id,
+            user_id=user_id,
+            action=ActivityAction.updated,
+            entity_type="calendar",
+            entity_id=None,
+            summary=f"Updated calendar event from chat: {event.title}",
+        )
+        return AssistantResponse(
+            intent=AssistantIntent.planning_note,
+            text=(
+                "Updated calendar event:\n"
+                f"- {event.starts_at.strftime('%Y-%m-%d %H:%M')}-{event.ends_at.strftime('%H:%M')}: {event.title}"
+            ),
+        )
+
+    async def _delete_calendar_event(
+        self,
+        *,
+        user_id: UUID,
+        title: str,
+        event_date: date | None,
+    ) -> AssistantResponse:
+        user = await UserRepository(self.session).get_by_id(user_id=user_id)
+        if user is None:
+            raise RuntimeError("User must exist before assistant actions can run.")
+        if event_date is None:
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text="Which day should I remove it from the calendar?",
+            )
+        household_id = await self._household_id_for_user(user_id=user_id)
+        try:
+            event = await CalendarService(self.session).delete_google_event(
+                household_id=household_id,
+                title=title,
+                day=event_date,
+                timezone=user.timezone,
+            )
+        except (CalendarNotConnectedError, CalendarWritePermissionError, CalendarEventMatchError) as exc:
+            return self._calendar_error_response(exc)
+        await self.activity_repository.log(
+            household_id=household_id,
+            user_id=user_id,
+            action=ActivityAction.deleted,
+            entity_type="calendar",
+            entity_id=None,
+            summary=f"Deleted calendar event from chat: {event.title}",
+        )
+        return AssistantResponse(
+            intent=AssistantIntent.planning_note,
+            text=f"Removed from calendar: {event.title} on {event.starts_at.strftime('%Y-%m-%d')}.",
+        )
+
+    @staticmethod
+    def _calendar_datetimes(
+        *,
+        day: date,
+        start_time: time,
+        end_time: time,
+        timezone: str,
+    ) -> tuple[datetime, datetime]:
+        tz = ZoneInfo(timezone)
+        starts_at = datetime.combine(day, start_time, tzinfo=tz)
+        ends_at = datetime.combine(day, end_time, tzinfo=tz)
+        if ends_at <= starts_at:
+            ends_at += timedelta(days=1)
+        return starts_at, ends_at
+
+    @staticmethod
+    def _calendar_error_response(exc: RuntimeError) -> AssistantResponse:
+        if isinstance(exc, CalendarWritePermissionError):
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text="Calendar needs to be reconnected once from the dashboard so I can add/change/remove events.",
+            )
+        if isinstance(exc, CalendarNotConnectedError):
+            return AssistantResponse(
+                intent=AssistantIntent.unknown,
+                text="Google Calendar is not connected yet. Connect it from the dashboard first.",
+            )
+        return AssistantResponse(intent=AssistantIntent.unknown, text=str(exc))
 
     async def _update_work_hours(
         self,
@@ -1966,6 +2209,85 @@ class AssistantService:
         hour = int(match.group(1))
         minute = int(match.group(2) or 0)
         return time(hour=hour, minute=minute)
+
+    async def _parse_explicit_calendar_request(
+        self,
+        *,
+        user_id: UUID,
+        text: str,
+    ) -> dict[str, object] | None:
+        stripped = text.strip()
+        lowered = stripped.lower()
+        if not re.search(r"\b(calendar|cal|calendario|calendário)\b", lowered):
+            return None
+        user = await UserRepository(self.session).get_by_id(user_id=user_id)
+        if user is None:
+            return None
+        action = None
+        if re.search(r"\b(add|create|schedule|put|book)\b", lowered):
+            action = "add"
+        elif re.search(r"\b(move|change|reschedule|update)\b", lowered):
+            action = "update"
+        elif re.search(r"\b(remove|delete|cancel)\b", lowered):
+            action = "delete"
+        if action is None:
+            return None
+
+        day = self._date_from_text(stripped, user.timezone)
+        times = self._times_from_text(stripped)
+        title = self._calendar_title_from_text(stripped, action=action)
+        if not title:
+            return None
+        return {
+            "action": action,
+            "title": title,
+            "date": day,
+            "start_time": times[0] if times else None,
+            "end_time": times[1] if len(times) > 1 else None,
+        }
+
+    @staticmethod
+    def _times_from_text(text: str) -> list[time]:
+        matches = re.finditer(r"\b(2[0-3]|[01]?\d)(?:(?::|\.|h)([0-5]\d))?\b", text.lower())
+        return [
+            time(hour=int(match.group(1)), minute=int(match.group(2) or 0))
+            for match in matches
+        ]
+
+    @staticmethod
+    def _calendar_title_from_text(text: str, *, action: str) -> str:
+        cleaned = text.strip()
+        cleaned = re.sub(r"\b(calendar|cal|calendario|calendário)\b", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(
+            r"\b(add|create|schedule|put|book|move|change|reschedule|update|remove|delete|cancel)\b",
+            "",
+            cleaned,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"\b(today|tomorrow|tonight|hoje|amanh[ãa])\b",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        if action == "update":
+            cleaned = re.split(r"\b(?:to|for|at|às|as)\b", cleaned, maxsplit=1, flags=re.IGNORECASE)[0]
+        cleaned = re.sub(
+            r"\b(?:from|to|at|on|in|for|às|as)\b\s*(?:2[0-3]|[01]?\d)(?:(?::|\.|h)(?:[0-5]\d))?",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"\b(?:2[0-3]|[01]?\d)(?:(?::|\.|h)(?:[0-5]\d))?\s*(?:to|and|-)\s*"
+            r"(?:2[0-3]|[01]?\d)(?:(?::|\.|h)(?:[0-5]\d))?\b",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\b(?:from|to|at|on|in|for|às|as)\b", "", cleaned, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", cleaned).strip(" .:-")
 
     @staticmethod
     def _parse_work_hours(text: str) -> tuple[time, time, date | None] | None:

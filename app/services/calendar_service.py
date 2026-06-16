@@ -12,6 +12,18 @@ from app.db.repositories.calendar import CalendarRepository
 from app.services.planning_service import CalendarEventInput
 
 
+class CalendarNotConnectedError(RuntimeError):
+    pass
+
+
+class CalendarWritePermissionError(RuntimeError):
+    pass
+
+
+class CalendarEventMatchError(RuntimeError):
+    pass
+
+
 class CalendarService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -108,6 +120,220 @@ class CalendarService:
                     )
                     synced += 1
         return synced
+
+    async def create_google_event(
+        self,
+        *,
+        household_id: UUID,
+        user_id: UUID,
+        title: str,
+        starts_at: datetime,
+        ends_at: datetime,
+        timezone: str,
+        location: str | None = None,
+    ) -> CalendarEventInput:
+        connection = await self._google_write_connection(household_id=household_id)
+        calendar_id = self._connection_calendar_id(connection)
+        body = {
+            "summary": title,
+            "start": {"dateTime": starts_at.isoformat(), "timeZone": timezone},
+            "end": {"dateTime": ends_at.isoformat(), "timeZone": timezone},
+        }
+        if location:
+            body["location"] = location
+        async with httpx.AsyncClient(timeout=12) as client:
+            access_token = await self._google_access_token(client=client, connection=connection)
+            if not access_token:
+                raise CalendarNotConnectedError("Google Calendar is not connected.")
+            response = await client.post(
+                self._google_events_url(calendar_id),
+                json=body,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            self._raise_for_google_write(response)
+            raw = response.json()
+        parsed = self._google_event_from_raw(raw)
+        if parsed is None:
+            raise CalendarEventMatchError("Google returned an event I could not parse.")
+        await self.repository.upsert_event(
+            household_id=household_id,
+            user_id=user_id,
+            source_type=CalendarProvider.google,
+            source_id=connection.id,
+            external_event_id=parsed["uid"],
+            title=parsed["summary"],
+            starts_at=parsed["starts_at"],
+            ends_at=parsed["ends_at"],
+            location=parsed.get("location"),
+            raw_event=raw,
+        )
+        return CalendarEventInput(
+            title=parsed["summary"],
+            starts_at=parsed["starts_at"],
+            ends_at=parsed["ends_at"],
+            location=parsed.get("location"),
+        )
+
+    async def update_google_event(
+        self,
+        *,
+        household_id: UUID,
+        user_id: UUID,
+        title: str,
+        day: date,
+        timezone: str,
+        new_title: str | None = None,
+        starts_at: datetime | None = None,
+        ends_at: datetime | None = None,
+    ) -> CalendarEventInput:
+        connection = await self._google_write_connection(household_id=household_id)
+        event = await self._single_google_event_match(
+            household_id=household_id,
+            title=title,
+            day=day,
+            timezone=timezone,
+            source_id=connection.id,
+        )
+        calendar_id = self._connection_calendar_id(connection)
+        body: dict[str, object] = {}
+        if new_title:
+            body["summary"] = new_title
+        if starts_at is not None and ends_at is not None:
+            body["start"] = {"dateTime": starts_at.isoformat(), "timeZone": timezone}
+            body["end"] = {"dateTime": ends_at.isoformat(), "timeZone": timezone}
+        if not body:
+            raise CalendarEventMatchError("No calendar changes were provided.")
+        async with httpx.AsyncClient(timeout=12) as client:
+            access_token = await self._google_access_token(client=client, connection=connection)
+            if not access_token:
+                raise CalendarNotConnectedError("Google Calendar is not connected.")
+            response = await client.patch(
+                f"{self._google_events_url(calendar_id)}/{quote(event.external_event_id, safe='')}",
+                json=body,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            self._raise_for_google_write(response)
+            raw = response.json()
+        parsed = self._google_event_from_raw(raw)
+        if parsed is None:
+            raise CalendarEventMatchError("Google returned an event I could not parse.")
+        await self.repository.upsert_event(
+            household_id=household_id,
+            user_id=user_id,
+            source_type=CalendarProvider.google,
+            source_id=connection.id,
+            external_event_id=parsed["uid"],
+            title=parsed["summary"],
+            starts_at=parsed["starts_at"],
+            ends_at=parsed["ends_at"],
+            location=parsed.get("location"),
+            raw_event=raw,
+        )
+        return CalendarEventInput(
+            title=parsed["summary"],
+            starts_at=parsed["starts_at"],
+            ends_at=parsed["ends_at"],
+            location=parsed.get("location"),
+        )
+
+    async def delete_google_event(
+        self,
+        *,
+        household_id: UUID,
+        title: str,
+        day: date,
+        timezone: str,
+    ) -> CalendarEventInput:
+        connection = await self._google_write_connection(household_id=household_id)
+        event = await self._single_google_event_match(
+            household_id=household_id,
+            title=title,
+            day=day,
+            timezone=timezone,
+            source_id=connection.id,
+        )
+        calendar_id = self._connection_calendar_id(connection)
+        deleted = CalendarEventInput(
+            title=event.title,
+            starts_at=event.starts_at.astimezone(ZoneInfo(timezone)),
+            ends_at=event.ends_at.astimezone(ZoneInfo(timezone)),
+            location=event.location,
+        )
+        async with httpx.AsyncClient(timeout=12) as client:
+            access_token = await self._google_access_token(client=client, connection=connection)
+            if not access_token:
+                raise CalendarNotConnectedError("Google Calendar is not connected.")
+            response = await client.delete(
+                f"{self._google_events_url(calendar_id)}/{quote(event.external_event_id, safe='')}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            self._raise_for_google_write(response)
+        await self.repository.delete_cached_event(event=event)
+        return deleted
+
+    async def _google_write_connection(self, *, household_id: UUID):
+        connection = await self.repository.first_google_connection(household_id=household_id)
+        if connection is None:
+            raise CalendarNotConnectedError("Google Calendar is not connected.")
+        scopes = set(connection.scopes or [])
+        if "https://www.googleapis.com/auth/calendar.events" not in scopes:
+            raise CalendarWritePermissionError("Google Calendar needs to be reconnected with event access.")
+        return connection
+
+    def _connection_calendar_id(self, connection) -> str:
+        settings = get_settings()
+        return (connection.external_account_id or settings.google_calendar_id or "primary").strip()
+
+    def _google_events_url(self, calendar_id: str) -> str:
+        return f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id, safe='')}/events"
+
+    async def _single_google_event_match(
+        self,
+        *,
+        household_id: UUID,
+        title: str,
+        day: date,
+        timezone: str,
+        source_id: UUID,
+    ):
+        tz = ZoneInfo(timezone)
+        starts_before = datetime.combine(day, time.min, tzinfo=tz) + timedelta(days=1)
+        ends_after = datetime.combine(day, time.min, tzinfo=tz)
+        events = await self.repository.list_events_between(
+            household_id=household_id,
+            starts_before=starts_before,
+            ends_after=ends_after,
+        )
+        target = self._normalize_title(title)
+        matches = [
+            event
+            for event in events
+            if event.source_type == CalendarProvider.google
+            and event.source_id == source_id
+            and (
+                target in self._normalize_title(event.title)
+                or self._normalize_title(event.title) in target
+            )
+        ]
+        if not matches:
+            raise CalendarEventMatchError(f"I could not find '{title}' on {day.isoformat()}.")
+        if len(matches) > 1:
+            options = ", ".join(
+                f"{event.title} at {event.starts_at.astimezone(tz).strftime('%H:%M')}"
+                for event in matches[:5]
+            )
+            raise CalendarEventMatchError(f"I found more than one matching event: {options}. Please be more specific.")
+        return matches[0]
+
+    @staticmethod
+    def _normalize_title(value: str) -> str:
+        return " ".join("".join(char.lower() if char.isalnum() else " " for char in value).split())
+
+    @staticmethod
+    def _raise_for_google_write(response: httpx.Response) -> None:
+        if response.status_code in {401, 403}:
+            raise CalendarWritePermissionError("Google Calendar needs to be reconnected with event access.")
+        response.raise_for_status()
 
     async def _google_access_token(self, *, client: httpx.AsyncClient, connection) -> str | None:
         if not connection.access_token and not connection.refresh_token:
