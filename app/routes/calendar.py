@@ -1,5 +1,5 @@
-from datetime import UTC, datetime, timedelta
 import secrets
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 from uuid import UUID
 
@@ -19,11 +19,14 @@ router = APIRouter(prefix="/calendar", tags=["calendar"])
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
 
-async def _dashboard_context(session):
-    users = await UserRepository(session).list_users()
-    if not users:
+async def _dashboard_context(request: Request, session):
+    google_email = request.session.get("google_email")
+    if not google_email:
         return None, None
-    dashboard_user = next((user for user in users if user.username == "okserm"), users[0])
+    dashboard_user = await UserRepository(session).get_by_google_email(google_email=str(google_email))
+    if dashboard_user is None:
+        request.session.clear()
+        return None, None
     household = await HouseholdRepository(session).ensure_household_for_user(user=dashboard_user)
     return dashboard_user, household
 
@@ -105,7 +108,7 @@ async def google_calendar_callback(
         await CalendarRepository(session).upsert_google_connection(
             user_id=user.id,
             household_id=household.id,
-            external_account_id=settings.google_calendar_id.strip() or "primary",
+            external_account_id=(household.google_calendar_id or settings.google_calendar_id).strip() or "primary",
             access_token=token_data.get("access_token"),
             refresh_token=token_data.get("refresh_token"),
             token_expires_at=token_expires_at,
@@ -116,13 +119,13 @@ async def google_calendar_callback(
 
 
 @router.post("/ical")
-async def add_ical_feed(name: str, url: str) -> dict[str, str]:
+async def add_ical_feed(request: Request, name: str, url: str) -> dict[str, str]:
     if not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="The iCal feed URL must start with http:// or https://.")
     async with async_session_factory() as session:
-        user, household = await _dashboard_context(session)
+        user, household = await _dashboard_context(request, session)
         if user is None or household is None:
-            raise HTTPException(status_code=404, detail="No onboarded user found.")
+            raise HTTPException(status_code=401, detail="Dashboard login required.")
         feed = await CalendarRepository(session).add_ical_feed(
             user_id=user.id,
             household_id=household.id,
@@ -133,9 +136,12 @@ async def add_ical_feed(name: str, url: str) -> dict[str, str]:
 
 
 @router.post("/sync")
-async def sync_calendars() -> dict[str, int]:
+async def sync_calendars(request: Request) -> dict[str, int]:
     async with async_session_factory() as session:
+        user, household = await _dashboard_context(request, session)
+        if user is None or household is None:
+            raise HTTPException(status_code=401, detail="Dashboard login required.")
         service = CalendarService(session)
-        ical_count = await service.sync_ical_feeds()
-        google_count = await service.sync_google_connections()
+        ical_count = await service.sync_ical_feeds(household_id=household.id)
+        google_count = await service.sync_google_connections(household_id=household.id)
         return {"ical_events": ical_count, "google_events": google_count}

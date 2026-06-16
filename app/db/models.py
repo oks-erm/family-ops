@@ -101,6 +101,7 @@ class Household(Base, TimestampMixin):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(255))
     invite_code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    google_calendar_id: Mapped[str | None] = mapped_column(String(255))
 
     members: Mapped[list["HouseholdMember"]] = relationship(back_populates="household")
 

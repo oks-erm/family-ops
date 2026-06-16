@@ -45,11 +45,12 @@ class CalendarRepository:
         scopes: list[str],
     ) -> CalendarConnection:
         result = await self.session.execute(
-            select(CalendarConnection).where(
+            select(CalendarConnection)
+            .where(
                 CalendarConnection.user_id == user_id,
                 CalendarConnection.provider == CalendarProvider.google,
-                CalendarConnection.external_account_id == external_account_id,
             )
+            .order_by(CalendarConnection.created_at)
         )
         connection = result.scalars().first()
         if connection is None:
@@ -66,6 +67,7 @@ class CalendarRepository:
             self.session.add(connection)
         else:
             connection.household_id = household_id
+            connection.external_account_id = external_account_id
             connection.access_token = access_token or connection.access_token
             connection.refresh_token = refresh_token or connection.refresh_token
             connection.token_expires_at = token_expires_at
@@ -80,6 +82,19 @@ class CalendarRepository:
             query = query.where(CalendarConnection.household_id == household_id)
         result = await self.session.execute(query.order_by(CalendarConnection.created_at))
         return list(result.scalars().all())
+
+    async def update_google_calendar_id_for_household(
+        self,
+        *,
+        household_id: UUID,
+        calendar_id: str,
+    ) -> int:
+        connections = await self.list_google_connections(household_id=household_id)
+        for connection in connections:
+            connection.external_account_id = calendar_id
+        if connections:
+            await self.session.commit()
+        return len(connections)
 
     async def upsert_event(
         self,

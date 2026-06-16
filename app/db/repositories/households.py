@@ -80,6 +80,12 @@ class HouseholdRepository:
         await self.session.refresh(household)
         return household
 
+    async def update_google_calendar_id(self, *, household: Household, calendar_id: str | None) -> Household:
+        household.google_calendar_id = calendar_id
+        await self.session.commit()
+        await self.session.refresh(household)
+        return household
+
     async def _move_user_owned_data_to_household(self, *, user_id: UUID, household_id: UUID) -> None:
         await self.session.execute(
             update(ShoppingItem).where(ShoppingItem.user_id == user_id).values(household_id=household_id)

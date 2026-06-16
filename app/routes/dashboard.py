@@ -6,8 +6,10 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from app.config import get_settings
 from app.db.models import ActivityAction, PlanningConversationState, Routine, ShoppingItem, TaskStatus
 from app.db.repositories.activity import ActivityRepository
+from app.db.repositories.calendar import CalendarRepository
 from app.db.repositories.finance import FinanceRepository
 from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.planning import PlanningRepository
@@ -72,6 +74,10 @@ class PlanningDefaultsRequest(BaseModel):
   dinner_end: str | None = None
 
 
+class CalendarSettingsRequest(BaseModel):
+  google_calendar_id: str
+
+
 DEFAULTS_PLAN_DATE = date(1900, 1, 1)
 
 
@@ -128,6 +134,17 @@ def _build_defaults_notes(payload: PlanningDefaultsRequest) -> str | None:
   if payload.dinner_start and payload.dinner_end:
     notes.append(f"dinner from {payload.dinner_start.strip()} to {payload.dinner_end.strip()}")
   return "; ".join(notes) if notes else None
+
+
+def _clean_calendar_id(value: str) -> str:
+  calendar_id = value.strip()
+  if not calendar_id:
+    raise HTTPException(status_code=400, detail="Calendar ID is required.")
+  if len(calendar_id) > 255:
+    raise HTTPException(status_code=400, detail="Calendar ID is too long.")
+  if any(char.isspace() for char in calendar_id):
+    raise HTTPException(status_code=400, detail="Calendar ID cannot contain spaces.")
+  return calendar_id
 
 
 def _extract_defaults_values(*, work_start: time | None, work_end: time | None, notes: str | None) -> dict[str, object]:
@@ -221,6 +238,79 @@ async def dashboard_data(
             period_end=period_end,
             period_label=period_label,
         )
+
+
+@router.get("/api/calendar/settings")
+async def calendar_settings(request: Request) -> dict[str, object]:
+    async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+            raise HTTPException(status_code=401, detail="Dashboard login required.")
+        connections = await CalendarRepository(session).list_google_connections(household_id=household.id)
+        configured_id = (
+            household.google_calendar_id
+            or (connections[0].external_account_id if connections else None)
+            or get_settings().google_calendar_id
+            or "primary"
+        )
+        return {
+            "google_calendar_id": configured_id,
+            "connected": bool(connections),
+            "connection_count": len(connections),
+        }
+
+
+@router.put("/api/calendar/settings")
+async def update_calendar_settings(
+    request: Request,
+    payload: CalendarSettingsRequest,
+) -> dict[str, object]:
+    calendar_id = _clean_calendar_id(payload.google_calendar_id)
+    async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+            raise HTTPException(status_code=401, detail="Dashboard login required.")
+        await HouseholdRepository(session).update_google_calendar_id(
+            household=household,
+            calendar_id=calendar_id,
+        )
+        updated_connections = await CalendarRepository(session).update_google_calendar_id_for_household(
+            household_id=household.id,
+            calendar_id=calendar_id,
+        )
+        await ActivityRepository(session).log(
+            household_id=household.id,
+            user_id=dashboard_user.id,
+            action=ActivityAction.updated,
+            entity_type="calendar_settings",
+            entity_id=household.id,
+            summary="Updated Google Calendar ID from dashboard.",
+        )
+        return {
+            "saved": True,
+            "google_calendar_id": calendar_id,
+            "updated_connections": updated_connections,
+        }
+
+
+@router.post("/api/calendar/sync")
+async def sync_dashboard_calendars(request: Request) -> dict[str, int]:
+    async with async_session_factory() as session:
+        dashboard_user, household = await _dashboard_context(request, session)
+        if dashboard_user is None or household is None:
+            raise HTTPException(status_code=401, detail="Dashboard login required.")
+        service = CalendarService(session)
+        ical_count = await service.sync_ical_feeds(household_id=household.id)
+        google_count = await service.sync_google_connections(household_id=household.id)
+        await ActivityRepository(session).log(
+            household_id=household.id,
+            user_id=dashboard_user.id,
+            action=ActivityAction.updated,
+            entity_type="calendar",
+            entity_id=household.id,
+            summary=f"Synced calendars from dashboard: {google_count} Google event(s), {ical_count} iCal event(s).",
+        )
+        return {"ical_events": ical_count, "google_events": google_count}
 
 
 @router.get("/api/activity")
@@ -1367,6 +1457,32 @@ async def dashboard_page(request: Request) -> str:
       cursor: pointer;
       font-weight: 600;
     }
+    .settings-form {
+      display: grid;
+      gap: 12px;
+    }
+    .settings-form label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .settings-form input {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 11px;
+      background: #fff;
+      color: var(--ink);
+      font-size: 13px;
+    }
+    .settings-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
     .recommendation {
       border: 1px solid var(--line);
       background: var(--surface-soft);
@@ -1540,6 +1656,7 @@ async def dashboard_page(request: Request) -> str:
       </div>
       <div class="top-actions">
         <a class="link-btn" href="/calendar/google/start">Connect calendar</a>
+        <button class="link-btn" type="button" id="calendar-settings-open">Calendar</button>
         <select class="month-control" id="scope-filter" aria-label="Dashboard period type">
           <option value="month">Month</option>
           <option value="range">Range</option>
@@ -1736,6 +1853,32 @@ async def dashboard_page(request: Request) -> str:
         </button>
       </div>
       <div id="income-modal-body"></div>
+    </section>
+  </div>
+  <div class="modal-backdrop" id="calendar-modal" aria-hidden="true">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="calendar-modal-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="calendar-modal-title">Calendar Settings</h2>
+          <div class="row-sub" id="calendar-modal-subtitle">Loading calendar settings</div>
+        </div>
+        <button class="delete-btn" type="button" id="calendar-modal-close" aria-label="Close calendar settings" title="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <form class="settings-form" id="calendar-settings-form">
+        <label>
+          <span>Google Calendar ID</span>
+          <input id="google-calendar-id" name="google_calendar_id" autocomplete="off" placeholder="primary or calendar-id@group.calendar.google.com">
+        </label>
+        <div class="settings-actions">
+          <button class="primary-btn" type="submit">Save</button>
+          <button class="link-btn" type="button" id="calendar-sync-now">Sync now</button>
+          <span class="muted" id="calendar-settings-status"></span>
+        </div>
+      </form>
     </section>
   </div>
   <div class="toast" id="toast"></div>
@@ -2022,6 +2165,31 @@ async def dashboard_page(request: Request) -> str:
     const closeIncomeModal = () => {
       document.querySelector("#income-modal").classList.remove("open");
       document.querySelector("#income-modal").setAttribute("aria-hidden", "true");
+    };
+    async function loadCalendarSettings() {
+      const status = document.querySelector("#calendar-settings-status");
+      status.textContent = "Loading";
+      const response = await fetch("/api/calendar/settings");
+      if (!response.ok) {
+        status.textContent = "";
+        toast("Could not load calendar settings.");
+        return;
+      }
+      const data = await response.json();
+      document.querySelector("#google-calendar-id").value = data.google_calendar_id || "primary";
+      document.querySelector("#calendar-modal-subtitle").textContent = data.connected
+        ? `${data.connection_count} Google connection${data.connection_count === 1 ? "" : "s"} connected`
+        : "Google is not connected yet";
+      status.textContent = "";
+    }
+    const openCalendarModal = async () => {
+      document.querySelector("#calendar-modal").classList.add("open");
+      document.querySelector("#calendar-modal").setAttribute("aria-hidden", "false");
+      await loadCalendarSettings();
+    };
+    const closeCalendarModal = () => {
+      document.querySelector("#calendar-modal").classList.remove("open");
+      document.querySelector("#calendar-modal").setAttribute("aria-hidden", "true");
     };
     const renderCategoryOptions = (categories, selected) => categories.map(category => (
       `<option value="${escapeHtml(category)}" ${category === selected ? "selected" : ""}>${escapeHtml(category)}</option>`
@@ -2323,6 +2491,35 @@ async def dashboard_page(request: Request) -> str:
         return;
       }
 
+      const calendarModalClose = event.target.closest("#calendar-modal-close");
+      if (calendarModalClose || event.target.id === "calendar-modal") {
+        closeCalendarModal();
+        return;
+      }
+
+      const calendarOpen = event.target.closest("#calendar-settings-open");
+      if (calendarOpen) {
+        await openCalendarModal();
+        return;
+      }
+
+      const calendarSync = event.target.closest("#calendar-sync-now");
+      if (calendarSync) {
+        calendarSync.disabled = true;
+        document.querySelector("#calendar-settings-status").textContent = "Syncing";
+        const response = await fetch("/api/calendar/sync", { method: "POST" });
+        if (!response.ok) {
+          toast("Could not sync calendar.");
+        } else {
+          const result = await response.json();
+          toast(`Synced ${result.google_events} Google event(s), ${result.ical_events} iCal event(s).`);
+          await loadDayAgenda();
+        }
+        document.querySelector("#calendar-settings-status").textContent = "";
+        calendarSync.disabled = false;
+        return;
+      }
+
       const metricAction = event.target.closest("[data-metric-action]");
       if (metricAction) {
         const action = metricAction.dataset.metricAction;
@@ -2619,6 +2816,26 @@ async def dashboard_page(request: Request) -> str:
         }
         toast("Defaults saved.");
         await loadDayAgenda();
+        return;
+      }
+      if (event.target.id === "calendar-settings-form") {
+        event.preventDefault();
+        const formData = new FormData(event.target);
+        const response = await fetch("/api/calendar/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            google_calendar_id: formData.get("google_calendar_id"),
+          }),
+        });
+        if (!response.ok) {
+          toast("Could not save calendar ID.");
+          return;
+        }
+        const result = await response.json();
+        document.querySelector("#google-calendar-id").value = result.google_calendar_id;
+        toast("Calendar ID saved.");
+        await loadCalendarSettings();
         return;
       }
       const routineForm = event.target.closest("[data-routine-id]");
