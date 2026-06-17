@@ -138,10 +138,16 @@ class CalendarService:
         if response.status_code == 401:
             message = "Google Calendar token expired. Reconnect Google Calendar from the dashboard."
         elif response.status_code == 403:
-            message = (
-                "Google Calendar denied access. Check that the connected Google account can access "
-                f"{calendar_id}, then reconnect Google Calendar."
-            )
+            if "not been used" in google_message or "disabled" in google_message:
+                message = (
+                    "Google Calendar API is disabled in Google Cloud. Enable Google Calendar API "
+                    "for project 960300907926, wait a few minutes, then press Sync now."
+                )
+            else:
+                message = (
+                    "Google Calendar denied access. Check that the connected Google account can access "
+                    f"{calendar_id}, then reconnect Google Calendar."
+                )
         elif response.status_code == 404:
             message = (
                 f"Google Calendar ID was not found: {calendar_id}. Check the calendar ID or share "
@@ -149,7 +155,7 @@ class CalendarService:
             )
         else:
             message = f"Google Calendar sync failed with status {response.status_code}."
-        if google_message:
+        if google_message and response.status_code != 403:
             message = f"{message} Google says: {google_message}"
         return CalendarSyncError(message, status_code=response.status_code)
 

@@ -1486,6 +1486,39 @@ async def dashboard_page(request: Request) -> str:
       gap: 8px;
       flex-wrap: wrap;
     }
+    .calendar-agenda {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 18px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .calendar-day-control {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .calendar-day-control label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .calendar-day-control input {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 9px 10px;
+      background: #fff;
+      color: var(--ink);
+      font-size: 13px;
+    }
+    .calendar-settings-title {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 700;
+    }
     .recommendation {
       border: 1px solid var(--line);
       background: var(--surface-soft);
@@ -1862,15 +1895,26 @@ async def dashboard_page(request: Request) -> str:
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="calendar-modal-title">
       <div class="modal-head">
         <div>
-          <h2 id="calendar-modal-title">Calendar Settings</h2>
-          <div class="row-sub" id="calendar-modal-subtitle">Loading calendar settings</div>
+          <h2 id="calendar-modal-title">Calendar</h2>
+          <div class="row-sub" id="calendar-modal-subtitle">Loading calendar</div>
         </div>
-        <button class="delete-btn" type="button" id="calendar-modal-close" aria-label="Close calendar settings" title="Close">
+        <button class="delete-btn" type="button" id="calendar-modal-close" aria-label="Close calendar" title="Close">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
             <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
           </svg>
         </button>
       </div>
+      <section class="calendar-agenda">
+        <div class="calendar-day-control">
+          <label>
+            <span>Day</span>
+            <input id="calendar-day-date" type="date" aria-label="Calendar day">
+          </label>
+          <button class="link-btn" type="button" id="calendar-refresh-day">Refresh day</button>
+        </div>
+        <div class="rows" id="calendar-day-events"></div>
+      </section>
+      <h3 class="calendar-settings-title">Google settings</h3>
       <form class="settings-form" id="calendar-settings-form">
         <label>
           <span>Google Calendar ID</span>
@@ -2194,10 +2238,40 @@ async def dashboard_page(request: Request) -> str:
         toast("Could not load calendar settings.");
       }
     }
+    const selectedCalendarDay = () => {
+      const input = document.querySelector("#calendar-day-date");
+      const normalized = normalizeDayValue(input?.value || "");
+      return normalized || new Date().toISOString().slice(0, 10);
+    };
+    async function loadCalendarModalAgenda() {
+      const container = document.querySelector("#calendar-day-events");
+      container.innerHTML = `<div class="empty">Loading events.</div>`;
+      try {
+        const response = await fetch(`/api/tasks/day?day=${encodeURIComponent(selectedCalendarDay())}`);
+        if (!response.ok) {
+          container.innerHTML = `<div class="empty">Could not load calendar events.</div>`;
+          toast("Could not load calendar events.");
+          return;
+        }
+        const data = await response.json();
+        const events = Array.isArray(data.events) ? data.events : [];
+        container.innerHTML = events.length ? events.map(item => `
+          <div class="event-row">
+            <div class="row-title">${escapeHtml(item.title)}</div>
+            <div class="row-sub">${item.all_day ? "All day" : `${escapeHtml(item.start)}-${escapeHtml(item.end)}`} · ${escapeHtml(item.source || "event")}</div>
+          </div>
+        `).join("") : `<div class="empty">No calendar events for this day.</div>`;
+      } catch {
+        container.innerHTML = `<div class="empty">Could not load calendar events.</div>`;
+        toast("Could not load calendar events.");
+      }
+    }
     const openCalendarModal = async () => {
+      const calendarDay = document.querySelector("#calendar-day-date");
+      if (!calendarDay.value) calendarDay.value = new Date().toISOString().slice(0, 10);
       document.querySelector("#calendar-modal").classList.add("open");
       document.querySelector("#calendar-modal").setAttribute("aria-hidden", "false");
-      await loadCalendarSettings();
+      await Promise.all([loadCalendarSettings(), loadCalendarModalAgenda()]);
     };
     const closeCalendarModal = () => {
       document.querySelector("#calendar-modal").classList.remove("open");
@@ -2539,6 +2613,12 @@ async def dashboard_page(request: Request) -> str:
         return;
       }
 
+      const calendarDayRefresh = event.target.closest("#calendar-refresh-day");
+      if (calendarDayRefresh) {
+        await loadCalendarModalAgenda();
+        return;
+      }
+
       const calendarSync = event.target.closest("#calendar-sync-now");
       if (calendarSync) {
         if (calendarSync.disabled) return;
@@ -2556,6 +2636,7 @@ async def dashboard_page(request: Request) -> str:
           toast(`Synced ${result.google_events} Google event(s), ${result.ical_events} iCal event(s).`);
           document.querySelector("#calendar-settings-status").textContent = "Calendar synced.";
           await loadDayAgenda();
+          await loadCalendarModalAgenda();
         } catch {
           document.querySelector("#calendar-settings-status").textContent = "Could not sync calendar.";
           toast("Could not sync calendar.");
@@ -2968,6 +3049,11 @@ async def dashboard_page(request: Request) -> str:
     document.querySelector("#day-task-date").addEventListener("change", () => {
       if (!document.querySelector("#tasks-view").classList.contains("hidden")) {
         loadDayAgenda();
+      }
+    });
+    document.querySelector("#calendar-day-date").addEventListener("change", () => {
+      if (document.querySelector("#calendar-modal").classList.contains("open")) {
+        loadCalendarModalAgenda();
       }
     });
     updatePeriodControls();
