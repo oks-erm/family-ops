@@ -1519,6 +1519,24 @@ async def dashboard_page(request: Request) -> str:
       font-size: 13px;
       font-weight: 700;
     }
+    .calendar-embed {
+      display: grid;
+      gap: 8px;
+    }
+    .calendar-embed iframe {
+      width: 100%;
+      min-height: 420px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #fff;
+    }
+    .calendar-embed-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
     .recommendation {
       border: 1px solid var(--line);
       background: var(--surface-soft);
@@ -1907,12 +1925,19 @@ async def dashboard_page(request: Request) -> str:
       <section class="calendar-agenda">
         <div class="calendar-day-control">
           <label>
-            <span>Day</span>
+            <span>Synced events for day</span>
             <input id="calendar-day-date" type="date" aria-label="Calendar day">
           </label>
           <button class="link-btn" type="button" id="calendar-refresh-day">Refresh day</button>
         </div>
         <div class="rows" id="calendar-day-events"></div>
+        <div class="calendar-embed">
+          <div class="calendar-embed-head">
+            <h3 class="calendar-settings-title">Google calendar view</h3>
+            <span class="muted" id="calendar-embed-status"></span>
+          </div>
+          <iframe id="google-calendar-embed" title="Google Calendar" loading="lazy"></iframe>
+        </div>
       </section>
       <h3 class="calendar-settings-title">Google settings</h3>
       <form class="settings-form" id="calendar-settings-form">
@@ -2227,6 +2252,7 @@ async def dashboard_page(request: Request) -> str:
         const data = await response.json();
         const connected = Boolean(data.connected);
         document.querySelector("#google-calendar-id").value = data.google_calendar_id || "primary";
+        updateCalendarEmbed(data.google_calendar_id || "primary");
         document.querySelector("#calendar-modal-subtitle").textContent = connected
           ? `${data.connection_count} Google connection${data.connection_count === 1 ? "" : "s"} connected`
           : "Google is not connected yet";
@@ -2237,6 +2263,27 @@ async def dashboard_page(request: Request) -> str:
         status.textContent = "Could not load calendar settings.";
         toast("Could not load calendar settings.");
       }
+    }
+    function updateCalendarEmbed(calendarId) {
+      const calendarText = String(calendarId || "").trim();
+      const iframe = document.querySelector("#google-calendar-embed");
+      const status = document.querySelector("#calendar-embed-status");
+      if (!calendarText) {
+        iframe.removeAttribute("src");
+        status.textContent = "No calendar ID configured";
+        return;
+      }
+      const params = new URLSearchParams({
+        src: calendarText,
+        ctz: "Europe/Lisbon",
+        mode: "WEEK",
+        showTitle: "0",
+        showPrint: "0",
+        showTabs: "1",
+        showCalendars: "0",
+      });
+      iframe.src = `https://calendar.google.com/calendar/embed?${params.toString()}`;
+      status.textContent = "Live Google view";
     }
     const selectedCalendarDay = () => {
       const input = document.querySelector("#calendar-day-date");
@@ -2260,7 +2307,7 @@ async def dashboard_page(request: Request) -> str:
             <div class="row-title">${escapeHtml(item.title)}</div>
             <div class="row-sub">${item.all_day ? "All day" : `${escapeHtml(item.start)}-${escapeHtml(item.end)}`} · ${escapeHtml(item.source || "event")}</div>
           </div>
-        `).join("") : `<div class="empty">No calendar events for this day.</div>`;
+        `).join("") : `<div class="empty">No synced events for this day. The live Google view below can still show events before Sync now succeeds.</div>`;
       } catch {
         container.innerHTML = `<div class="empty">Could not load calendar events.</div>`;
         toast("Could not load calendar events.");
@@ -2967,6 +3014,7 @@ async def dashboard_page(request: Request) -> str:
           }
           const result = await response.json();
           document.querySelector("#google-calendar-id").value = result.google_calendar_id;
+          updateCalendarEmbed(result.google_calendar_id);
           toast("Calendar ID saved.");
           document.querySelector("#calendar-settings-status").textContent = "Calendar ID saved. Connect Google next.";
           await loadCalendarSettings();
