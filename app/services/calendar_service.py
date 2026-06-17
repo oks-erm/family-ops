@@ -24,6 +24,12 @@ class CalendarEventMatchError(RuntimeError):
     pass
 
 
+class CalendarSyncError(RuntimeError):
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class CalendarService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -101,7 +107,8 @@ class CalendarService:
                     },
                     headers={"Authorization": f"Bearer {access_token}"},
                 )
-                response.raise_for_status()
+                if not response.is_success:
+                    raise self._google_sync_error(response=response, calendar_id=calendar_id)
                 for item in response.json().get("items", []):
                     parsed = self._google_event_from_raw(item)
                     if parsed is None:
@@ -120,6 +127,31 @@ class CalendarService:
                     )
                     synced += 1
         return synced
+
+    @staticmethod
+    def _google_sync_error(*, response: httpx.Response, calendar_id: str) -> CalendarSyncError:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        google_message = str(payload.get("error", {}).get("message") or "").strip()
+        if response.status_code == 401:
+            message = "Google Calendar token expired. Reconnect Google Calendar from the dashboard."
+        elif response.status_code == 403:
+            message = (
+                "Google Calendar denied access. Check that the connected Google account can access "
+                f"{calendar_id}, then reconnect Google Calendar."
+            )
+        elif response.status_code == 404:
+            message = (
+                f"Google Calendar ID was not found: {calendar_id}. Check the calendar ID or share "
+                "that calendar with the connected Google account."
+            )
+        else:
+            message = f"Google Calendar sync failed with status {response.status_code}."
+        if google_message:
+            message = f"{message} Google says: {google_message}"
+        return CalendarSyncError(message, status_code=response.status_code)
 
     async def create_google_event(
         self,
@@ -358,7 +390,11 @@ class CalendarService:
                 "grant_type": "refresh_token",
             },
         )
-        response.raise_for_status()
+        if not response.is_success:
+            raise CalendarSyncError(
+                "Google Calendar token refresh failed. Reconnect Google Calendar from the dashboard.",
+                status_code=response.status_code,
+            )
         token_data = response.json()
         connection.access_token = token_data.get("access_token") or connection.access_token
         expires_in = int(token_data.get("expires_in") or 0)

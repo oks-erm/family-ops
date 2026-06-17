@@ -20,7 +20,7 @@ from app.db.repositories.shopping import ShoppingRepository
 from app.db.repositories.tasks import TaskRepository
 from app.db.repositories.users import UserRepository
 from app.db.session import async_session_factory
-from app.services.calendar_service import CalendarService
+from app.services.calendar_service import CalendarService, CalendarSyncError
 from app.services.dashboard_service import DashboardService
 from app.services.finance_category_service import FinanceCategoryService
 from app.services.planning_service import PlanningService
@@ -301,7 +301,10 @@ async def sync_dashboard_calendars(request: Request) -> dict[str, int]:
             raise HTTPException(status_code=401, detail="Dashboard login required.")
         service = CalendarService(session)
         ical_count = await service.sync_ical_feeds(household_id=household.id)
-        google_count = await service.sync_google_connections(household_id=household.id)
+        try:
+            google_count = await service.sync_google_connections(household_id=household.id)
+        except CalendarSyncError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         await ActivityRepository(session).log(
             household_id=household.id,
             user_id=dashboard_user.id,

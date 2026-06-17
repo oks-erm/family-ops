@@ -13,7 +13,7 @@ from app.db.repositories.calendar import CalendarRepository
 from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.users import UserRepository
 from app.db.session import async_session_factory
-from app.services.calendar_service import CalendarService
+from app.services.calendar_service import CalendarService, CalendarSyncError
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 logger = logging.getLogger(__name__)
@@ -146,6 +146,9 @@ async def google_calendar_callback(
         )
         try:
             await CalendarService(session).sync_google_connections(household_id=household.id)
+        except CalendarSyncError:
+            logger.warning("Google Calendar OAuth succeeded but initial calendar sync was rejected.")
+            return _dashboard_calendar_redirect("connected-sync-failed")
         except httpx.HTTPStatusError as exc:
             logger.warning(
                 "Google Calendar OAuth succeeded but initial calendar sync was rejected.",
