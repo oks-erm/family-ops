@@ -7,7 +7,7 @@ from app.config import Settings
 from app.main import root, scheduling_host_allows_path
 from app.routes.auth import google_auth_start
 from app.routes.calendar import _calendar_result_redirect
-from app.routes.scheduling import MANAGEMENT_HTML, scheduling_management_page
+from app.routes.scheduling import MANAGEMENT_HTML, PUBLIC_HTML, scheduling_management_page
 
 
 def _request(
@@ -63,6 +63,11 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("remove.textContent='Remove'", MANAGEMENT_HTML)
         self.assertNotIn("Family Copilot", MANAGEMENT_HTML)
         self.assertNotIn(">Dashboard<", MANAGEMENT_HTML)
+
+    def test_public_booking_heading_is_balanced_and_has_no_eyebrow(self) -> None:
+        self.assertIn("font-size:clamp(24px,3.2vw,30px)", PUBLIC_HTML)
+        self.assertIn('<main class="shell"><h1 id="title">', PUBLIC_HTML)
+        self.assertNotIn('<p class="muted">Lesson scheduling</p>', PUBLIC_HTML)
 
     async def test_authenticated_lessons_root_opens_management(self) -> None:
         with patch("app.main.get_settings", return_value=self.settings):
