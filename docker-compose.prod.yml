@@ -23,12 +23,18 @@ services:
     image: ${GHCR_IMAGE}:${IMAGE_TAG:-latest}
     env_file:
       - .env
+    environment:
+      SCHEDULING_PUBLIC_BASE_URL: https://${SCHEDULING_DOMAIN:-lessons.sdfgh.space}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.app.rule=Host(`${DOMAIN}`)"
       - "traefik.http.routers.app.entrypoints=websecure"
       - "traefik.http.routers.app.tls.certresolver=letsencrypt"
       - "traefik.http.services.app.loadbalancer.server.port=8000"
+      - "traefik.http.routers.scheduling.rule=Host(`${SCHEDULING_DOMAIN:-lessons.sdfgh.space}`)"
+      - "traefik.http.routers.scheduling.entrypoints=websecure"
+      - "traefik.http.routers.scheduling.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.scheduling.service=app"
     depends_on:
       postgres:
         condition: service_healthy

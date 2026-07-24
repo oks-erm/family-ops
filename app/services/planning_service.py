@@ -10,6 +10,8 @@ class CalendarEventInput:
     starts_at: datetime
     ends_at: datetime
     location: str | None = None
+    external_calendar_id: str | None = None
+    external_event_id: str | None = None
 
 
 @dataclass(frozen=True)

@@ -3,7 +3,19 @@ from datetime import date, datetime, time
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Date, DateTime, Enum, ForeignKey, String, Text, Time, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    Time,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -275,6 +287,14 @@ class ReceiptItem(Base, TimestampMixin):
 
 class CalendarConnection(Base, TimestampMixin):
     __tablename__ = "calendar_connections"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "provider",
+            "account_email",
+            name="uq_calendar_connection_user_provider_account",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -282,6 +302,7 @@ class CalendarConnection(Base, TimestampMixin):
         ForeignKey("households.id", ondelete="CASCADE"), index=True
     )
     provider: Mapped[CalendarProvider] = mapped_column(Enum(CalendarProvider), default=CalendarProvider.google)
+    account_email: Mapped[str | None] = mapped_column(String(320))
     external_account_id: Mapped[str | None] = mapped_column(String(255))
     access_token: Mapped[str | None] = mapped_column(Text)
     refresh_token: Mapped[str | None] = mapped_column(Text)
@@ -319,6 +340,106 @@ class CalendarEventCache(Base, TimestampMixin):
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     location: Mapped[str | None] = mapped_column(String(500))
     raw_event: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class SchedulingProfile(Base, TimestampMixin):
+    __tablename__ = "scheduling_profiles"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_scheduling_profiles_user"),
+        UniqueConstraint("slug", name="uq_scheduling_profiles_slug"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    household_id: Mapped[UUID] = mapped_column(
+        ForeignKey("households.id", ondelete="CASCADE"), index=True
+    )
+    slug: Mapped[str] = mapped_column(String(100), index=True)
+    display_name: Mapped[str] = mapped_column(String(255))
+    timezone: Mapped[str] = mapped_column(String(64), default="Europe/Lisbon")
+    minimum_notice_minutes: Mapped[int] = mapped_column(Integer, default=720)
+    booking_window_days: Mapped[int] = mapped_column(Integer, default=60)
+    buffer_before_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    buffer_after_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    slot_interval_minutes: Mapped[int] = mapped_column(Integer, default=15)
+    booking_calendar_id: Mapped[str | None] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class SchedulingCalendar(Base, TimestampMixin):
+    __tablename__ = "scheduling_calendars"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "connection_id",
+            "external_calendar_id",
+            name="uq_scheduling_calendar_source",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_profiles.id", ondelete="CASCADE"), index=True
+    )
+    connection_id: Mapped[UUID] = mapped_column(
+        ForeignKey("calendar_connections.id", ondelete="CASCADE"), index=True
+    )
+    external_calendar_id: Mapped[str] = mapped_column(String(255))
+    name: Mapped[str] = mapped_column(String(255))
+    access_role: Mapped[str | None] = mapped_column(String(32))
+    include_in_conflicts: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_write: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AvailabilityRule(Base, TimestampMixin):
+    __tablename__ = "availability_rules"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_profiles.id", ondelete="CASCADE"), index=True
+    )
+    weekday: Mapped[int] = mapped_column(Integer, index=True)
+    starts_at: Mapped[time] = mapped_column(Time)
+    ends_at: Mapped[time] = mapped_column(Time)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class LessonType(Base, TimestampMixin):
+    __tablename__ = "lesson_types"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_profiles.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
+    duration_minutes: Mapped[int] = mapped_column(Integer)
+    location: Mapped[str | None] = mapped_column(String(500))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class LessonBooking(Base, TimestampMixin):
+    __tablename__ = "lesson_bookings"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "starts_at", name="uq_lesson_booking_profile_start"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_profiles.id", ondelete="CASCADE"), index=True
+    )
+    lesson_type_id: Mapped[UUID] = mapped_column(
+        ForeignKey("lesson_types.id", ondelete="RESTRICT"), index=True
+    )
+    student_name: Mapped[str] = mapped_column(String(255))
+    student_email: Mapped[str] = mapped_column(String(320))
+    student_timezone: Mapped[str] = mapped_column(String(64))
+    notes: Mapped[str | None] = mapped_column(Text)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="confirmed", index=True)
+    external_calendar_id: Mapped[str | None] = mapped_column(String(255))
+    external_event_id: Mapped[str | None] = mapped_column(String(500))
 
 
 class ScheduledJobLog(Base, TimestampMixin):

@@ -10,9 +10,55 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  verify:
+    name: Verify application
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: family_copilot_test
+          POSTGRES_USER: family
+          POSTGRES_PASSWORD: family
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U family -d family_copilot_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://family:family@localhost:5432/family_copilot_test
+      DASHBOARD_SESSION_SECRET: ci-only-session-secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run database migrations
+        run: alembic upgrade head
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Compile and import application
+        run: |
+          python -m compileall -q app alembic tests
+          python -c "from app.main import app; assert app.title == 'Family Copilot'"
+
   # ── Build & push Docker image to GHCR ────────────────────────────────────────
   build-push:
     name: Build & push image
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read

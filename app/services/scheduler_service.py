@@ -52,7 +52,7 @@ class SchedulerService:
         )
         self.scheduler.add_job(
             self.sync_calendars,
-            CronTrigger(minute="*/30", timezone=ZoneInfo(self.settings.default_timezone)),
+            CronTrigger(minute="*/5", timezone=ZoneInfo(self.settings.default_timezone)),
             id="sync_calendars",
             replace_existing=True,
         )
@@ -262,12 +262,15 @@ class SchedulerService:
 
     async def sync_calendars(self) -> None:
         async with async_session_factory() as session:
+            service = CalendarService(session)
             try:
-                service = CalendarService(session)
                 await service.sync_ical_feeds()
+            except Exception:
+                logger.exception("iCal sync failed.")
+            try:
                 await service.sync_google_connections()
             except Exception:
-                logger.exception("Calendar sync failed.")
+                logger.exception("Google Calendar sync failed.")
 
     async def refresh_prices(self) -> None:
         async with async_session_factory() as session:

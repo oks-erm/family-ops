@@ -11,6 +11,7 @@ It combines deterministic command routing with optional AI-assisted understandin
 - Daily planning pipeline with free-window calculation, fixed events, and actionable task scheduling.
 - Finance ingestion from text, receipts, and screenshots, with dashboard analytics.
 - Calendar integration (iCal and Google OAuth start flow).
+- Public lesson booking with multi-calendar conflict checking and tutor-managed availability.
 - Production deployment via Docker Compose and GitHub Actions.
 
 ## Architecture
@@ -97,6 +98,25 @@ Current dashboard capabilities include:
 - Event actions for day-level planning events (delete/move for note-based events).
 - Planning defaults management (work window, wake/sleep times, commute, meal assumptions).
 - Finance and receipt analytics views.
+- A private lesson-scheduling workspace at `/schedule/manage`.
+
+## Lesson Scheduling
+
+The scheduling module provides a public, unauthenticated booking experience and a private
+management interface protected by the existing dashboard login.
+
+- Public booking page: `https://<scheduling-domain>/book/<tutor-slug>`
+- Private management: `/schedule/manage`
+- Configurable lesson types, durations, buffers, notice period, booking horizon, weekly
+  availability, timezone, and destination calendar.
+- Conflict checking across selected calendars from multiple Google accounts and private HTTPS
+  iCal subscriptions (including recurring events and timezone-aware feeds).
+- Five-minute background synchronization plus a mandatory refresh immediately before booking.
+- New lessons are written to the configured writable Google calendar. The application does not
+  email the student automatically.
+
+Calendars stored only “On My Mac” have no server-accessible source and cannot be synchronized.
+Move them to Google/iCloud/Exchange or expose a private HTTPS iCal subscription first.
 
 ## Telegram Commands
 
@@ -146,6 +166,7 @@ Common required variables:
 - `TELEGRAM_BOT_TOKEN`
 - `DEFAULT_TIMEZONE`
 - `PUBLIC_BASE_URL`
+- `SCHEDULING_PUBLIC_BASE_URL`
 - `DASHBOARD_SESSION_SECRET`
 - Google OAuth settings (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, redirect URIs)
 
@@ -176,6 +197,9 @@ Typical flow:
 1. Push to `main`.
 2. CI builds and pushes image tags.
 3. Deploy job updates server `.env` image tag and restarts stack.
+
+The production Compose file accepts `SCHEDULING_DOMAIN` and routes that hostname to the same app
+and database. Point its DNS A/AAAA record to the existing server before deployment.
 
 ## Roadmap
 

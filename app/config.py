@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     weekly_recommendation_time: str = Field(default="08:00", alias="WEEKLY_RECOMMENDATION_TIME")
     default_timezone: str = Field(default="Europe/Lisbon", alias="DEFAULT_TIMEZONE")
     public_base_url: str = Field(default="http://localhost:8000", alias="PUBLIC_BASE_URL")
+    scheduling_public_base_url: str | None = Field(
+        default=None,
+        alias="SCHEDULING_PUBLIC_BASE_URL",
+    )
     google_client_id: str | None = Field(default=None, alias="GOOGLE_CLIENT_ID")
     google_client_secret: str | None = Field(default=None, alias="GOOGLE_CLIENT_SECRET")
     google_redirect_uri: str | None = Field(default=None, alias="GOOGLE_REDIRECT_URI")

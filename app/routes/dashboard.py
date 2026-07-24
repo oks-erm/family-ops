@@ -1709,6 +1709,7 @@ async def dashboard_page(request: Request) -> str:
         </nav>
       </div>
       <div class="top-actions">
+        <a class="link-btn" href="/schedule/manage">Lessons</a>
         <a class="link-btn" href="/calendar/google/start">Connect calendar</a>
         <button class="link-btn" type="button" id="calendar-settings-open">Calendar</button>
         <select class="month-control" id="scope-filter" aria-label="Dashboard period type">

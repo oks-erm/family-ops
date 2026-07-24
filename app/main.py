@@ -1,15 +1,21 @@
 import logging
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse
+from sqlalchemy import select
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.bot.main import create_bot, start_polling_in_background
 from app.config import get_settings
+from app.db.models import SchedulingProfile
+from app.db.session import async_session_factory
 from app.routes.auth import router as auth_router
 from app.routes.calendar import router as calendar_router
 from app.routes.dashboard import router as dashboard_router
+from app.routes.scheduling import router as scheduling_router
 from app.services.scheduler_service import SchedulerService
 
 logging.basicConfig(level=logging.INFO)
@@ -38,14 +44,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Family Copilot", lifespan=lifespan)
-app.add_middleware(SessionMiddleware, secret_key=get_settings().dashboard_session_secret)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=get_settings().dashboard_session_secret,
+    https_only=get_settings().app_env.casefold() == "production",
+    same_site="lax",
+)
 app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(calendar_router)
+app.include_router(scheduling_router)
 
 
-@app.get("/")
-async def root() -> dict[str, str]:
+@app.get("/", response_model=None)
+async def root(request: Request) -> dict[str, str] | RedirectResponse:
+    settings = get_settings()
+    scheduling_host = urlsplit(settings.scheduling_public_base_url or "").hostname
+    if scheduling_host and request.url.hostname == scheduling_host:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(SchedulingProfile)
+                .where(SchedulingProfile.is_active.is_(True))
+                .order_by(SchedulingProfile.created_at)
+                .limit(1)
+            )
+            profile = result.scalar_one_or_none()
+        if profile is not None:
+            return RedirectResponse(f"/book/{profile.slug}", status_code=303)
     return {
         "name": "Family Copilot",
         "status": "running",

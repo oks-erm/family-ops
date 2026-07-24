@@ -14,11 +14,17 @@ from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.users import UserRepository
 from app.db.session import async_session_factory
 from app.services.calendar_service import CalendarService, CalendarSyncError
+from app.utils.urls import UnsafeExternalURLError, validate_public_https_url
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 logger = logging.getLogger(__name__)
 
-GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+GOOGLE_SCOPES = [
+    "openid",
+    "email",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+]
 
 
 def _calendar_redirect_uri() -> str:
@@ -34,7 +40,9 @@ async def _dashboard_context(request: Request, session):
     google_email = request.session.get("google_email")
     if not google_email:
         return None, None
-    dashboard_user = await UserRepository(session).get_by_google_email(google_email=str(google_email))
+    dashboard_user = await UserRepository(session).get_by_google_email(
+        google_email=str(google_email)
+    )
     if dashboard_user is None:
         request.session.clear()
         return None, None
@@ -43,7 +51,7 @@ async def _dashboard_context(request: Request, session):
 
 
 @router.get("/google/start")
-async def google_calendar_start(request: Request) -> RedirectResponse:
+async def google_calendar_start(request: Request, next: str | None = None) -> RedirectResponse:
     settings = get_settings()
     if not settings.google_client_id:
         raise HTTPException(status_code=400, detail="GOOGLE_CLIENT_ID is not configured.")
@@ -51,7 +59,10 @@ async def google_calendar_start(request: Request) -> RedirectResponse:
     async with async_session_factory() as session:
         google_email = request.session.get("google_email")
         if not google_email:
-            raise HTTPException(status_code=401, detail="Sign in to the dashboard before connecting Google Calendar.")
+            raise HTTPException(
+                status_code=401,
+                detail="Sign in to the dashboard before connecting Google Calendar.",
+            )
         user = await UserRepository(session).get_by_google_email(google_email=str(google_email))
         if user is None:
             raise HTTPException(status_code=404, detail="No onboarded user found.")
@@ -59,6 +70,10 @@ async def google_calendar_start(request: Request) -> RedirectResponse:
     state = secrets.token_urlsafe(24)
     request.session["calendar_oauth_state"] = state
     request.session["calendar_oauth_user_id"] = str(user.id)
+    if next == "scheduling":
+        request.session["calendar_oauth_next"] = "scheduling"
+    else:
+        request.session.pop("calendar_oauth_next", None)
     query = urlencode(
         {
             "client_id": settings.google_client_id,
@@ -66,7 +81,7 @@ async def google_calendar_start(request: Request) -> RedirectResponse:
             "response_type": "code",
             "scope": " ".join(GOOGLE_SCOPES),
             "access_type": "offline",
-            "prompt": "consent",
+            "prompt": "consent select_account",
             "state": state,
         }
     )
@@ -87,14 +102,12 @@ async def google_calendar_callback(
     async with async_session_factory() as session:
         expected_state = request.session.pop("calendar_oauth_state", None)
         user_id_raw = request.session.pop("calendar_oauth_user_id", None)
-        if expected_state == state and user_id_raw:
+        if expected_state != state or not user_id_raw:
+            raise HTTPException(status_code=400, detail="Invalid or expired calendar OAuth state.")
+        try:
             user_id = UUID(str(user_id_raw))
-        else:
-            # Legacy fallback for old links created before session-bound calendar OAuth.
-            try:
-                user_id = UUID(state)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail="Invalid or expired calendar OAuth state.") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid calendar OAuth session.") from exc
         user = await UserRepository(session).get_by_id(user_id=user_id)
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for OAuth state.")
@@ -133,12 +146,30 @@ async def google_calendar_callback(
             logger.warning("Google Calendar OAuth token response did not include an access token.")
             return _dashboard_calendar_redirect("auth-failed")
 
+        try:
+            async with httpx.AsyncClient(timeout=12) as client:
+                profile_response = await client.get(
+                    "https://openidconnect.googleapis.com/v1/userinfo",
+                    headers={"Authorization": f"Bearer {token_data['access_token']}"},
+                )
+            profile_response.raise_for_status()
+            account_email = str(profile_response.json().get("email") or "").strip().casefold()
+        except (httpx.HTTPError, ValueError):
+            logger.exception("Google Calendar account identity request failed.")
+            return _dashboard_calendar_redirect("auth-failed")
+        if not account_email:
+            logger.warning("Google Calendar OAuth did not return an account email.")
+            return _dashboard_calendar_redirect("auth-failed")
+
         expires_in = int(token_data.get("expires_in") or 0)
         token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in) if expires_in else None
         await CalendarRepository(session).upsert_google_connection(
             user_id=user.id,
             household_id=household.id,
-            external_account_id=(household.google_calendar_id or settings.google_calendar_id or "primary").strip(),
+            account_email=account_email,
+            external_account_id=(
+                household.google_calendar_id or settings.google_calendar_id or "primary"
+            ).strip(),
             access_token=token_data.get("access_token"),
             refresh_token=token_data.get("refresh_token"),
             token_expires_at=token_expires_at,
@@ -147,7 +178,9 @@ async def google_calendar_callback(
         try:
             await CalendarService(session).sync_google_connections(household_id=household.id)
         except CalendarSyncError:
-            logger.warning("Google Calendar OAuth succeeded but initial calendar sync was rejected.")
+            logger.warning(
+                "Google Calendar OAuth succeeded but initial calendar sync was rejected."
+            )
             return _dashboard_calendar_redirect("connected-sync-failed")
         except httpx.HTTPStatusError as exc:
             logger.warning(
@@ -158,13 +191,17 @@ async def google_calendar_callback(
         except httpx.HTTPError:
             logger.exception("Google Calendar OAuth succeeded but initial calendar sync failed.")
             return _dashboard_calendar_redirect("connected-sync-failed")
+        if request.session.pop("calendar_oauth_next", None) == "scheduling":
+            return RedirectResponse("/schedule/manage?calendar=connected", status_code=303)
         return _dashboard_calendar_redirect("connected")
 
 
 @router.post("/ical")
 async def add_ical_feed(request: Request, name: str, url: str) -> dict[str, str]:
-    if not url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="The iCal feed URL must start with http:// or https://.")
+    try:
+        url = await validate_public_https_url(url)
+    except UnsafeExternalURLError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     async with async_session_factory() as session:
         user, household = await _dashboard_context(request, session)
         if user is None or household is None:
