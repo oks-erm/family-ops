@@ -197,5 +197,23 @@ jobs:
               exit 1
             fi
 
+            # Wait for the API to become ready, then verify the live container and schema.
+            health_ok=false
+            for attempt in $(seq 1 20); do
+              if $compose_cmd exec -T app python -c "import json, urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3); assert response.status == 200; assert json.load(response) == {'status': 'ok'}"; then
+                health_ok=true
+                break
+              fi
+              sleep 2
+            done
+            if [ "$health_ok" != "true" ]; then
+              echo "Application health check failed."
+              $compose_cmd logs --tail=100 app
+              exit 1
+            fi
+
+            $compose_cmd exec -T app alembic current
+            $compose_cmd logs --tail=100 app
+
             # Clean up dangling images
             docker image prune -f
