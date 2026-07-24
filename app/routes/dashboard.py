@@ -1,3 +1,4 @@
+import html
 from calendar import monthrange
 from datetime import date, time
 from uuid import UUID
@@ -7,7 +8,13 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.config import get_settings
-from app.db.models import ActivityAction, PlanningConversationState, Routine, ShoppingItem, TaskStatus
+from app.db.models import (
+    ActivityAction,
+    PlanningConversationState,
+    Routine,
+    ShoppingItem,
+    TaskStatus,
+)
 from app.db.repositories.activity import ActivityRepository
 from app.db.repositories.calendar import CalendarRepository
 from app.db.repositories.finance import FinanceRepository
@@ -969,6 +976,9 @@ async def dashboard_page(request: Request) -> str:
         dashboard_user, household = await _dashboard_context(request, session)
         if dashboard_user is None or household is None:
             return _login_page()
+    settings = get_settings()
+    lessons_base = settings.scheduling_public_base_url or settings.public_base_url
+    lessons_url = f"{lessons_base.rstrip('/')}/schedule/manage"
     return """
 <!doctype html>
 <html lang="en">
@@ -1709,7 +1719,7 @@ async def dashboard_page(request: Request) -> str:
         </nav>
       </div>
       <div class="top-actions">
-        <a class="link-btn" href="/schedule/manage">Lessons</a>
+        <a class="link-btn" href="__LESSONS_URL__">Lessons</a>
         <a class="link-btn" href="/calendar/google/start">Connect calendar</a>
         <button class="link-btn" type="button" id="calendar-settings-open">Calendar</button>
         <select class="month-control" id="scope-filter" aria-label="Dashboard period type">
@@ -3115,7 +3125,10 @@ async def dashboard_page(request: Request) -> str:
   </script>
 </body>
 </html>
-"""
+""".replace(
+        "__LESSONS_URL__",
+        html.escape(lessons_url, quote=True),
+    )
 
 
 def _login_page() -> str:

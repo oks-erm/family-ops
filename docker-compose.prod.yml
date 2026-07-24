@@ -25,6 +25,7 @@ services:
       - .env
     environment:
       SCHEDULING_PUBLIC_BASE_URL: https://${SCHEDULING_DOMAIN:-lessons.sdfgh.space}
+      SESSION_COOKIE_DOMAIN: ${SESSION_COOKIE_DOMAIN:-.sdfgh.space}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.app.rule=Host(`${DOMAIN}`)"

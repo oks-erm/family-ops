@@ -21,7 +21,11 @@ def _redirect_uri() -> str:
 
 
 @router.get("/auth/google/start")
-async def google_auth_start(request: Request, link_token: str | None = None) -> RedirectResponse:
+async def google_auth_start(
+    request: Request,
+    link_token: str | None = None,
+    next: str | None = None,
+) -> RedirectResponse:
     settings = get_settings()
     if not settings.google_client_id:
         raise HTTPException(status_code=500, detail="GOOGLE_CLIENT_ID is not configured.")
@@ -30,6 +34,10 @@ async def google_auth_start(request: Request, link_token: str | None = None) -> 
     request.session["oauth_state"] = state
     if link_token:
         request.session["dashboard_link_token"] = link_token
+    if next == "scheduling":
+        request.session["oauth_next"] = "scheduling"
+    else:
+        request.session.pop("oauth_next", None)
 
     params = {
         "client_id": settings.google_client_id,
@@ -93,6 +101,12 @@ async def google_auth_callback(request: Request, code: str, state: str) -> Redir
                 return RedirectResponse("/auth/not-invited", status_code=303)
 
     request.session["google_email"] = email
+    if request.session.pop("oauth_next", None) == "scheduling":
+        scheduling_base = settings.scheduling_public_base_url or settings.public_base_url
+        return RedirectResponse(
+            f"{scheduling_base.rstrip('/')}/schedule/manage",
+            status_code=303,
+        )
     return RedirectResponse("/dashboard", status_code=303)
 
 

@@ -153,8 +153,11 @@ def _lesson_type_json(item: LessonType) -> dict[str, object]:
 @router.get("/schedule/manage", response_class=HTMLResponse)
 async def scheduling_management_page(request: Request):
     if not request.session.get("google_email"):
-        return RedirectResponse("/auth/google/start", status_code=303)
-    return HTMLResponse(MANAGEMENT_HTML)
+        return RedirectResponse("/auth/google/start?next=scheduling", status_code=303)
+    dashboard_url = f"{get_settings().public_base_url.rstrip('/')}/dashboard"
+    return HTMLResponse(
+        MANAGEMENT_HTML.replace("__DASHBOARD_URL__", html.escape(dashboard_url, quote=True))
+    )
 
 
 @router.get("/api/scheduling/manage")
@@ -555,7 +558,7 @@ main{max-width:1080px;margin:auto;padding:28px 18px 80px}header{display:flex;jus
 h1{font-size:clamp(28px,5vw,46px);margin:0}.muted{color:#627067}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px}
 .card{background:#fff;border:1px solid #dce6de;border-radius:18px;padding:20px;box-shadow:0 10px 30px #183c2510}.wide{grid-column:1/-1}
 label{display:grid;gap:6px;font-size:13px;font-weight:650;margin:11px 0}input,select,textarea,button{font:inherit}input,select,textarea{width:100%;padding:10px 12px;border:1px solid #cad7cd;border-radius:10px;background:white}button,.button{border:0;border-radius:10px;padding:10px 14px;background:#176b45;color:white;font-weight:700;cursor:pointer;text-decoration:none;display:inline-block}.secondary{background:#e8f1eb;color:#24543b}.danger{background:#fff0ee;color:#9b2e23}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.list{display:grid;gap:9px;margin-top:12px}.item{display:flex;gap:12px;align-items:center;justify-content:space-between;border:1px solid #e3e9e4;border-radius:12px;padding:11px}.item p{margin:2px 0}.days{display:grid;grid-template-columns:110px 1fr 1fr auto;gap:8px;align-items:center}.status{min-height:24px;color:#176b45}.hidden{position:absolute;left:-9999px}
-</style></head><body><main><header><div><p class="muted">Family Copilot</p><h1>Lesson scheduling</h1></div><a class="button secondary" href="/dashboard">Dashboard</a></header>
+</style></head><body><main><header><div><p class="muted">Family Copilot</p><h1>Lesson scheduling</h1></div><a class="button secondary" href="__DASHBOARD_URL__">Dashboard</a></header>
 <div class="grid"><section class="card"><h2>Booking page</h2><form id="profile"><label>Your public name<input name="display_name" required></label><label>Booking link<input name="slug" required></label><label>Timezone<input name="timezone" required></label><div class="row"><label>Minimum notice (minutes)<input name="minimum_notice_minutes" type="number" min="0"></label><label>Booking window (days)<input name="booking_window_days" type="number" min="1"></label></div><div class="row"><label>Buffer before<input name="buffer_before_minutes" type="number" min="0"></label><label>Buffer after<input name="buffer_after_minutes" type="number" min="0"></label><label>Slot interval<input name="slot_interval_minutes" type="number" min="5"></label></div><label>Calendar for new lessons<select name="booking_calendar_id"><option value="">Primary Google calendar</option></select></label><label class="row"><input name="is_active" type="checkbox" style="width:auto">Accept bookings</label><button>Save settings</button></form><p id="public-link"></p></section>
 <section class="card"><h2>Lesson types</h2><form id="lesson"><input name="id" type="hidden"><label>Name<input name="name" required placeholder="English lesson"></label><label>Length (minutes)<input name="duration_minutes" type="number" min="15" value="60" required></label><label>Location or call link<input name="location"></label><label>Description<textarea name="description"></textarea></label><label class="row"><input name="is_active" type="checkbox" style="width:auto" checked>Active</label><button>Save lesson type</button></form><div class="list" id="lessons"></div></section>
 <section class="card wide"><h2>Weekly availability</h2><p class="muted">Add one or more windows per day. Times use your timezone.</p><div class="list" id="availability"></div><div class="row"><button id="add-window" class="secondary" type="button">Add window</button><button id="save-availability" type="button">Save availability</button></div></section>

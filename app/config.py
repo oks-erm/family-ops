@@ -43,6 +43,14 @@ class Settings(BaseSettings):
         default="local-dev-change-me",
         alias="DASHBOARD_SESSION_SECRET",
     )
+    session_cookie_name: str = Field(
+        default="family_copilot_session",
+        alias="SESSION_COOKIE_NAME",
+    )
+    session_cookie_domain: str | None = Field(
+        default=None,
+        alias="SESSION_COOKIE_DOMAIN",
+    )
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

@@ -44,10 +44,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Family Copilot", lifespan=lifespan)
+settings = get_settings()
 app.add_middleware(
     SessionMiddleware,
-    secret_key=get_settings().dashboard_session_secret,
-    https_only=get_settings().app_env.casefold() == "production",
+    secret_key=settings.dashboard_session_secret,
+    session_cookie=settings.session_cookie_name,
+    domain=settings.session_cookie_domain,
+    https_only=settings.app_env.casefold() == "production",
     same_site="lax",
 )
 app.include_router(auth_router)

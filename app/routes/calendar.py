@@ -32,7 +32,14 @@ def _calendar_redirect_uri() -> str:
     return f"{settings.public_base_url.rstrip('/')}/calendar/google/callback"
 
 
-def _dashboard_calendar_redirect(status: str) -> RedirectResponse:
+def _calendar_result_redirect(request: Request, status: str) -> RedirectResponse:
+    if request.session.pop("calendar_oauth_next", None) == "scheduling":
+        settings = get_settings()
+        scheduling_base = settings.scheduling_public_base_url or settings.public_base_url
+        return RedirectResponse(
+            f"{scheduling_base.rstrip('/')}/schedule/manage?calendar={status}",
+            status_code=303,
+        )
     return RedirectResponse(f"/dashboard?calendar={status}", status_code=303)
 
 
@@ -127,24 +134,24 @@ async def google_calendar_callback(
                 )
         except httpx.HTTPError:
             logger.exception("Google Calendar OAuth token request failed.")
-            return _dashboard_calendar_redirect("auth-request-failed")
+            return _calendar_result_redirect(request, "auth-request-failed")
 
         if not response.is_success:
             logger.warning(
                 "Google Calendar OAuth token exchange was rejected.",
                 extra={"status_code": response.status_code},
             )
-            return _dashboard_calendar_redirect("auth-failed")
+            return _calendar_result_redirect(request, "auth-failed")
 
         try:
             token_data = response.json()
         except ValueError:
             logger.warning("Google Calendar OAuth token response was not JSON.")
-            return _dashboard_calendar_redirect("auth-failed")
+            return _calendar_result_redirect(request, "auth-failed")
 
         if not token_data.get("access_token"):
             logger.warning("Google Calendar OAuth token response did not include an access token.")
-            return _dashboard_calendar_redirect("auth-failed")
+            return _calendar_result_redirect(request, "auth-failed")
 
         try:
             async with httpx.AsyncClient(timeout=12) as client:
@@ -156,10 +163,10 @@ async def google_calendar_callback(
             account_email = str(profile_response.json().get("email") or "").strip().casefold()
         except (httpx.HTTPError, ValueError):
             logger.exception("Google Calendar account identity request failed.")
-            return _dashboard_calendar_redirect("auth-failed")
+            return _calendar_result_redirect(request, "auth-failed")
         if not account_email:
             logger.warning("Google Calendar OAuth did not return an account email.")
-            return _dashboard_calendar_redirect("auth-failed")
+            return _calendar_result_redirect(request, "auth-failed")
 
         expires_in = int(token_data.get("expires_in") or 0)
         token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in) if expires_in else None
@@ -181,19 +188,17 @@ async def google_calendar_callback(
             logger.warning(
                 "Google Calendar OAuth succeeded but initial calendar sync was rejected."
             )
-            return _dashboard_calendar_redirect("connected-sync-failed")
+            return _calendar_result_redirect(request, "connected-sync-failed")
         except httpx.HTTPStatusError as exc:
             logger.warning(
                 "Google Calendar OAuth succeeded but initial calendar sync was rejected.",
                 extra={"status_code": exc.response.status_code},
             )
-            return _dashboard_calendar_redirect("connected-sync-failed")
+            return _calendar_result_redirect(request, "connected-sync-failed")
         except httpx.HTTPError:
             logger.exception("Google Calendar OAuth succeeded but initial calendar sync failed.")
-            return _dashboard_calendar_redirect("connected-sync-failed")
-        if request.session.pop("calendar_oauth_next", None) == "scheduling":
-            return RedirectResponse("/schedule/manage?calendar=connected", status_code=303)
-        return _dashboard_calendar_redirect("connected")
+            return _calendar_result_redirect(request, "connected-sync-failed")
+        return _calendar_result_redirect(request, "connected")
 
 
 @router.post("/ical")
