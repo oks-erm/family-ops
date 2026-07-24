@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      restart_traefik:
+        description: Restart Traefik to retry certificate provisioning
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -147,12 +153,13 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           IMAGE_NAME: ${{ needs.build-push.outputs.image_name }}
           IMAGE_TAG: "sha-${{ needs.build-push.outputs.image_tag }}"
+          RESTART_TRAEFIK: ${{ github.event_name == 'workflow_dispatch' && inputs.restart_traefik || false }}
         with:
           host: ${{ secrets.HETZNER_HOST }}
           username: ${{ secrets.HETZNER_SSH_USER }}
           key: ${{ secrets.HETZNER_SSH_KEY }}
           passphrase: ${{ secrets.HETZNER_SSH_PASSPHRASE }}
-          envs: ENV_FILE,GHCR_TOKEN,GITHUB_ACTOR,IMAGE_NAME,IMAGE_TAG
+          envs: ENV_FILE,GHCR_TOKEN,GITHUB_ACTOR,IMAGE_NAME,IMAGE_TAG,RESTART_TRAEFIK
           script: |
             set -e
             cd /opt/family-copilot
@@ -182,6 +189,13 @@ jobs:
               echo "First compose up failed, retrying once in 5s..."
               sleep 5
               $compose_cmd up -d --remove-orphans
+            fi
+
+            if [ "$RESTART_TRAEFIK" = "true" ]; then
+              echo "Restarting Traefik to retry certificate provisioning."
+              $compose_cmd restart traefik
+              sleep 5
+              $compose_cmd logs --since=2m --tail=100 traefik
             fi
 
             # Verify app is running the expected image tag.
