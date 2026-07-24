@@ -57,6 +57,10 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('class="card availability-card"', MANAGEMENT_HTML)
         self.assertNotIn('class="card wide"', MANAGEMENT_HTML)
         self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", MANAGEMENT_HTML)
+        self.assertIn("'Saturday','Sunday'", MANAGEMENT_HTML)
+        self.assertIn("Disable any day you do not teach.", MANAGEMENT_HTML)
+        self.assertIn("className='day-toggle'", MANAGEMENT_HTML)
+        self.assertNotIn("remove.textContent='Remove'", MANAGEMENT_HTML)
         self.assertNotIn("Family Copilot", MANAGEMENT_HTML)
         self.assertNotIn(">Dashboard<", MANAGEMENT_HTML)
 
