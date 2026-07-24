@@ -64,14 +64,18 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Family Copilot", MANAGEMENT_HTML)
         self.assertNotIn(">Dashboard<", MANAGEMENT_HTML)
 
-    def test_public_booking_layout_is_balanced_and_has_no_eyebrow(self) -> None:
-        self.assertIn("font-size:clamp(25px,3vw,29px)", PUBLIC_HTML)
-        self.assertIn('grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr)', PUBLIC_HTML)
+    def test_public_booking_uses_calendar_layout_and_has_no_eyebrow(self) -> None:
+        self.assertIn("width:min(1100px,100%)", PUBLIC_HTML)
+        self.assertIn('grid-template-columns:260px minmax(0,1fr)', PUBLIC_HTML)
+        self.assertIn('grid-template-columns:repeat(7,minmax(36px,1fr))', PUBLIC_HTML)
         self.assertIn('<header class="page-header"><h1 id="title">', PUBLIC_HTML)
-        self.assertIn('<section class="step">', PUBLIC_HTML)
+        self.assertIn('id="calendar"', PUBLIC_HTML)
+        self.assertIn('id="previous-month"', PUBLIC_HTML)
+        self.assertIn('id="next-month"', PUBLIC_HTML)
         self.assertIn('class="step-number">1</span>', PUBLIC_HTML)
         self.assertIn('class="step-number">2</span>', PUBLIC_HTML)
-        self.assertIn("Select a lesson to see available times", PUBLIC_HTML)
+        self.assertIn("profile.booking_window_days", PUBLIC_HTML)
+        self.assertNotIn("end.setDate(end.getDate()+13)", PUBLIC_HTML)
         self.assertNotIn('<p class="muted">Lesson scheduling</p>', PUBLIC_HTML)
 
     async def test_authenticated_lessons_root_opens_management(self) -> None:
