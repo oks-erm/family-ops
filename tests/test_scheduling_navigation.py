@@ -4,12 +4,17 @@ from unittest.mock import patch
 from starlette.requests import Request
 
 from app.config import Settings
+from app.main import root
 from app.routes.auth import google_auth_start
 from app.routes.calendar import _calendar_result_redirect
 from app.routes.scheduling import scheduling_management_page
 
 
-def _request(*, session: dict[str, object] | None = None) -> Request:
+def _request(
+    *,
+    session: dict[str, object] | None = None,
+    host: str = "lessons.example.com",
+) -> Request:
     return Request(
         {
             "type": "http",
@@ -17,8 +22,8 @@ def _request(*, session: dict[str, object] | None = None) -> Request:
             "scheme": "https",
             "path": "/",
             "query_string": b"",
-            "headers": [(b"host", b"lessons.example.com")],
-            "server": ("lessons.example.com", 443),
+            "headers": [(b"host", host.encode())],
+            "server": (host, 443),
             "session": session if session is not None else {},
         }
     )
@@ -38,6 +43,13 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 303)
         self.assertEqual(response.headers["location"], "/auth/google/start?next=scheduling")
+
+    async def test_authenticated_lessons_root_opens_management(self) -> None:
+        with patch("app.main.get_settings", return_value=self.settings):
+            response = await root(_request(session={"google_email": "tutor@example.com"}))
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/schedule/manage")
 
     async def test_management_page_links_back_to_main_dashboard(self) -> None:
         with patch("app.routes.scheduling.get_settings", return_value=self.settings):

@@ -64,6 +64,8 @@ async def root(request: Request) -> dict[str, str] | RedirectResponse:
     settings = get_settings()
     scheduling_host = urlsplit(settings.scheduling_public_base_url or "").hostname
     if scheduling_host and request.url.hostname == scheduling_host:
+        if request.session.get("google_email"):
+            return RedirectResponse("/schedule/manage", status_code=303)
         async with async_session_factory() as session:
             result = await session.execute(
                 select(SchedulingProfile)
@@ -74,6 +76,7 @@ async def root(request: Request) -> dict[str, str] | RedirectResponse:
             profile = result.scalar_one_or_none()
         if profile is not None:
             return RedirectResponse(f"/book/{profile.slug}", status_code=303)
+        return RedirectResponse("/schedule/manage", status_code=303)
     return {
         "name": "Family Copilot",
         "status": "running",
