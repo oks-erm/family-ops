@@ -13,9 +13,10 @@ from app.db.models import (
     LessonType,
     SchedulingCalendar,
     SchedulingProfile,
+    StudentMeeting,
 )
 from app.db.repositories.scheduling import SchedulingRepository
-from app.services.calendar_service import CalendarService
+from app.services.calendar_service import CalendarEventMatchError, CalendarService
 from app.services.scheduling_rules import (
     BusyPeriod,
     SchedulingValidationError,
@@ -164,28 +165,40 @@ class SchedulingService:
         latest = now.astimezone(tz) + timedelta(days=profile.booking_window_days)
         range_start = datetime.combine(start_day, time.min, tzinfo=tz)
         range_end = datetime.combine(end_day + timedelta(days=1), time.min, tzinfo=tz)
+        conflict_range_start = range_start - timedelta(minutes=profile.buffer_before_minutes)
+        conflict_range_end = range_end + timedelta(minutes=profile.buffer_after_minutes)
         calendars = await self.repository.list_calendars(profile_id=profile.id)
         enabled_google_ids = {
             calendar.external_calendar_id for calendar in calendars if calendar.include_in_conflicts
         }
         events = await self.repository.busy_events(
             household_id=profile.household_id,
-            starts_before=range_end,
-            ends_after=range_start,
+            starts_before=conflict_range_end,
+            ends_after=conflict_range_start,
         )
+        bookings = await self.repository.bookings_between(
+            profile_id=profile.id,
+            starts_before=conflict_range_end,
+            ends_after=conflict_range_start,
+        )
+        lesson_event_ids = {
+            f"{booking.external_calendar_id}:{booking.external_event_id}"
+            for booking in bookings
+            if booking.external_calendar_id and booking.external_event_id
+        }
         busy = []
         for event in events:
             if event.source_type == CalendarProvider.google:
                 calendar_id = str((event.raw_event or {}).get("_calendar_id") or "")
                 if calendars and calendar_id not in enabled_google_ids:
                     continue
+                if event.external_event_id in lesson_event_ids:
+                    continue
             busy.append(BusyPeriod(event.starts_at, event.ends_at))
-        bookings = await self.repository.bookings_between(
-            profile_id=profile.id,
-            starts_before=range_end,
-            ends_after=range_start,
+        busy.extend(
+            BusyPeriod(item.starts_at, item.ends_at, requires_buffer=False)
+            for item in bookings
         )
-        busy.extend(BusyPeriod(item.starts_at, item.ends_at) for item in bookings)
         rules = [
             (rule.weekday, rule.starts_at, rule.ends_at)
             for rule in await self.repository.list_rules(profile_id=profile.id)
@@ -253,6 +266,11 @@ class SchedulingService:
             )
         ends_at = starts_at + timedelta(minutes=lesson_type.duration_minutes)
         title = f"{lesson_type.name} — {student_name.strip()}"
+        normalized_student_email = student_email.strip().casefold()
+        student_meeting = await self.repository.student_meeting(
+            profile_id=profile.id,
+            student_email=normalized_student_email,
+        )
         calendar_event = await CalendarService(self.session).create_google_event(
             household_id=profile.household_id,
             user_id=profile.user_id,
@@ -263,12 +281,27 @@ class SchedulingService:
             location=lesson_type.location,
             calendar_id_override=profile.booking_calendar_id,
             description=f"Student: {student_name.strip()}\nEmail: {student_email.strip()}",
+            attendee_email=normalized_student_email,
+            conference_data=(
+                student_meeting.conference_data if student_meeting is not None else None
+            ),
+            create_google_meet=student_meeting is None,
         )
+        if calendar_event.meeting_url is None or calendar_event.conference_data is None:
+            raise CalendarEventMatchError("Google did not attach a Meet conference to the lesson.")
+        if student_meeting is None:
+            student_meeting = StudentMeeting(
+                profile_id=profile.id,
+                student_email=normalized_student_email,
+                meeting_url=calendar_event.meeting_url,
+                conference_data=calendar_event.conference_data,
+            )
+            await self.repository.add_student_meeting(student_meeting)
         booking = LessonBooking(
             profile_id=profile.id,
             lesson_type_id=lesson_type.id,
             student_name=student_name.strip(),
-            student_email=student_email.strip().casefold(),
+            student_email=normalized_student_email,
             student_timezone=student_timezone,
             notes=(notes or "").strip() or None,
             starts_at=starts_at,
@@ -276,6 +309,7 @@ class SchedulingService:
             status="confirmed",
             external_calendar_id=calendar_event.external_calendar_id,
             external_event_id=calendar_event.external_event_id,
+            meeting_url=calendar_event.meeting_url,
         )
         await self.repository.add_booking(booking)
         await self.session.commit()

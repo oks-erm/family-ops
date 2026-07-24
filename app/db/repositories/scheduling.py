@@ -12,6 +12,7 @@ from app.db.models import (
     LessonType,
     SchedulingCalendar,
     SchedulingProfile,
+    StudentMeeting,
 )
 
 
@@ -190,6 +191,25 @@ class SchedulingRepository:
             )
         )
         return int(result.scalar_one())
+
+    async def student_meeting(
+        self,
+        *,
+        profile_id: UUID,
+        student_email: str,
+    ) -> StudentMeeting | None:
+        result = await self.session.execute(
+            select(StudentMeeting).where(
+                StudentMeeting.profile_id == profile_id,
+                StudentMeeting.student_email == student_email.strip().casefold(),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def add_student_meeting(self, meeting: StudentMeeting) -> StudentMeeting:
+        self.session.add(meeting)
+        await self.session.flush()
+        return meeting
 
     async def add_booking(self, booking: LessonBooking) -> LessonBooking:
         self.session.add(booking)

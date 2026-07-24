@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import select
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -57,6 +57,42 @@ app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(calendar_router)
 app.include_router(scheduling_router)
+
+
+_SCHEDULING_HOST_PATHS = (
+    "/",
+    "/health",
+    "/schedule/manage",
+    "/auth/google/start",
+    "/auth/google/callback",
+    "/auth/not-invited",
+    "/auth/logout",
+    "/calendar/google/start",
+    "/calendar/google/callback",
+)
+_SCHEDULING_HOST_PREFIXES = (
+    "/book/",
+    "/api/scheduling/",
+    "/api/public/scheduling/",
+)
+
+
+def scheduling_host_allows_path(path: str) -> bool:
+    return path in _SCHEDULING_HOST_PATHS or path.startswith(_SCHEDULING_HOST_PREFIXES)
+
+
+@app.middleware("http")
+async def isolate_scheduling_host(request: Request, call_next):
+    scheduling_host = urlsplit(get_settings().scheduling_public_base_url or "").hostname
+    if (
+        scheduling_host
+        and (request.url.hostname or "").casefold() == scheduling_host.casefold()
+        and not scheduling_host_allows_path(request.url.path)
+    ):
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"detail": "Not found."}, status_code=404)
+        return RedirectResponse("/schedule/manage", status_code=303)
+    return await call_next(request)
 
 
 @app.get("/", response_model=None)

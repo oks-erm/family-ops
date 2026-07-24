@@ -1,5 +1,5 @@
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from datetime import date, datetime, time
 from uuid import UUID
 
@@ -12,6 +12,8 @@ class CalendarEventInput:
     location: str | None = None
     external_calendar_id: str | None = None
     external_event_id: str | None = None
+    meeting_url: str | None = None
+    conference_data: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

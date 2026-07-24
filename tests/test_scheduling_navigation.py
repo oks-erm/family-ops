@@ -4,10 +4,10 @@ from unittest.mock import patch
 from starlette.requests import Request
 
 from app.config import Settings
-from app.main import root
+from app.main import root, scheduling_host_allows_path
 from app.routes.auth import google_auth_start
 from app.routes.calendar import _calendar_result_redirect
-from app.routes.scheduling import scheduling_management_page
+from app.routes.scheduling import MANAGEMENT_HTML, scheduling_management_page
 
 
 def _request(
@@ -44,6 +44,22 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 303)
         self.assertEqual(response.headers["location"], "/auth/google/start?next=scheduling")
 
+    def test_management_layout_explains_commute_and_start_time_increments(self) -> None:
+        booking_position = MANAGEMENT_HTML.index("<h2>Booking page</h2>")
+        availability_position = MANAGEMENT_HTML.index("<h2>Weekly availability</h2>")
+        lesson_types_position = MANAGEMENT_HTML.index("<h2>Lesson types</h2>")
+
+        self.assertLess(booking_position, availability_position)
+        self.assertLess(availability_position, lesson_types_position)
+        self.assertIn("Commute time before a lesson (minutes)", MANAGEMENT_HTML)
+        self.assertIn("Start-time increments (minutes)", MANAGEMENT_HTML)
+        self.assertIn("Lessons can be booked back-to-back.", MANAGEMENT_HTML)
+        self.assertIn('class="card availability-card"', MANAGEMENT_HTML)
+        self.assertNotIn('class="card wide"', MANAGEMENT_HTML)
+        self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", MANAGEMENT_HTML)
+        self.assertNotIn("Family Copilot", MANAGEMENT_HTML)
+        self.assertNotIn(">Dashboard<", MANAGEMENT_HTML)
+
     async def test_authenticated_lessons_root_opens_management(self) -> None:
         with patch("app.main.get_settings", return_value=self.settings):
             response = await root(_request(session={"google_email": "tutor@example.com"}))
@@ -51,15 +67,23 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 303)
         self.assertEqual(response.headers["location"], "/schedule/manage")
 
-    async def test_management_page_links_back_to_main_dashboard(self) -> None:
-        with patch("app.routes.scheduling.get_settings", return_value=self.settings):
-            response = await scheduling_management_page(
-                _request(session={"google_email": "tutor@example.com"})
-            )
+    async def test_management_page_has_no_family_dashboard_link(self) -> None:
+        response = await scheduling_management_page(
+            _request(session={"google_email": "tutor@example.com"})
+        )
 
         body = response.body.decode()
-        self.assertIn('href="https://example.com/dashboard"', body)
-        self.assertNotIn("__DASHBOARD_URL__", body)
+        self.assertNotIn("Family Copilot", body)
+        self.assertNotIn(">Dashboard<", body)
+
+    def test_lessons_host_exposes_only_scheduling_and_required_login_routes(self) -> None:
+        self.assertTrue(scheduling_host_allows_path("/schedule/manage"))
+        self.assertTrue(scheduling_host_allows_path("/book/oksana-erm"))
+        self.assertTrue(scheduling_host_allows_path("/api/scheduling/manage"))
+        self.assertTrue(scheduling_host_allows_path("/calendar/google/start"))
+        self.assertFalse(scheduling_host_allows_path("/dashboard"))
+        self.assertFalse(scheduling_host_allows_path("/api/dashboard"))
+        self.assertFalse(scheduling_host_allows_path("/api/tasks/day"))
 
     async def test_google_login_accepts_only_known_scheduling_destination(self) -> None:
         request = _request()

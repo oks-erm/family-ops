@@ -63,6 +63,49 @@ class SchedulingRulesTests(unittest.TestCase):
 
         self.assertEqual([slot.strftime("%H:%M") for slot in slots], ["11:00"])
 
+    def test_lessons_can_be_back_to_back_without_commute_buffer(self) -> None:
+        slots = generate_slots(
+            day=date(2026, 7, 27),
+            timezone="UTC",
+            rules=[(0, time(9), time(12))],
+            duration_minutes=60,
+            interval_minutes=60,
+            buffer_before_minutes=60,
+            buffer_after_minutes=60,
+            earliest_start=datetime(2026, 7, 27, 8, tzinfo=UTC),
+            latest_start=datetime(2026, 7, 27, 18, tzinfo=UTC),
+            busy_periods=[
+                BusyPeriod(
+                    datetime(2026, 7, 27, 10, tzinfo=UTC),
+                    datetime(2026, 7, 27, 11, tzinfo=UTC),
+                    requires_buffer=False,
+                )
+            ],
+        )
+
+        self.assertEqual([slot.strftime("%H:%M") for slot in slots], ["09:00", "11:00"])
+
+    def test_commute_buffer_applies_on_both_sides_of_non_lesson_event(self) -> None:
+        slots = generate_slots(
+            day=date(2026, 7, 27),
+            timezone="UTC",
+            rules=[(0, time(9), time(13))],
+            duration_minutes=60,
+            interval_minutes=60,
+            buffer_before_minutes=60,
+            buffer_after_minutes=60,
+            earliest_start=datetime(2026, 7, 27, 8, tzinfo=UTC),
+            latest_start=datetime(2026, 7, 27, 18, tzinfo=UTC),
+            busy_periods=[
+                BusyPeriod(
+                    datetime(2026, 7, 27, 10, tzinfo=UTC),
+                    datetime(2026, 7, 27, 11, tzinfo=UTC),
+                )
+            ],
+        )
+
+        self.assertEqual([slot.strftime("%H:%M") for slot in slots], ["12:00"])
+
     def test_only_rules_for_requested_weekday_are_used(self) -> None:
         slots = generate_slots(
             day=date(2026, 7, 27),

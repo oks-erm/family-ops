@@ -1,7 +1,8 @@
+import asyncio
 import logging
 from datetime import UTC, date, datetime, time, timedelta
-from urllib.parse import quote
-from uuid import UUID
+from urllib.parse import quote, urlsplit
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -308,7 +309,12 @@ class CalendarService:
         location: str | None = None,
         calendar_id_override: str | None = None,
         description: str | None = None,
+        attendee_email: str | None = None,
+        conference_data: dict[str, object] | None = None,
+        create_google_meet: bool = False,
     ) -> CalendarEventInput:
+        if conference_data is not None and create_google_meet:
+            raise ValueError("Provide existing conference data or request a new Google Meet.")
         connection = await self._google_write_connection(
             household_id=household_id,
             calendar_id=calendar_id_override,
@@ -323,17 +329,58 @@ class CalendarService:
             body["location"] = location
         if description:
             body["description"] = description
+        normalized_attendee = (attendee_email or "").strip().casefold()
+        if create_google_meet:
+            body["conferenceData"] = {
+                "createRequest": {
+                    "requestId": uuid4().hex,
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            }
+        elif conference_data is not None:
+            body["conferenceData"] = conference_data
+        if normalized_attendee and not create_google_meet:
+            body["attendees"] = [{"email": normalized_attendee}]
+
+        params: dict[str, str | int] = {}
+        if create_google_meet or conference_data is not None:
+            params["conferenceDataVersion"] = 1
+        if normalized_attendee and not create_google_meet:
+            params["sendUpdates"] = "all"
+
         async with httpx.AsyncClient(timeout=12) as client:
             access_token = await self._google_access_token(client=client, connection=connection)
             if not access_token:
                 raise CalendarNotConnectedError("Google Calendar is not connected.")
+            headers = {"Authorization": f"Bearer {access_token}"}
             response = await client.post(
                 self._google_events_url(calendar_id),
+                params=params,
                 json=body,
-                headers={"Authorization": f"Bearer {access_token}"},
+                headers=headers,
             )
             self._raise_for_google_write(response)
             raw = response.json()
+            if create_google_meet:
+                raw = await self._wait_for_google_meet(
+                    client=client,
+                    calendar_id=calendar_id,
+                    event_id=str(raw.get("id") or ""),
+                    initial_event=raw,
+                    headers=headers,
+                )
+                if normalized_attendee:
+                    response = await client.patch(
+                        (
+                            f"{self._google_events_url(calendar_id)}/"
+                            f"{quote(str(raw['id']), safe='')}"
+                        ),
+                        params={"conferenceDataVersion": 1, "sendUpdates": "all"},
+                        json={"attendees": [{"email": normalized_attendee}]},
+                        headers=headers,
+                    )
+                    self._raise_for_google_write(response)
+                    raw = response.json()
         parsed = self._google_event_from_raw(raw)
         if parsed is None:
             raise CalendarEventMatchError("Google returned an event I could not parse.")
@@ -356,7 +403,80 @@ class CalendarService:
             location=parsed.get("location"),
             external_calendar_id=calendar_id,
             external_event_id=str(parsed["uid"]),
+            meeting_url=self._google_meet_url(raw),
+            conference_data=self._copyable_conference_data(raw),
         )
+
+    async def _wait_for_google_meet(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        calendar_id: str,
+        event_id: str,
+        initial_event: dict[str, object],
+        headers: dict[str, str],
+    ) -> dict[str, object]:
+        if not event_id:
+            raise CalendarEventMatchError("Google did not return an event ID.")
+        event = initial_event
+        event_url = f"{self._google_events_url(calendar_id)}/{quote(event_id, safe='')}"
+        for attempt in range(6):
+            conference_data = event.get("conferenceData")
+            create_request = (
+                conference_data.get("createRequest")
+                if isinstance(conference_data, dict)
+                else None
+            )
+            request_status = (
+                create_request.get("status") if isinstance(create_request, dict) else None
+            )
+            status = str(
+                request_status.get("statusCode", "")
+                if isinstance(request_status, dict)
+                else ""
+            )
+            if self._google_meet_url(event):
+                return event
+            if status == "failure":
+                raise CalendarEventMatchError("Google could not create the Meet conference.")
+            if attempt == 5:
+                break
+            await asyncio.sleep(0.5)
+            response = await client.get(
+                event_url,
+                params={"conferenceDataVersion": 1},
+                headers=headers,
+            )
+            self._raise_for_google_write(response)
+            event = response.json()
+        raise CalendarEventMatchError("Google Meet creation did not finish in time.")
+
+    @staticmethod
+    def _google_meet_url(event: dict[str, object]) -> str | None:
+        candidates = [event.get("hangoutLink")]
+        conference_data = event.get("conferenceData")
+        if isinstance(conference_data, dict):
+            entry_points = conference_data.get("entryPoints")
+            if isinstance(entry_points, list):
+                candidates.extend(
+                    entry.get("uri")
+                    for entry in entry_points
+                    if isinstance(entry, dict) and entry.get("entryPointType") == "video"
+                )
+        for candidate in candidates:
+            value = str(candidate or "").strip()
+            parsed = urlsplit(value)
+            if parsed.scheme == "https" and parsed.hostname == "meet.google.com":
+                return value
+        return None
+
+    @classmethod
+    def _copyable_conference_data(cls, event: dict[str, object]) -> dict[str, object] | None:
+        conference_data = event.get("conferenceData")
+        if not isinstance(conference_data, dict) or not cls._google_meet_url(event):
+            return None
+        # Google documents reuse by copying the entire conferenceData payload.
+        return dict(conference_data)
 
     async def update_google_event(
         self,
@@ -438,6 +558,7 @@ class CalendarService:
                 raise CalendarNotConnectedError("Google Calendar is not connected.")
             response = await client.delete(
                 f"{self._google_events_url(target_calendar_id)}/{quote(event_id, safe='')}",
+                params={"sendUpdates": "all"},
                 headers={"Authorization": f"Bearer {access_token}"},
             )
             if response.status_code != 404:

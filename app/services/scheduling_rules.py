@@ -12,6 +12,7 @@ class SchedulingValidationError(ValueError):
 class BusyPeriod:
     starts_at: datetime
     ends_at: datetime
+    requires_buffer: bool = True
 
 
 def validate_timezone(value: str) -> str:
@@ -65,10 +66,17 @@ def generate_slots(
         window_end = datetime.combine(day, ends_at, tzinfo=tz)
         while cursor + duration <= window_end:
             if earliest_start <= cursor <= latest_start:
-                blocked_start = cursor - buffer_before
-                blocked_end = cursor + duration + buffer_after
                 if not any(
-                    periods_overlap(blocked_start, blocked_end, busy.starts_at, busy.ends_at)
+                    periods_overlap(
+                        cursor - buffer_before if busy.requires_buffer else cursor,
+                        (
+                            cursor + duration + buffer_after
+                            if busy.requires_buffer
+                            else cursor + duration
+                        ),
+                        busy.starts_at,
+                        busy.ends_at,
+                    )
                     for busy in busy_periods
                 ):
                     slots.append(cursor)
