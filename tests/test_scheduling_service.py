@@ -1,6 +1,10 @@
 import unittest
 from datetime import UTC, date, datetime, time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
+from app.db.models import CalendarConnection, CalendarProvider
 from app.services.scheduling_rules import (
     BusyPeriod,
     SchedulingValidationError,
@@ -9,6 +13,7 @@ from app.services.scheduling_rules import (
     periods_overlap,
     validate_timezone,
 )
+from app.services.scheduling_service import SchedulingService
 from app.utils.urls import UnsafeExternalURLError, validate_public_https_url
 
 
@@ -139,6 +144,48 @@ class ExternalURLSafetyTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(url=url), self.assertRaises(UnsafeExternalURLError):
                 await validate_public_https_url(url)
+
+
+class BookingCalendarRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refreshes_only_connections_with_enabled_calendars(self) -> None:
+        household_id = uuid4()
+        selected_connection_id = uuid4()
+        stale_connection_id = uuid4()
+        session = AsyncMock()
+        session.get.return_value = SimpleNamespace(
+            id=selected_connection_id,
+            household_id=household_id,
+            provider=CalendarProvider.google,
+        )
+        service = SchedulingService(session)
+        service.repository.list_calendars = AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    connection_id=selected_connection_id,
+                    include_in_conflicts=True,
+                ),
+                SimpleNamespace(
+                    connection_id=stale_connection_id,
+                    include_in_conflicts=False,
+                ),
+            ]
+        )
+
+        with patch("app.services.scheduling_service.CalendarService") as service_type:
+            calendar_service = service_type.return_value
+            calendar_service.sync_ical_feeds = AsyncMock()
+            calendar_service.sync_google_connections = AsyncMock()
+            calendar_service.sync_icloud_connections = AsyncMock()
+
+            await service._refresh_booking_calendars(
+                profile=SimpleNamespace(id=uuid4(), household_id=household_id)
+            )
+
+        session.get.assert_awaited_once_with(CalendarConnection, selected_connection_id)
+        calendar_service.sync_google_connections.assert_awaited_once_with(
+            household_id=household_id,
+            connection_id=selected_connection_id,
+        )
 
 
 if __name__ == "__main__":

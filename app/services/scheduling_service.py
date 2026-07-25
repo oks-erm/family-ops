@@ -262,13 +262,9 @@ class SchedulingService:
                 "Too many lessons were booked with this email recently. Try again later."
             )
         # Refresh immediately before booking, in addition to the five-minute background sync.
-        await CalendarService(self.session).sync_ical_feeds(household_id=profile.household_id)
-        await CalendarService(self.session).sync_google_connections(
-            household_id=profile.household_id
-        )
-        await CalendarService(self.session).sync_icloud_connections(
-            household_id=profile.household_id
-        )
+        # Only selected scheduling sources participate: an obsolete connection with no enabled
+        # calendars must not prevent bookings, while any selected source still fails closed.
+        calendar_service = await self._refresh_booking_calendars(profile=profile)
         await self.repository.lock_profile(profile_id=profile.id)
         local_start = starts_at.astimezone(ZoneInfo(profile.timezone))
         available = await self.slots(
@@ -289,7 +285,7 @@ class SchedulingService:
             profile_id=profile.id,
             student_email=normalized_student_email,
         )
-        calendar_event = await CalendarService(self.session).create_google_event(
+        calendar_event = await calendar_service.create_google_event(
             household_id=profile.household_id,
             user_id=profile.user_id,
             title=title,
@@ -333,3 +329,30 @@ class SchedulingService:
         await self.session.commit()
         await self.session.refresh(booking)
         return booking
+
+    async def _refresh_booking_calendars(
+        self, *, profile: SchedulingProfile
+    ) -> CalendarService:
+        calendar_service = CalendarService(self.session)
+        await calendar_service.sync_ical_feeds(household_id=profile.household_id)
+        configured_calendars = await self.repository.list_calendars(profile_id=profile.id)
+        connection_ids = {
+            calendar.connection_id
+            for calendar in configured_calendars
+            if calendar.include_in_conflicts
+        }
+        for connection_id in connection_ids:
+            connection = await self.session.get(CalendarConnection, connection_id)
+            if connection is None or connection.household_id != profile.household_id:
+                continue
+            if connection.provider == CalendarProvider.google:
+                await calendar_service.sync_google_connections(
+                    household_id=profile.household_id,
+                    connection_id=connection.id,
+                )
+            elif connection.provider == CalendarProvider.icloud:
+                await calendar_service.sync_icloud_connections(
+                    household_id=profile.household_id,
+                    connection_id=connection.id,
+                )
+        return calendar_service

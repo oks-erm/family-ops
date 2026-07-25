@@ -982,6 +982,22 @@ class CalendarService:
             )
             connection = result.scalar_one_or_none()
         if connection is None:
+            result = await self.session.execute(
+                select(CalendarConnection)
+                .join(
+                    SchedulingCalendar,
+                    SchedulingCalendar.connection_id == CalendarConnection.id,
+                )
+                .where(
+                    CalendarConnection.household_id == household_id,
+                    CalendarConnection.provider == CalendarProvider.google,
+                    SchedulingCalendar.can_write.is_(True),
+                )
+                .order_by(CalendarConnection.created_at, SchedulingCalendar.created_at)
+                .limit(1)
+            )
+            connection = result.scalar_one_or_none()
+        if connection is None:
             connection = await self.repository.first_google_connection(household_id=household_id)
         if connection is None:
             raise CalendarNotConnectedError("Google Calendar is not connected.")

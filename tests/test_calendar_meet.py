@@ -1,9 +1,10 @@
 import unittest
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+from app.db.models import CalendarProvider
 from app.services.calendar_service import CalendarService
 
 
@@ -153,6 +154,24 @@ class GoogleCalendarAccountIsolationTests(unittest.IsolatedAsyncioTestCase):
 
         service._google_access_token.assert_awaited_once()
         self.assertIs(service._google_access_token.await_args.kwargs["connection"], second)
+
+    async def test_default_write_uses_a_discovered_writable_account(self) -> None:
+        writable = SimpleNamespace(
+            id=uuid4(),
+            provider=CalendarProvider.google,
+            scopes=["https://www.googleapis.com/auth/calendar.events"],
+        )
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = writable
+        session = AsyncMock()
+        session.execute.return_value = result
+        service = CalendarService(session)
+        service.repository.first_google_connection = AsyncMock()
+
+        connection = await service._google_write_connection(household_id=uuid4())
+
+        self.assertIs(connection, writable)
+        service.repository.first_google_connection.assert_not_awaited()
 
 
 if __name__ == "__main__":
