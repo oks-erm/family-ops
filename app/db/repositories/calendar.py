@@ -5,7 +5,13 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import CalendarConnection, CalendarEventCache, CalendarProvider, ICalFeed
+from app.db.models import (
+    CalendarConnection,
+    CalendarEventCache,
+    CalendarProvider,
+    ICalFeed,
+    SchedulingCalendar,
+)
 
 
 class CalendarRepository:
@@ -108,6 +114,77 @@ class CalendarRepository:
             query = query.where(CalendarConnection.household_id == household_id)
         result = await self.session.execute(query.order_by(CalendarConnection.created_at))
         return list(result.scalars().all())
+
+    async def upsert_icloud_connection(
+        self,
+        *,
+        user_id: UUID,
+        household_id: UUID,
+        account_email: str,
+        encrypted_app_password: str,
+        commit: bool = True,
+    ) -> CalendarConnection:
+        result = await self.session.execute(
+            select(CalendarConnection).where(
+                CalendarConnection.user_id == user_id,
+                CalendarConnection.provider == CalendarProvider.icloud,
+                CalendarConnection.account_email == account_email,
+            )
+        )
+        connection = result.scalar_one_or_none()
+        if connection is None:
+            connection = CalendarConnection(
+                user_id=user_id,
+                household_id=household_id,
+                provider=CalendarProvider.icloud,
+                account_email=account_email,
+                access_token=encrypted_app_password,
+                scopes=["caldav.read"],
+            )
+            self.session.add(connection)
+        else:
+            connection.household_id = household_id
+            connection.access_token = encrypted_app_password
+            connection.scopes = ["caldav.read"]
+        if commit:
+            await self.session.commit()
+            await self.session.refresh(connection)
+        else:
+            await self.session.flush()
+        return connection
+
+    async def list_icloud_connections(
+        self, *, household_id: UUID | None = None
+    ) -> list[CalendarConnection]:
+        query = select(CalendarConnection).where(
+            CalendarConnection.provider == CalendarProvider.icloud
+        )
+        if household_id is not None:
+            query = query.where(CalendarConnection.household_id == household_id)
+        result = await self.session.execute(query.order_by(CalendarConnection.created_at))
+        return list(result.scalars().all())
+
+    async def delete_icloud_connection(
+        self, *, connection_id: UUID, household_id: UUID
+    ) -> bool:
+        connection = await self.session.get(CalendarConnection, connection_id)
+        if (
+            connection is None
+            or connection.household_id != household_id
+            or connection.provider != CalendarProvider.icloud
+        ):
+            return False
+        await self.session.execute(
+            delete(CalendarEventCache).where(CalendarEventCache.source_id == connection.id)
+        )
+        await self.session.execute(
+            delete(SchedulingCalendar).where(
+                SchedulingCalendar.connection_id == connection.id
+            )
+        )
+        await self.session.delete(connection)
+        await self.session.commit()
+        return True
 
     async def first_google_connection(self, *, household_id: UUID) -> CalendarConnection | None:
         result = await self.session.execute(
@@ -218,6 +295,22 @@ class CalendarRepository:
         )
         await self.session.commit()
 
+    async def delete_calendar_events(
+        self,
+        *,
+        provider: CalendarProvider,
+        source_id: UUID,
+        calendar_id: str,
+    ) -> int:
+        result = await self.session.execute(
+            delete(CalendarEventCache).where(
+                CalendarEventCache.source_type == provider,
+                CalendarEventCache.source_id == source_id,
+                CalendarEventCache.raw_event["_calendar_id"].astext == calendar_id,
+            )
+        )
+        return int(result.rowcount or 0)
+
     async def remove_missing_google_events(
         self,
         *,
@@ -229,6 +322,29 @@ class CalendarRepository:
     ) -> int:
         query = delete(CalendarEventCache).where(
             CalendarEventCache.source_type == CalendarProvider.google,
+            CalendarEventCache.source_id == source_id,
+            CalendarEventCache.raw_event["_calendar_id"].astext == calendar_id,
+            CalendarEventCache.starts_at < starts_before,
+            CalendarEventCache.ends_at > ends_after,
+        )
+        if seen_external_ids:
+            query = query.where(CalendarEventCache.external_event_id.not_in(seen_external_ids))
+        result = await self.session.execute(query)
+        await self.session.commit()
+        return int(result.rowcount or 0)
+
+    async def remove_missing_calendar_events(
+        self,
+        *,
+        provider: CalendarProvider,
+        source_id: UUID,
+        calendar_id: str,
+        seen_external_ids: set[str],
+        starts_before: datetime,
+        ends_after: datetime,
+    ) -> int:
+        query = delete(CalendarEventCache).where(
+            CalendarEventCache.source_type == provider,
             CalendarEventCache.source_id == source_id,
             CalendarEventCache.raw_event["_calendar_id"].astext == calendar_id,
             CalendarEventCache.starts_at < starts_before,

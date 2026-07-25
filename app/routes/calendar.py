@@ -241,4 +241,9 @@ async def sync_calendars(request: Request) -> dict[str, int]:
         service = CalendarService(session)
         ical_count = await service.sync_ical_feeds(household_id=household.id)
         google_count = await service.sync_google_connections(household_id=household.id)
-        return {"ical_events": ical_count, "google_events": google_count}
+        icloud_count = await service.sync_icloud_connections(household_id=household.id)
+        return {
+            "ical_events": ical_count,
+            "google_events": google_count,
+            "icloud_events": icloud_count,
+        }

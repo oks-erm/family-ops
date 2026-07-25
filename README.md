@@ -109,14 +109,21 @@ management interface protected by the existing dashboard login.
 - Private management: `/schedule/manage`
 - Configurable lesson types, durations, buffers, notice period, booking horizon, weekly
   availability, timezone, and destination calendar.
-- Conflict checking across selected calendars from multiple Google accounts and private HTTPS
-  iCal subscriptions (including recurring events and timezone-aware feeds).
+- Conflict checking across selected calendars from multiple Google accounts, private iCloud
+  CalDAV accounts, and private HTTPS iCal subscriptions (including recurring events and
+  timezone-aware feeds).
 - Five-minute background synchronization plus a mandatory refresh immediately before booking.
 - New lessons are written to the configured writable Google calendar. The application does not
   email the student automatically.
 
 Calendars stored only “On My Mac” have no server-accessible source and cannot be synchronized.
 Move them to Google/iCloud/Exchange or expose a private HTTPS iCal subscription first.
+
+To connect private iCloud calendars, generate an app-specific password at
+`account.apple.com` under **Sign-In and Security → App-Specific Passwords**, then enter the Apple
+Account email and generated password in the scheduling management page. Never enter the primary
+Apple Account password. The credential is encrypted at rest using a key derived from
+`DASHBOARD_SESSION_SECRET`; rotating that secret requires reconnecting iCloud.
 
 ## Telegram Commands
 

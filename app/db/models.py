@@ -71,6 +71,7 @@ class HouseholdRole(str, enum.Enum):
 
 class CalendarProvider(str, enum.Enum):
     google = "google"
+    icloud = "icloud"
     ical = "ical"
 
 

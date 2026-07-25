@@ -1,7 +1,8 @@
 import asyncio
 import logging
+import xml.etree.ElementTree as ET
 from datetime import UTC, date, datetime, time, timedelta
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db.models import CalendarConnection, CalendarProvider, SchedulingCalendar
 from app.db.repositories.calendar import CalendarRepository
+from app.services.credential_cipher import CredentialCipher, CredentialDecryptionError
 from app.services.planning_service import CalendarEventInput
 from app.utils.urls import UnsafeExternalURLError, validate_public_https_url
 
@@ -38,7 +40,19 @@ class CalendarSyncError(RuntimeError):
         self.status_code = status_code
 
 
+class ICloudAuthenticationError(CalendarSyncError):
+    pass
+
+
+class CalDAVProtocolError(CalendarSyncError):
+    pass
+
+
 class CalendarService:
+    _DAV = "DAV:"
+    _CALDAV = "urn:ietf:params:xml:ns:caldav"
+    _ICLOUD_ROOT = "https://caldav.icloud.com/"
+
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.repository = CalendarRepository(session)
@@ -191,6 +205,341 @@ class CalendarService:
         if first_error is not None:
             raise first_error
         return synced
+
+    async def discover_icloud_calendars(
+        self, *, profile, connection: CalendarConnection
+    ) -> int:
+        password = self._icloud_password(connection)
+        async with httpx.AsyncClient(timeout=15) as client:
+            principal_response = await self._caldav_request(
+                client=client,
+                connection=connection,
+                password=password,
+                method="PROPFIND",
+                url=self._ICLOUD_ROOT,
+                depth="0",
+                body=(
+                    '<?xml version="1.0" encoding="utf-8"?>'
+                    '<d:propfind xmlns:d="DAV:"><d:prop>'
+                    "<d:current-user-principal/>"
+                    "</d:prop></d:propfind>"
+                ),
+            )
+            principal_href = self._xml_property_href(
+                principal_response.text, f"{{{self._DAV}}}current-user-principal"
+            )
+            principal_url = self._icloud_url(self._ICLOUD_ROOT, principal_href)
+            home_response = await self._caldav_request(
+                client=client,
+                connection=connection,
+                password=password,
+                method="PROPFIND",
+                url=principal_url,
+                depth="0",
+                body=(
+                    '<?xml version="1.0" encoding="utf-8"?>'
+                    '<d:propfind xmlns:d="DAV:" '
+                    'xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop>'
+                    "<c:calendar-home-set/>"
+                    "</d:prop></d:propfind>"
+                ),
+            )
+            home_href = self._xml_property_href(
+                home_response.text, f"{{{self._CALDAV}}}calendar-home-set"
+            )
+            home_url = self._icloud_url(principal_url, home_href)
+            calendars_response = await self._caldav_request(
+                client=client,
+                connection=connection,
+                password=password,
+                method="PROPFIND",
+                url=home_url,
+                depth="1",
+                body=(
+                    '<?xml version="1.0" encoding="utf-8"?>'
+                    '<d:propfind xmlns:d="DAV:" '
+                    'xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop>'
+                    "<d:displayname/><d:resourcetype/>"
+                    "<c:supported-calendar-component-set/>"
+                    "</d:prop></d:propfind>"
+                ),
+            )
+
+        discovered = 0
+        discovered_urls: set[str] = set()
+        for response in self._multistatus_responses(calendars_response.text):
+            properties = self._successful_properties(response)
+            resource_type = properties.find(f"{{{self._DAV}}}resourcetype")
+            if resource_type is None or resource_type.find(
+                f"{{{self._CALDAV}}}calendar"
+            ) is None:
+                continue
+            supported = properties.find(
+                f"{{{self._CALDAV}}}supported-calendar-component-set"
+            )
+            components = {
+                str(item.attrib.get("name") or "").upper()
+                for item in supported or []
+            }
+            if components and "VEVENT" not in components:
+                continue
+            href = response.findtext(f"{{{self._DAV}}}href") or ""
+            calendar_url = self._icloud_url(home_url, href)
+            discovered_urls.add(calendar_url)
+            display_name = properties.findtext(f"{{{self._DAV}}}displayname") or "iCloud"
+            result = await self.session.execute(
+                select(SchedulingCalendar).where(
+                    SchedulingCalendar.profile_id == profile.id,
+                    SchedulingCalendar.connection_id == connection.id,
+                    SchedulingCalendar.external_calendar_id == calendar_url,
+                )
+            )
+            calendar = result.scalar_one_or_none()
+            if calendar is None:
+                calendar = SchedulingCalendar(
+                    profile_id=profile.id,
+                    connection_id=connection.id,
+                    external_calendar_id=calendar_url,
+                    name=display_name.strip() or "iCloud",
+                    access_role="read",
+                    include_in_conflicts=True,
+                    can_write=False,
+                )
+                self.session.add(calendar)
+            else:
+                calendar.name = display_name.strip() or "iCloud"
+            discovered += 1
+        if discovered_urls:
+            existing_result = await self.session.execute(
+                select(SchedulingCalendar).where(
+                    SchedulingCalendar.profile_id == profile.id,
+                    SchedulingCalendar.connection_id == connection.id,
+                )
+            )
+            for calendar in existing_result.scalars().all():
+                if calendar.external_calendar_id in discovered_urls:
+                    continue
+                await self.repository.delete_calendar_events(
+                    provider=CalendarProvider.icloud,
+                    source_id=connection.id,
+                    calendar_id=calendar.external_calendar_id,
+                )
+                await self.session.delete(calendar)
+        connection.external_account_id = home_url
+        await self.session.commit()
+        return discovered
+
+    async def sync_icloud_connections(
+        self,
+        *,
+        household_id: UUID | None = None,
+        connection_id: UUID | None = None,
+    ) -> int:
+        connections = await self.repository.list_icloud_connections(household_id=household_id)
+        if connection_id is not None:
+            connections = [item for item in connections if item.id == connection_id]
+        now = datetime.now(UTC)
+        range_start = now - timedelta(days=7)
+        range_end = now + timedelta(days=45)
+        synced = 0
+        first_error: Exception | None = None
+        async with httpx.AsyncClient(timeout=20) as client:
+            for connection in connections:
+                try:
+                    result = await self.session.execute(
+                        select(SchedulingCalendar).where(
+                            SchedulingCalendar.connection_id == connection.id,
+                            SchedulingCalendar.include_in_conflicts.is_(True),
+                        )
+                    )
+                    calendars = list(result.scalars().all())
+                    if not calendars:
+                        continue
+                    password = self._icloud_password(connection)
+                    for calendar in calendars:
+                        synced += await self._sync_icloud_calendar(
+                            client=client,
+                            connection=connection,
+                            password=password,
+                            calendar=calendar,
+                            range_start=range_start,
+                            range_end=range_end,
+                        )
+                except (CalendarSyncError, httpx.HTTPError, ValueError) as exc:
+                    logger.warning(
+                        "iCloud calendar sync failed for connection %s: %s",
+                        connection.id,
+                        type(exc).__name__,
+                    )
+                    first_error = first_error or exc
+        if first_error is not None:
+            raise first_error
+        return synced
+
+    async def _sync_icloud_calendar(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        connection: CalendarConnection,
+        password: str,
+        calendar: SchedulingCalendar,
+        range_start: datetime,
+        range_end: datetime,
+    ) -> int:
+        start_text = range_start.strftime("%Y%m%dT%H%M%SZ")
+        end_text = range_end.strftime("%Y%m%dT%H%M%SZ")
+        response = await self._caldav_request(
+            client=client,
+            connection=connection,
+            password=password,
+            method="REPORT",
+            url=calendar.external_calendar_id,
+            depth="1",
+            body=(
+                '<?xml version="1.0" encoding="utf-8"?>'
+                '<c:calendar-query xmlns:d="DAV:" '
+                'xmlns:c="urn:ietf:params:xml:ns:caldav">'
+                "<d:prop><d:getetag/><c:calendar-data/></d:prop>"
+                '<c:filter><c:comp-filter name="VCALENDAR">'
+                '<c:comp-filter name="VEVENT">'
+                f'<c:time-range start="{start_text}" end="{end_text}"/>'
+                "</c:comp-filter></c:comp-filter></c:filter>"
+                "</c:calendar-query>"
+            ),
+        )
+        seen: set[str] = set()
+        synced = 0
+        for item in self._multistatus_responses(response.text):
+            properties = self._successful_properties(item)
+            calendar_data = properties.findtext(f"{{{self._CALDAV}}}calendar-data")
+            if not calendar_data:
+                continue
+            href = item.findtext(f"{{{self._DAV}}}href") or ""
+            for event in self._parse_ics_events(
+                calendar_data,
+                range_start=range_start,
+                range_end=range_end,
+            ):
+                external_id = f"{calendar.external_calendar_id}:{event['uid']}"
+                seen.add(external_id)
+                await self.repository.upsert_event(
+                    household_id=connection.household_id,
+                    user_id=connection.user_id,
+                    source_type=CalendarProvider.icloud,
+                    source_id=connection.id,
+                    external_event_id=external_id,
+                    title=event["summary"],
+                    starts_at=event["starts_at"],
+                    ends_at=event["ends_at"],
+                    location=event.get("location"),
+                    raw_event={
+                        "_calendar_id": calendar.external_calendar_id,
+                        "_href": href,
+                    },
+                    commit=False,
+                )
+                synced += 1
+        await self.repository.remove_missing_calendar_events(
+            provider=CalendarProvider.icloud,
+            source_id=connection.id,
+            calendar_id=calendar.external_calendar_id,
+            seen_external_ids=seen,
+            starts_before=range_end,
+            ends_after=range_start,
+        )
+        return synced
+
+    def _icloud_password(self, connection: CalendarConnection) -> str:
+        try:
+            return CredentialCipher().decrypt(connection.access_token)
+        except CredentialDecryptionError as exc:
+            raise ICloudAuthenticationError(
+                "The iCloud credential must be reconnected."
+            ) from exc
+
+    async def _caldav_request(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        connection: CalendarConnection,
+        password: str,
+        method: str,
+        url: str,
+        depth: str,
+        body: str,
+    ) -> httpx.Response:
+        target = self._icloud_url(self._ICLOUD_ROOT, url)
+        for _ in range(6):
+            response = await client.request(
+                method,
+                target,
+                content=body.encode(),
+                headers={"Content-Type": "application/xml; charset=utf-8", "Depth": depth},
+                auth=httpx.BasicAuth(connection.account_email or "", password),
+                follow_redirects=False,
+            )
+            if response.status_code in {301, 302, 303, 307, 308}:
+                location = response.headers.get("location")
+                if not location:
+                    raise CalDAVProtocolError("iCloud returned an invalid redirect.")
+                target = self._icloud_url(target, location)
+                continue
+            if response.status_code in {401, 403}:
+                raise ICloudAuthenticationError(
+                    "Apple rejected the account email or app-specific password.",
+                    status_code=response.status_code,
+                )
+            if response.status_code not in {200, 207}:
+                raise CalDAVProtocolError(
+                    "iCloud CalDAV request failed.", status_code=response.status_code
+                )
+            return response
+        raise CalDAVProtocolError("iCloud redirected too many times.")
+
+    @staticmethod
+    def _icloud_url(base: str, href: str) -> str:
+        value = urljoin(base, href)
+        parsed = urlsplit(value)
+        hostname = (parsed.hostname or "").casefold()
+        if parsed.scheme != "https" or not (
+            hostname == "icloud.com" or hostname.endswith(".icloud.com")
+        ):
+            raise CalDAVProtocolError("iCloud returned an unsafe CalDAV URL.")
+        return value
+
+    @classmethod
+    def _multistatus_responses(cls, xml_text: str) -> list[ET.Element]:
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as exc:
+            raise CalDAVProtocolError("iCloud returned invalid CalDAV XML.") from exc
+        return list(root.findall(f"{{{cls._DAV}}}response"))
+
+    @classmethod
+    def _successful_properties(cls, response: ET.Element) -> ET.Element:
+        for propstat in response.findall(f"{{{cls._DAV}}}propstat"):
+            status = propstat.findtext(f"{{{cls._DAV}}}status") or ""
+            if " 200 " in status:
+                properties = propstat.find(f"{{{cls._DAV}}}prop")
+                if properties is not None:
+                    return properties
+        raise CalDAVProtocolError("iCloud CalDAV response did not contain properties.")
+
+    @classmethod
+    def _xml_property_href(cls, xml_text: str, property_tag: str) -> str:
+        responses = cls._multistatus_responses(xml_text)
+        if not responses:
+            raise CalDAVProtocolError("iCloud CalDAV response was empty.")
+        properties = cls._successful_properties(responses[0])
+        property_node = properties.find(property_tag)
+        href = (
+            property_node.findtext(f"{{{cls._DAV}}}href")
+            if property_node is not None
+            else None
+        )
+        if not href:
+            raise CalDAVProtocolError("iCloud CalDAV discovery was incomplete.")
+        return href
 
     async def _sync_google_calendar(
         self,

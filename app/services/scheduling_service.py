@@ -168,8 +168,11 @@ class SchedulingService:
         conflict_range_start = range_start - timedelta(minutes=profile.buffer_before_minutes)
         conflict_range_end = range_end + timedelta(minutes=profile.buffer_after_minutes)
         calendars = await self.repository.list_calendars(profile_id=profile.id)
-        enabled_google_ids = {
-            calendar.external_calendar_id for calendar in calendars if calendar.include_in_conflicts
+        configured_connection_ids = {calendar.connection_id for calendar in calendars}
+        enabled_calendar_sources = {
+            (calendar.connection_id, calendar.external_calendar_id)
+            for calendar in calendars
+            if calendar.include_in_conflicts
         }
         events = await self.repository.busy_events(
             household_id=profile.household_id,
@@ -188,11 +191,17 @@ class SchedulingService:
         }
         busy = []
         for event in events:
-            if event.source_type == CalendarProvider.google:
+            if event.source_type in {CalendarProvider.google, CalendarProvider.icloud}:
                 calendar_id = str((event.raw_event or {}).get("_calendar_id") or "")
-                if calendars and calendar_id not in enabled_google_ids:
+                if (
+                    event.source_id in configured_connection_ids
+                    and (event.source_id, calendar_id) not in enabled_calendar_sources
+                ):
                     continue
-                if event.external_event_id in lesson_event_ids:
+                if (
+                    event.source_type == CalendarProvider.google
+                    and event.external_event_id in lesson_event_ids
+                ):
                     continue
             busy.append(BusyPeriod(event.starts_at, event.ends_at))
         busy.extend(
@@ -249,6 +258,9 @@ class SchedulingService:
         # Refresh immediately before booking, in addition to the five-minute background sync.
         await CalendarService(self.session).sync_ical_feeds(household_id=profile.household_id)
         await CalendarService(self.session).sync_google_connections(
+            household_id=profile.household_id
+        )
+        await CalendarService(self.session).sync_icloud_connections(
             household_id=profile.household_id
         )
         await self.repository.lock_profile(profile_id=profile.id)

@@ -12,7 +12,8 @@ Lesson scheduling uses:
 - `app/routes/scheduling.py` for the authenticated tutor APIs and unauthenticated booking APIs.
 - `app/services/scheduling_service.py` for orchestration and booking safety.
 - `app/services/scheduling_rules.py` for deterministic availability calculations.
-- `app/services/calendar_service.py` for Google and iCal synchronization.
+- `app/services/calendar_service.py` for Google, private iCloud CalDAV, and iCal synchronization.
+- `app/services/credential_cipher.py` for encrypted storage of iCloud app-specific passwords.
 - PostgreSQL advisory locks to serialize bookings for one tutor.
 - `student_meetings` to keep one Google Meet conference per normalized student email and tutor
   profile. Each separately booked lesson copies that conference onto its own calendar event.
@@ -40,8 +41,10 @@ settings include `DATABASE_URL`, Telegram/AI credentials, Google OAuth credentia
 `PUBLIC_BASE_URL`, `SCHEDULING_PUBLIC_BASE_URL`, `DASHBOARD_SESSION_SECRET`, and
 `DEFAULT_TIMEZONE`.
 
-Google OAuth tokens, Google Meet links, conference data, and private iCal URLs are sensitive. Never
-log or expose them outside the tutor and the matching student. Calendar-list
+Google OAuth tokens, iCloud app-specific passwords, Google Meet links, conference data, and private
+iCal URLs are sensitive. Never log or expose them outside the tutor and the matching student. Apple
+credentials must remain Fernet-encrypted at rest; changing `DASHBOARD_SESSION_SECRET` invalidates
+stored iCloud credentials and requires reconnection. Calendar-list
 access is needed to discover calendars; event access is needed to sync and create lessons. iCal
 fetching must remain restricted to resolvable public HTTPS endpoints to prevent SSRF. Calendars that
 exist only “On My Mac” cannot be read by the server.
@@ -51,6 +54,8 @@ exist only “On My Mac” cannot be read by the server.
 - Keep the tutor management interface authenticated. Public booking endpoints intentionally require
   no login but must validate all inputs and fail closed when calendars cannot be refreshed.
 - Preserve the five-minute calendar sync and the immediate pre-booking refresh.
+- Keep iCloud CalDAV access read-only, restrict every discovered or redirected URL to HTTPS on an
+  `icloud.com` host, and never accept or store the primary Apple Account password.
 - Apply commute buffers around non-lesson calendar events only. Confirmed lessons block their
   actual duration and may be booked back-to-back.
 - Reuse Google Meet conferences only for the same normalized student email within the same tutor

@@ -271,6 +271,10 @@ class SchedulerService:
                 await service.sync_google_connections()
             except Exception:
                 logger.exception("Google Calendar sync failed.")
+            try:
+                await service.sync_icloud_connections()
+            except Exception:
+                logger.exception("iCloud Calendar sync failed.")
 
     async def refresh_prices(self) -> None:
         async with async_session_factory() as session:

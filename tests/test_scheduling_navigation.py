@@ -69,6 +69,11 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("result.sync_warning", MANAGEMENT_HTML)
         self.assertIn("Google Calendar connected and calendars loaded.", MANAGEMENT_HTML)
         self.assertIn("calendars could not be loaded", MANAGEMENT_HTML)
+        self.assertIn("<h2>iCloud calendars</h2>", MANAGEMENT_HTML)
+        self.assertIn('id="icloud"', MANAGEMENT_HTML)
+        self.assertIn('name="app_specific_password"', MANAGEMENT_HTML)
+        self.assertIn("never your main Apple password", MANAGEMENT_HTML)
+        self.assertIn("/api/scheduling/icloud-connections", MANAGEMENT_HTML)
 
     def test_public_booking_uses_calendar_layout_and_has_no_eyebrow(self) -> None:
         self.assertIn("width:min(1100px,100%)", PUBLIC_HTML)

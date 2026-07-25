@@ -8,13 +8,15 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.db.models import (
+    CalendarConnection,
     CalendarEventCache,
+    CalendarProvider,
     ICalFeed,
     LessonBooking,
     LessonType,
@@ -26,12 +28,15 @@ from app.db.repositories.scheduling import SchedulingRepository
 from app.db.repositories.users import UserRepository
 from app.db.session import async_session_factory
 from app.services.calendar_service import (
+    CalDAVProtocolError,
     CalendarEventMatchError,
     CalendarNotConnectedError,
     CalendarService,
     CalendarSyncError,
     CalendarWritePermissionError,
+    ICloudAuthenticationError,
 )
+from app.services.credential_cipher import CredentialCipher
 from app.services.scheduling_rules import (
     SchedulingValidationError,
     normalize_slug,
@@ -84,6 +89,11 @@ class CalendarSelectionRequest(BaseModel):
 class ICalRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     url: str = Field(min_length=8, max_length=4000)
+
+
+class ICloudConnectionRequest(BaseModel):
+    account_email: str = Field(min_length=3, max_length=320)
+    app_specific_password: SecretStr = Field(min_length=8, max_length=128)
 
 
 class BookingRequest(BaseModel):
@@ -162,9 +172,13 @@ async def scheduling_management_data(request: Request) -> dict[str, object]:
     async with async_session_factory() as session:
         _, household, profile = await _management_profile(request, session)
         repository = SchedulingRepository(session)
-        connection_items = await CalendarRepository(session).list_google_connections(
+        google_connection_items = await CalendarRepository(session).list_google_connections(
             household_id=household.id
         )
+        icloud_connection_items = await CalendarRepository(session).list_icloud_connections(
+            household_id=household.id
+        )
+        connection_items = [*google_connection_items, *icloud_connection_items]
         connections = {item.id: item for item in connection_items}
         calendars = await repository.list_calendars(profile_id=profile.id)
         settings = get_settings()
@@ -202,7 +216,17 @@ async def scheduling_management_data(request: Request) -> dict[str, object]:
                         calendar.connection_id == item.id for calendar in calendars
                     ),
                 }
-                for item in connection_items
+                for item in google_connection_items
+            ],
+            "icloud_accounts": [
+                {
+                    "id": str(item.id),
+                    "account_email": item.account_email,
+                    "calendar_count": sum(
+                        calendar.connection_id == item.id for calendar in calendars
+                    ),
+                }
+                for item in icloud_connection_items
             ],
             "calendars": [
                 {
@@ -211,6 +235,11 @@ async def scheduling_management_data(request: Request) -> dict[str, object]:
                     "name": item.name,
                     "account_email": (
                         connections[item.connection_id].account_email
+                        if item.connection_id in connections
+                        else None
+                    ),
+                    "provider": (
+                        connections[item.connection_id].provider.value
                         if item.connection_id in connections
                         else None
                     ),
@@ -389,16 +418,113 @@ async def update_calendar_selection(
         item.include_in_conflicts = payload.include_in_conflicts
         await session.commit()
         if payload.include_in_conflicts:
+            connection = await session.get(CalendarConnection, item.connection_id)
             try:
-                await CalendarService(session).sync_google_connections(
-                    household_id=profile.household_id
-                )
+                if connection is not None and connection.provider == CalendarProvider.icloud:
+                    await CalendarService(session).sync_icloud_connections(
+                        household_id=profile.household_id
+                    )
+                else:
+                    await CalendarService(session).sync_google_connections(
+                        household_id=profile.household_id
+                    )
             except (CalendarSyncError, httpx.HTTPError):
                 return {
                     "saved": True,
                     "sync_warning": "Calendar selected; its first sync will retry within five minutes.",
                 }
         return {"saved": True}
+
+
+@router.post("/api/scheduling/icloud-connections")
+async def connect_icloud(
+    request: Request, payload: ICloudConnectionRequest
+) -> dict[str, object]:
+    _require_same_origin(request)
+    account_email = payload.account_email.strip().casefold()
+    if not _email_is_valid(account_email):
+        raise HTTPException(status_code=400, detail="Enter a valid Apple Account email.")
+    app_password = payload.app_specific_password.get_secret_value().strip()
+    if len(app_password) < 8:
+        raise HTTPException(status_code=400, detail="Enter an Apple app-specific password.")
+    async with async_session_factory() as session:
+        user, household, profile = await _management_profile(request, session)
+        repository = CalendarRepository(session)
+        connection = await repository.upsert_icloud_connection(
+            user_id=user.id,
+            household_id=household.id,
+            account_email=account_email,
+            encrypted_app_password=CredentialCipher().encrypt(app_password),
+            commit=False,
+        )
+        service = CalendarService(session)
+        try:
+            discovered = await service.discover_icloud_calendars(
+                profile=profile, connection=connection
+            )
+            if discovered == 0:
+                raise CalDAVProtocolError("No iCloud calendars were found.")
+        except (CalendarSyncError, httpx.HTTPError, ValueError) as exc:
+            await session.rollback()
+            detail = (
+                "Apple rejected the account email or app-specific password."
+                if isinstance(exc, ICloudAuthenticationError)
+                else "The iCloud calendars could not be discovered. Try reconnecting shortly."
+            )
+            raise HTTPException(status_code=400, detail=detail) from exc
+        sync_warning = None
+        try:
+            await service.sync_icloud_connections(
+                household_id=household.id, connection_id=connection.id
+            )
+        except (CalendarSyncError, httpx.HTTPError, ValueError):
+            sync_warning = "Connected; the first event sync will retry within five minutes."
+        return {
+            "id": str(connection.id),
+            "account_email": account_email,
+            "calendar_count": discovered,
+            "sync_warning": sync_warning,
+        }
+
+
+@router.post("/api/scheduling/icloud-connections/{connection_id}/refresh")
+async def refresh_icloud(request: Request, connection_id: UUID) -> dict[str, int]:
+    _require_same_origin(request)
+    async with async_session_factory() as session:
+        _, household, profile = await _management_profile(request, session)
+        connection = await session.get(CalendarConnection, connection_id)
+        if (
+            connection is None
+            or connection.household_id != household.id
+            or connection.provider != CalendarProvider.icloud
+        ):
+            raise HTTPException(status_code=404, detail="iCloud connection not found.")
+        try:
+            discovered = await CalendarService(session).discover_icloud_calendars(
+                profile=profile, connection=connection
+            )
+            synced = await CalendarService(session).sync_icloud_connections(
+                household_id=household.id, connection_id=connection.id
+            )
+        except (CalendarSyncError, httpx.HTTPError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="iCloud refresh failed. Reconnect with a new app-specific password.",
+            ) from exc
+        return {"discovered": discovered, "synced": synced}
+
+
+@router.delete("/api/scheduling/icloud-connections/{connection_id}")
+async def disconnect_icloud(request: Request, connection_id: UUID) -> dict[str, bool]:
+    _require_same_origin(request)
+    async with async_session_factory() as session:
+        _, household, _ = await _management_profile(request, session)
+        deleted = await CalendarRepository(session).delete_icloud_connection(
+            connection_id=connection_id, household_id=household.id
+        )
+        if not deleted:
+            raise HTTPException(status_code=404, detail="iCloud connection not found.")
+        return {"deleted": True}
 
 
 @router.post("/api/scheduling/ical-feeds")
@@ -565,7 +691,7 @@ h1{font-size:clamp(30px,4vw,46px);letter-spacing:-.035em;margin:0}h2{font-size:2
 .card{min-width:0;background:rgba(255,255,255,.94);border:1px solid rgba(221,212,235,.9);border-radius:22px;padding:24px;box-shadow:0 12px 34px rgba(67,47,98,.08);backdrop-filter:blur(12px)}
 form{display:grid;gap:14px}label{display:grid;gap:7px;font-size:13px;font-weight:650;margin:0}input,select,textarea,button{font:inherit}input,select,textarea{width:100%;min-height:44px;padding:10px 13px;border:1px solid #d9d1e4;border-radius:12px;background:#fff;color:inherit;outline:none;transition:border-color .16s,box-shadow .16s,background .16s}textarea{min-height:88px;resize:vertical}input:hover,select:hover,textarea:hover{border-color:#c4b6da}input:focus,select:focus,textarea:focus{border-color:var(--purple);box-shadow:0 0 0 3px rgba(115,87,199,.14);background:#fefeff}
 button,.button{min-height:42px;border:1px solid transparent;border-radius:999px;padding:10px 17px;background:var(--purple);color:#fff;font-weight:700;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 5px 14px rgba(96,66,179,.16);transition:transform .14s,box-shadow .14s,background .14s}button:hover,.button:hover{background:var(--purple-dark);box-shadow:0 7px 18px rgba(96,66,179,.23);transform:translateY(-1px)}button:focus-visible,.button:focus-visible{outline:3px solid rgba(115,87,199,.24);outline-offset:2px}.secondary{background:var(--purple-soft);border-color:#e2d9f7;color:#584396;box-shadow:none}.secondary:hover{background:#e4dcf8;color:#4d378d}.danger{background:var(--danger-soft);border-color:#f8dfe2;color:var(--danger);box-shadow:none}.danger:hover{background:#fbe3e6;color:#92353f}
-.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.row>button,.row>.button,form>button{margin-top:4px;justify-self:start}#profile>.row:not(label){display:grid;grid-template-columns:1fr}label.row{display:flex;align-items:center;min-height:34px}label.row input{min-height:auto;accent-color:var(--purple)}.list{display:grid;gap:10px;margin-top:16px}.item{display:flex;gap:14px;align-items:center;justify-content:space-between;border:1px solid var(--line);border-radius:15px;padding:12px 14px;background:#fefeff}.item p{margin:3px 0}.item button{min-height:36px;padding:7px 13px}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.row>button,.row>.button,form>button{margin-top:4px;justify-self:start}#profile>.row:not(label){display:grid;grid-template-columns:1fr}label.row{display:flex;align-items:center;min-height:34px}label.row input{min-height:auto;accent-color:var(--purple)}.list{display:grid;gap:10px;margin-top:16px}.item{display:flex;gap:14px;align-items:center;justify-content:space-between;border:1px solid var(--line);border-radius:15px;padding:12px 14px;background:#fefeff}.item p{margin:3px 0}.item button{min-height:36px;padding:7px 13px}.item-actions{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end}.help{font-size:12px;margin:0}.help a{color:var(--purple-dark)}
 .availability-card .list{gap:10px}.days{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 42px;gap:8px;padding:10px;border:1px solid var(--line);border-radius:16px;background:var(--purple-pale);transition:opacity .16s,background .16s}.days select{grid-column:1/3}.days input{min-width:0}.days.disabled{background:#faf9fc;opacity:.68}.days.disabled select,.days.disabled input{color:#8c8595;background:#f4f1f7}.days .day-toggle{grid-column:3;grid-row:1/3;align-self:stretch;min-height:0;width:42px;padding:0;border:1px solid #e5deed;border-radius:13px;background:#fff;color:#796b8c;box-shadow:none}.days .day-toggle:hover{background:#f8edf1;border-color:#efd9df;color:#9f4450;box-shadow:none;transform:none}.days.disabled .day-toggle{background:var(--purple-soft);border-color:#ddd3f2;color:var(--purple)}.days.disabled .day-toggle:hover{background:#e5dcf8;color:var(--purple-dark)}.days .day-toggle svg{width:18px;height:18px;pointer-events:none}.availability-card>.row{margin-top:16px}.status{position:fixed;left:50%;bottom:22px;z-index:10;min-height:0;transform:translateX(-50%);padding:10px 16px;border-radius:999px;background:#302443;color:#fff;box-shadow:0 10px 30px rgba(48,36,67,.2)}.status:empty{display:none}.hidden{position:absolute;left:-9999px}
 @media(max-width:980px){main{padding:28px 20px 72px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:680px){main{padding:22px 14px 60px}header{align-items:flex-start}.grid{grid-template-columns:1fr;gap:14px}.card{padding:20px;border-radius:18px}.days{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto}}
@@ -574,15 +700,30 @@ button,.button{min-height:42px;border:1px solid transparent;border-radius:999px;
 <section class="card availability-card"><h2>Weekly availability</h2><p class="muted">Set times for all seven days. Disable any day you do not teach. Times use your timezone.</p><div class="list" id="availability"></div><div class="row"><button id="add-window" class="secondary" type="button">Add another time</button><button id="save-availability" type="button">Save availability</button></div></section>
 <section class="card"><h2>Lesson types</h2><form id="lesson"><input name="id" type="hidden"><label>Name<input name="name" required placeholder="English lesson"></label><label>Length (minutes)<input name="duration_minutes" type="number" min="15" value="60" required></label><label>Location or call link<input name="location"></label><label>Description<textarea name="description"></textarea></label><label class="row"><input name="is_active" type="checkbox" style="width:auto" checked>Active</label><button>Save lesson type</button></form><div class="list" id="lessons"></div></section>
 <section class="card"><h2>Google calendars</h2><p class="muted">Selected calendars block lesson availability. Reconnect if calendar discovery asks for permission.</p><div class="list" id="google-accounts"></div><div class="row"><a class="button secondary" href="/calendar/google/start?next=scheduling">Connect another account</a><button id="discover" type="button">Refresh calendars</button></div><div class="list" id="calendars"></div></section>
-<section class="card"><h2>iCloud / Exchange / iCal</h2><p class="muted">Add a private subscription URL. These calendars are used for conflicts and remain read-only.</p><form id="ical"><label>Name<input name="name" required></label><label>Private iCal URL<input name="url" type="url" required></label><button>Add calendar</button></form><div class="list" id="feeds"></div></section>
+<section class="card"><h2>iCloud calendars</h2><p class="muted">Connect privately with an Apple app-specific password. Access is read-only and your calendars remain private.</p><form id="icloud"><label>Apple Account email<input name="account_email" type="email" autocomplete="username" required></label><label>App-specific password<input name="app_specific_password" type="password" autocomplete="new-password" required></label><p class="muted help">Use a password created for this scheduler, never your main Apple password. <a href="https://account.apple.com/account/manage/section/security" target="_blank" rel="noopener">Create one in Apple Account security</a>.</p><button>Connect iCloud</button></form><div class="list" id="icloud-accounts"></div><div class="list" id="icloud-calendars"></div></section>
+<section class="card"><h2>Other calendar feeds</h2><p class="muted">Add a private HTTPS iCal subscription URL from Exchange or another provider. Feeds remain read-only.</p><form id="ical"><label>Name<input name="name" required></label><label>Private iCal URL<input name="url" type="url" required></label><button>Add calendar</button></form><div class="list" id="feeds"></div></section>
 <section class="card"><h2>Upcoming lessons</h2><div class="list" id="bookings"></div></section></div><p class="status" id="status"></p></main>
 <script>
 const $=s=>document.querySelector(s), esc=s=>String(s??""); let state;
 async function api(url,opt={}){const r=await fetch(url,{...opt,headers:{"Content-Type":"application/json",...(opt.headers||{})}});if(!r.ok){let m="Request failed";try{m=(await r.json()).detail||m}catch{}throw Error(m)}return r.status===204?null:r.json()}
 function field(form,n,v){const e=form.elements[n];if(e.type==="checkbox")e.checked=!!v;else e.value=v??""}
 async function load(){state=await api('/api/scheduling/manage');const f=$('#profile');for(const [k,v] of Object.entries(state.profile))if(f.elements[k])field(f,k,v);$('#public-link').innerHTML=`Public page: <a href="${state.profile.public_url}" target="_blank" rel="noopener">${state.profile.public_url}</a>`;render();renderFeedActions();renderBookingActions()}
-function render(){const names=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];$('#lessons').replaceChildren(...state.lesson_types.map(x=>node(`${x.name} · ${x.duration_minutes} min`,x.is_active?'Active':'Inactive',()=>editLesson(x))));const calSelect=$('#profile').elements.booking_calendar_id;calSelect.replaceChildren(new Option('Primary Google calendar',''),...state.calendars.filter(x=>x.can_write).map(x=>new Option(`${x.name}${x.account_email?' · '+x.account_email:''}`,x.external_calendar_id)));calSelect.value=state.profile.booking_calendar_id||'';$('#google-accounts').replaceChildren(...(state.google_accounts.length?state.google_accounts.map(x=>node(x.account_email||'Google account',`${x.calendar_count} calendar${x.calendar_count===1?'':'s'} found`)):[node('No Google account connected','Connect an account to check its calendars.')]));$('#calendars').replaceChildren(...(state.calendars.length?state.calendars.map(x=>{const d=document.createElement('label');d.className='item';const t=document.createElement('span');t.textContent=`${x.name}${x.account_email?' · '+x.account_email:''} (${x.access_role||'read'})`;const c=document.createElement('input');c.type='checkbox';c.style.width='auto';c.checked=x.include_in_conflicts;c.onchange=async()=>{const result=await api(`/api/scheduling/calendars/${x.id}`,{method:'PUT',body:JSON.stringify({include_in_conflicts:c.checked})});status(result.sync_warning||'Calendar selection saved.')};d.append(t,c);return d}):[node('No calendars discovered','Use Refresh calendars, or reconnect the account if Google asks for permission.')]));$('#feeds').replaceChildren(...state.ical_feeds.map(x=>node(x.name,'Read-only',async()=>{if(!confirm(`Remove ${x.name}?`))return;await api(`/api/scheduling/ical-feeds/${x.id}`,{method:'DELETE'});await load()})));$('#bookings').replaceChildren(...(state.bookings.length?state.bookings.map(x=>node(x.student_name,new Date(x.starts_at).toLocaleString()+` · ${x.student_email}`)): [node('No upcoming lessons','')]));const windows=[];for(let day=0;day<7;day++){const rules=state.availability.filter(x=>x.weekday===day);if(rules.length)windows.push(...rules.map(x=>windowNode(day,x.starts_at,x.ends_at,names,true)));else windows.push(windowNode(day,'09:00','17:00',names,false))}$('#availability').replaceChildren(...windows)}
+function render(){
+ const names=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+ $('#lessons').replaceChildren(...state.lesson_types.map(x=>node(`${x.name} · ${x.duration_minutes} min`,x.is_active?'Active':'Inactive',()=>editLesson(x))));
+ const googleCalendars=state.calendars.filter(x=>x.provider==='google'),icloudCalendars=state.calendars.filter(x=>x.provider==='icloud');
+ const calSelect=$('#profile').elements.booking_calendar_id;
+ calSelect.replaceChildren(new Option('Primary Google calendar',''),...googleCalendars.filter(x=>x.can_write).map(x=>new Option(`${x.name}${x.account_email?' · '+x.account_email:''}`,x.external_calendar_id)));
+ calSelect.value=state.profile.booking_calendar_id||'';
+ $('#google-accounts').replaceChildren(...(state.google_accounts.length?state.google_accounts.map(x=>node(x.account_email||'Google account',`${x.calendar_count} calendar${x.calendar_count===1?'':'s'} found`)):[node('No Google account connected','Connect an account to check its calendars.')]));
+ $('#calendars').replaceChildren(...(googleCalendars.length?googleCalendars.map(calendarToggleNode):[node('No calendars discovered','Use Refresh calendars, or reconnect the account if Google asks for permission.')]));
+ $('#icloud-accounts').replaceChildren(...state.icloud_accounts.map(icloudAccountNode));
+ $('#icloud-calendars').replaceChildren(...(icloudCalendars.length?icloudCalendars.map(calendarToggleNode):[node('No iCloud calendars connected','Enter your Apple Account email and an app-specific password above.')]));
+ const windows=[];for(let day=0;day<7;day++){const rules=state.availability.filter(x=>x.weekday===day);if(rules.length)windows.push(...rules.map(x=>windowNode(day,x.starts_at,x.ends_at,names,true)));else windows.push(windowNode(day,'09:00','17:00',names,false))}$('#availability').replaceChildren(...windows)
+}
 function node(a,b,click,label='Edit'){const d=document.createElement('div');d.className='item';const s=document.createElement('span'),p=document.createElement('strong'),m=document.createElement('p');p.textContent=a;m.textContent=b;m.className='muted';s.append(p,m);d.append(s);if(click){const bt=document.createElement('button');bt.className=label==='Edit'?'secondary':'danger';bt.textContent=label;bt.onclick=click;d.append(bt)}return d}
+function calendarToggleNode(x){const d=document.createElement('label');d.className='item';const t=document.createElement('span');t.textContent=`${x.name}${x.account_email?' · '+x.account_email:''} (${x.access_role||'read'})`;const c=document.createElement('input');c.type='checkbox';c.style.width='auto';c.checked=x.include_in_conflicts;c.onchange=async()=>{const result=await api(`/api/scheduling/calendars/${x.id}`,{method:'PUT',body:JSON.stringify({include_in_conflicts:c.checked})});status(result.sync_warning||'Calendar selection saved.')};d.append(t,c);return d}
+function icloudAccountNode(x){const d=node(x.account_email||'Apple Account',`${x.calendar_count} calendar${x.calendar_count===1?'':'s'} found`),actions=document.createElement('div'),refresh=document.createElement('button'),disconnect=document.createElement('button');actions.className='item-actions';refresh.type='button';refresh.className='secondary';refresh.textContent='Refresh';refresh.onclick=async()=>{const result=await api(`/api/scheduling/icloud-connections/${x.id}/refresh`,{method:'POST',body:'{}'});await load();status(`Refreshed ${result.discovered} calendar${result.discovered===1?'':'s'}.`)};disconnect.type='button';disconnect.className='danger';disconnect.textContent='Disconnect';disconnect.onclick=async()=>{if(!confirm(`Disconnect ${x.account_email}?`))return;await api(`/api/scheduling/icloud-connections/${x.id}`,{method:'DELETE'});await load();status('iCloud disconnected.')};actions.append(refresh,disconnect);d.append(actions);return d}
 function renderBookingActions(){if(!state.bookings.length)return;$('#bookings').replaceChildren(...state.bookings.map(x=>node(x.student_name,new Date(x.starts_at).toLocaleString()+` · ${x.student_email}`,async()=>{if(!confirm(`Cancel the lesson with ${x.student_name}?`))return;await api(`/api/scheduling/bookings/${x.id}/cancel`,{method:'POST',body:'{}'});await load();status('Lesson cancelled.')},'Cancel')))}
 function renderFeedActions(){$('#feeds').replaceChildren(...state.ical_feeds.map(x=>node(x.name,'Read-only',async()=>{if(!confirm(`Remove ${x.name}?`))return;await api(`/api/scheduling/ical-feeds/${x.id}`,{method:'DELETE'});await load()},'Remove')))}
 const disableIcon='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/></svg>',enableIcon='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v8m-4-4h8"/></svg>';
@@ -592,7 +733,9 @@ function editLesson(x){const f=$('#lesson');for(const k of ['id','name','duratio
 $('#profile').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,d=Object.fromEntries(new FormData(f));for(const n of ['minimum_notice_minutes','booking_window_days','buffer_before_minutes','buffer_after_minutes','slot_interval_minutes'])d[n]=Number(d[n]);d.is_active=f.elements.is_active.checked;await api('/api/scheduling/profile',{method:'PUT',body:JSON.stringify(d)});status('Settings saved.');await load()};
 $('#lesson').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,d=Object.fromEntries(new FormData(f)),id=d.id;d.duration_minutes=Number(d.duration_minutes);d.is_active=f.elements.is_active.checked;delete d.id;await api(id?`/api/scheduling/lesson-types/${id}`:'/api/scheduling/lesson-types',{method:id?'PUT':'POST',body:JSON.stringify(d)});f.reset();f.elements.duration_minutes.value=60;f.elements.is_active.checked=true;status('Lesson type saved.');await load()};
 $('#add-window').onclick=()=>$('#availability').append(windowNode());$('#save-availability').onclick=async()=>{const rules=[...$('#availability').children].filter(d=>!d.classList.contains('disabled')).map(d=>({weekday:Number(d.children[0].value),starts_at:d.children[1].value,ends_at:d.children[2].value}));await api('/api/scheduling/availability',{method:'PUT',body:JSON.stringify({rules})});status('Availability saved.');await load()};
-$('#discover').onclick=async()=>{status('Checking Google calendars…');const result=await api('/api/scheduling/calendars/discover',{method:'POST',body:'{}'});await load();status(`Found ${result.discovered} calendar${result.discovered===1?'':'s'}.`)};$('#ical').onsubmit=async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(e.currentTarget));await api('/api/scheduling/ical-feeds',{method:'POST',body:JSON.stringify(d)});e.currentTarget.reset();await load();status('Calendar added.')};
+$('#discover').onclick=async()=>{status('Checking Google calendars…');const result=await api('/api/scheduling/calendars/discover',{method:'POST',body:'{}'});await load();status(`Found ${result.discovered} calendar${result.discovered===1?'':'s'}.`)};
+$('#icloud').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget,d=Object.fromEntries(new FormData(form));status('Connecting privately to iCloud…');const result=await api('/api/scheduling/icloud-connections',{method:'POST',body:JSON.stringify(d)});form.reset();await load();status(result.sync_warning||`Connected ${result.calendar_count} iCloud calendar${result.calendar_count===1?'':'s'}.`)};
+$('#ical').onsubmit=async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(e.currentTarget));await api('/api/scheduling/ical-feeds',{method:'POST',body:JSON.stringify(d)});e.currentTarget.reset();await load();status('Calendar added.')};
 document.addEventListener('unhandledrejection',e=>{e.preventDefault();status(e.reason?.message||'Something went wrong.')});load().then(()=>{const result=new URLSearchParams(location.search).get('calendar');if(result==='connected')status('Google Calendar connected and calendars loaded.');else if(result)status('Google connected, but calendars could not be loaded. Please reconnect and grant calendar access.');if(result)history.replaceState({},'',location.pathname)}).catch(e=>status(e.message));
 </script></body></html>"""
 
