@@ -211,6 +211,7 @@ async def scheduling_management_data(request: Request) -> dict[str, object]:
             ],
             "google_accounts": [
                 {
+                    "id": str(item.id),
                     "account_email": item.account_email,
                     "calendar_count": sum(
                         calendar.connection_id == item.id for calendar in calendars
@@ -384,25 +385,45 @@ async def cancel_booking(request: Request, booking_id: UUID) -> dict[str, bool]:
 
 
 @router.post("/api/scheduling/calendars/discover")
-async def discover_calendars(request: Request) -> dict[str, int]:
+async def discover_calendars(request: Request) -> dict[str, object]:
     _require_same_origin(request)
     async with async_session_factory() as session:
         _, _, profile = await _management_profile(request, session)
-        try:
-            count = await SchedulingService(session).discover_google_calendars(profile=profile)
-            await CalendarService(session).sync_google_connections(
-                household_id=profile.household_id
-            )
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in {401, 403}:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Reconnect Google Calendar to grant access to the calendar list.",
-                ) from exc
-            raise HTTPException(
-                status_code=502, detail="Google Calendar discovery failed."
-            ) from exc
-        return {"discovered": count}
+        connections = await CalendarRepository(session).list_google_connections(
+            household_id=profile.household_id
+        )
+        connection_refs = [(item.id, item.account_email) for item in connections]
+        count = 0
+        failures: list[dict[str, str]] = []
+        for connection_id, account_email in connection_refs:
+            try:
+                count += await SchedulingService(session).discover_google_calendars(
+                    profile=profile,
+                    connection_id=connection_id,
+                )
+                await CalendarService(session).sync_google_connections(
+                    household_id=profile.household_id,
+                    connection_id=connection_id,
+                )
+            except (CalendarSyncError, httpx.HTTPError) as exc:
+                await session.rollback()
+                status_code = (
+                    exc.response.status_code
+                    if isinstance(exc, httpx.HTTPStatusError)
+                    else getattr(exc, "status_code", None)
+                )
+                failures.append(
+                    {
+                        "connection_id": str(connection_id),
+                        "account_email": account_email or "Google account",
+                        "message": (
+                            "Reconnect this account and grant Google Calendar access."
+                            if status_code in {401, 403}
+                            else "Google Calendar could not be reached. Try again."
+                        ),
+                    }
+                )
+        return {"discovered": count, "failures": failures}
 
 
 @router.put("/api/scheduling/calendars/{calendar_id}")
@@ -704,7 +725,7 @@ button,.button{min-height:42px;border:1px solid transparent;border-radius:999px;
 <section class="card"><h2>Other calendar feeds</h2><p class="muted">Add a private HTTPS iCal subscription URL from Exchange or another provider. Feeds remain read-only.</p><form id="ical"><label>Name<input name="name" required></label><label>Private iCal URL<input name="url" type="url" required></label><button>Add calendar</button></form><div class="list" id="feeds"></div></section>
 <section class="card"><h2>Upcoming lessons</h2><div class="list" id="bookings"></div></section></div><p class="status" id="status"></p></main>
 <script>
-const $=s=>document.querySelector(s), esc=s=>String(s??""); let state;
+const $=s=>document.querySelector(s), esc=s=>String(s??""); let state,googleDiscoveryFailures=new Map();
 async function api(url,opt={}){const r=await fetch(url,{...opt,headers:{"Content-Type":"application/json",...(opt.headers||{})}});if(!r.ok){let m="Request failed";try{m=(await r.json()).detail||m}catch{}throw Error(m)}return r.status===204?null:r.json()}
 function field(form,n,v){const e=form.elements[n];if(e.type==="checkbox")e.checked=!!v;else e.value=v??""}
 async function load(){state=await api('/api/scheduling/manage');const f=$('#profile');for(const [k,v] of Object.entries(state.profile))if(f.elements[k])field(f,k,v);$('#public-link').innerHTML=`Public page: <a href="${state.profile.public_url}" target="_blank" rel="noopener">${state.profile.public_url}</a>`;render();renderFeedActions();renderBookingActions()}
@@ -715,7 +736,7 @@ function render(){
  const calSelect=$('#profile').elements.booking_calendar_id;
  calSelect.replaceChildren(new Option('Primary Google calendar',''),...googleCalendars.filter(x=>x.can_write).map(x=>new Option(`${x.name}${x.account_email?' · '+x.account_email:''}`,x.external_calendar_id)));
  calSelect.value=state.profile.booking_calendar_id||'';
- $('#google-accounts').replaceChildren(...(state.google_accounts.length?state.google_accounts.map(x=>node(x.account_email||'Google account',`${x.calendar_count} calendar${x.calendar_count===1?'':'s'} found`)):[node('No Google account connected','Connect an account to check its calendars.')]));
+ $('#google-accounts').replaceChildren(...(state.google_accounts.length?state.google_accounts.map(x=>node(x.account_email||'Google account',googleDiscoveryFailures.get(x.id)||`${x.calendar_count} calendar${x.calendar_count===1?'':'s'} found`)):[node('No Google account connected','Connect an account to check its calendars.')]));
  $('#calendars').replaceChildren(...(googleCalendars.length?googleCalendars.map(calendarToggleNode):[node('No calendars discovered','Use Refresh calendars, or reconnect the account if Google asks for permission.')]));
  $('#icloud-accounts').replaceChildren(...state.icloud_accounts.map(icloudAccountNode));
  $('#icloud-calendars').replaceChildren(...(icloudCalendars.length?icloudCalendars.map(calendarToggleNode):[node('No iCloud calendars connected','Enter your Apple Account email and an app-specific password above.')]));
@@ -733,7 +754,7 @@ function editLesson(x){const f=$('#lesson');for(const k of ['id','name','duratio
 $('#profile').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,d=Object.fromEntries(new FormData(f));for(const n of ['minimum_notice_minutes','booking_window_days','buffer_before_minutes','buffer_after_minutes','slot_interval_minutes'])d[n]=Number(d[n]);d.is_active=f.elements.is_active.checked;await api('/api/scheduling/profile',{method:'PUT',body:JSON.stringify(d)});status('Settings saved.');await load()};
 $('#lesson').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,d=Object.fromEntries(new FormData(f)),id=d.id;d.duration_minutes=Number(d.duration_minutes);d.is_active=f.elements.is_active.checked;delete d.id;await api(id?`/api/scheduling/lesson-types/${id}`:'/api/scheduling/lesson-types',{method:id?'PUT':'POST',body:JSON.stringify(d)});f.reset();f.elements.duration_minutes.value=60;f.elements.is_active.checked=true;status('Lesson type saved.');await load()};
 $('#add-window').onclick=()=>$('#availability').append(windowNode());$('#save-availability').onclick=async()=>{const rules=[...$('#availability').children].filter(d=>!d.classList.contains('disabled')).map(d=>({weekday:Number(d.children[0].value),starts_at:d.children[1].value,ends_at:d.children[2].value}));await api('/api/scheduling/availability',{method:'PUT',body:JSON.stringify({rules})});status('Availability saved.');await load()};
-$('#discover').onclick=async()=>{status('Checking Google calendars…');const result=await api('/api/scheduling/calendars/discover',{method:'POST',body:'{}'});await load();status(`Found ${result.discovered} calendar${result.discovered===1?'':'s'}.`)};
+$('#discover').onclick=async()=>{status('Checking Google calendars…');const result=await api('/api/scheduling/calendars/discover',{method:'POST',body:'{}'});googleDiscoveryFailures=new Map((result.failures||[]).map(x=>[x.connection_id,x.message]));await load();status(result.failures?.length?`Loaded ${result.discovered} calendar${result.discovered===1?'':'s'}; ${result.failures.length} account${result.failures.length===1?' needs':'s need'} attention.`:`Found ${result.discovered} calendar${result.discovered===1?'':'s'}.`)};
 $('#icloud').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget,d=Object.fromEntries(new FormData(form));status('Connecting privately to iCloud…');const result=await api('/api/scheduling/icloud-connections',{method:'POST',body:JSON.stringify(d)});form.reset();await load();status(result.sync_warning||`Connected ${result.calendar_count} iCloud calendar${result.calendar_count===1?'':'s'}.`)};
 $('#ical').onsubmit=async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(e.currentTarget));await api('/api/scheduling/ical-feeds',{method:'POST',body:JSON.stringify(d)});e.currentTarget.reset();await load();status('Calendar added.')};
 document.addEventListener('unhandledrejection',e=>{e.preventDefault();status(e.reason?.message||'Something went wrong.')});load().then(()=>{const result=new URLSearchParams(location.search).get('calendar');if(result==='connected')status('Google Calendar connected and calendars loaded.');else if(result)status('Google connected, but calendars could not be loaded. Please reconnect and grant calendar access.');if(result)history.replaceState({},'',location.pathname)}).catch(e=>status(e.message));

@@ -139,5 +139,21 @@ class GoogleMeetEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.meeting_url, "https://meet.google.com/abc-defg-hij")
 
 
+class GoogleCalendarAccountIsolationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sync_can_target_one_google_account(self) -> None:
+        first = SimpleNamespace(id=uuid4())
+        second = SimpleNamespace(id=uuid4())
+        service = CalendarService(AsyncMock())
+        service.repository.list_google_connections = AsyncMock(
+            return_value=[first, second]
+        )
+        service._google_access_token = AsyncMock(return_value=None)
+
+        await service.sync_google_connections(connection_id=second.id)
+
+        service._google_access_token.assert_awaited_once()
+        self.assertIs(service._google_access_token.await_args.kwargs["connection"], second)
+
+
 if __name__ == "__main__":
     unittest.main()

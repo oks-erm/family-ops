@@ -171,7 +171,7 @@ async def google_calendar_callback(
 
         expires_in = int(token_data.get("expires_in") or 0)
         token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in) if expires_in else None
-        await CalendarRepository(session).upsert_google_connection(
+        connection = await CalendarRepository(session).upsert_google_connection(
             user_id=user.id,
             household_id=household.id,
             account_email=account_email,
@@ -194,8 +194,14 @@ async def google_calendar_callback(
                 display_name=display_name,
                 timezone=user.timezone,
             )
-            await scheduling_service.discover_google_calendars(profile=profile)
-            await CalendarService(session).sync_google_connections(household_id=household.id)
+            await scheduling_service.discover_google_calendars(
+                profile=profile,
+                connection_id=connection.id,
+            )
+            await CalendarService(session).sync_google_connections(
+                household_id=household.id,
+                connection_id=connection.id,
+            )
         except CalendarSyncError:
             logger.warning(
                 "Google Calendar OAuth succeeded but initial calendar sync was rejected."

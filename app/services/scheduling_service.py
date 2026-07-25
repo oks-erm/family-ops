@@ -71,13 +71,19 @@ class SchedulingService:
         await self.session.commit()
         return profile
 
-    async def discover_google_calendars(self, *, profile: SchedulingProfile) -> int:
-        result = await self.session.execute(
-            select(CalendarConnection).where(
-                CalendarConnection.household_id == profile.household_id,
-                CalendarConnection.provider == CalendarProvider.google,
-            )
+    async def discover_google_calendars(
+        self,
+        *,
+        profile: SchedulingProfile,
+        connection_id: UUID | None = None,
+    ) -> int:
+        query = select(CalendarConnection).where(
+            CalendarConnection.household_id == profile.household_id,
+            CalendarConnection.provider == CalendarProvider.google,
         )
+        if connection_id is not None:
+            query = query.where(CalendarConnection.id == connection_id)
+        result = await self.session.execute(query)
         connections = list(result.scalars().all())
         discovered = 0
         calendar_service = CalendarService(self.session)

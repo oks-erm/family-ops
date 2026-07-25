@@ -143,8 +143,15 @@ class CalendarService:
             raise first_error
         return synced
 
-    async def sync_google_connections(self, *, household_id: UUID | None = None) -> int:
+    async def sync_google_connections(
+        self,
+        *,
+        household_id: UUID | None = None,
+        connection_id: UUID | None = None,
+    ) -> int:
         connections = await self.repository.list_google_connections(household_id=household_id)
+        if connection_id is not None:
+            connections = [item for item in connections if item.id == connection_id]
         synced = 0
         now = datetime.now(UTC)
         time_min = (now - timedelta(days=7)).isoformat().replace("+00:00", "Z")
