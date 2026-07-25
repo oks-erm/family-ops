@@ -14,6 +14,7 @@ from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.users import UserRepository
 from app.db.session import async_session_factory
 from app.services.calendar_service import CalendarService, CalendarSyncError
+from app.services.scheduling_service import SchedulingService
 from app.utils.urls import UnsafeExternalURLError, validate_public_https_url
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
@@ -183,6 +184,17 @@ async def google_calendar_callback(
             scopes=GOOGLE_SCOPES,
         )
         try:
+            display_name = (
+                " ".join(part for part in [user.first_name, user.last_name] if part) or "Tutor"
+            )
+            scheduling_service = SchedulingService(session)
+            profile = await scheduling_service.ensure_profile(
+                user_id=user.id,
+                household_id=household.id,
+                display_name=display_name,
+                timezone=user.timezone,
+            )
+            await scheduling_service.discover_google_calendars(profile=profile)
             await CalendarService(session).sync_google_connections(household_id=household.id)
         except CalendarSyncError:
             logger.warning(

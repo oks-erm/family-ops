@@ -63,6 +63,12 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("remove.textContent='Remove'", MANAGEMENT_HTML)
         self.assertNotIn("Family Copilot", MANAGEMENT_HTML)
         self.assertNotIn(">Dashboard<", MANAGEMENT_HTML)
+        self.assertIn('id="google-accounts"', MANAGEMENT_HTML)
+        self.assertIn("No Google account connected", MANAGEMENT_HTML)
+        self.assertIn("No calendars discovered", MANAGEMENT_HTML)
+        self.assertIn("result.sync_warning", MANAGEMENT_HTML)
+        self.assertIn("Google Calendar connected and calendars loaded.", MANAGEMENT_HTML)
+        self.assertIn("calendars could not be loaded", MANAGEMENT_HTML)
 
     def test_public_booking_uses_calendar_layout_and_has_no_eyebrow(self) -> None:
         self.assertIn("width:min(1100px,100%)", PUBLIC_HTML)
