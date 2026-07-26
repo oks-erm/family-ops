@@ -74,6 +74,17 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('name="app_specific_password"', MANAGEMENT_HTML)
         self.assertIn("never your main Apple password", MANAGEMENT_HTML)
         self.assertIn("/api/scheduling/icloud-connections", MANAGEMENT_HTML)
+        lesson_types_position = MANAGEMENT_HTML.index("<h2>Lesson types</h2>")
+        upcoming_position = MANAGEMENT_HTML.index("<h2>Upcoming lessons</h2>")
+        self.assertLess(lesson_types_position, upcoming_position)
+        self.assertIn(
+            '</form><div class="list" id="lessons"></div></section>\n'
+            '<section class="card"><h2>Upcoming lessons</h2>',
+            MANAGEMENT_HTML,
+        )
+        self.assertNotIn("<h2>Other calendar feeds</h2>", MANAGEMENT_HTML)
+        self.assertNotIn('id="ical"', MANAGEMENT_HTML)
+        self.assertNotIn('id="feeds"', MANAGEMENT_HTML)
 
     def test_public_booking_uses_calendar_layout_and_has_no_eyebrow(self) -> None:
         self.assertIn("width:min(1100px,100%)", PUBLIC_HTML)
