@@ -15,6 +15,11 @@ Lesson scheduling uses:
 - `app/services/calendar_service.py` for Google, private iCloud CalDAV, and iCal synchronization.
 - `app/services/credential_cipher.py` for encrypted storage of iCloud app-specific passwords.
 - PostgreSQL advisory locks to serialize bookings for one tutor.
+- Google identity is mandatory for student bookings. Student sessions use the verified Google email
+  as the stable key for bookings and the student's permanent Meet conference.
+- `StudentPayment` records purchased lesson credits and `LessonPaymentAllocation` assigns credits
+  to bookings. A missing/zero balance never blocks booking. Unused credits are automatically applied
+  to later lessons and packages become valid for five weeks from their first assigned lesson.
 - `student_meetings` to keep one Google Meet conference per normalized student email and tutor
   profile. Each separately booked lesson copies that conference onto its own calendar event.
 
@@ -54,6 +59,10 @@ exist only “On My Mac” cannot be read by the server.
 - Keep the tutor management interface authenticated. Public booking endpoints intentionally require
   no login but must validate all inputs and fail closed when calendars cannot be refreshed.
 - Preserve the five-minute calendar sync and the immediate pre-booking refresh.
+- Batch bookings are limited to ten distinct, non-overlapping times and must remain atomic; compensate
+  already-created Google events if a later event in the batch fails.
+- Student cancellations made at least 12 hours ahead restore an assigned credit. Later cancellations
+  remain allowed but retain/consume the allocation. Tutor cancellations restore it.
 - Keep iCloud CalDAV access read-only, restrict every discovered or redirected URL to HTTPS on an
   `icloud.com` host, and never accept or store the primary Apple Account password.
 - Apply commute buffers around non-lesson calendar events only. Confirmed lessons block their

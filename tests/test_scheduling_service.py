@@ -188,5 +188,45 @@ class BookingCalendarRefreshTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class BatchBookingValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_batch_is_limited_to_ten_unique_non_overlapping_times(self) -> None:
+        service = SchedulingService(AsyncMock())
+        profile = SimpleNamespace()
+        lesson_type = SimpleNamespace(duration_minutes=60)
+        base = datetime(2026, 7, 27, 9, tzinfo=UTC)
+
+        with self.assertRaisesRegex(SchedulingValidationError, "between 1 and 10"):
+            await service.book_many(
+                profile=profile,
+                lesson_type=lesson_type,
+                starts_at=[base.replace(hour=hour) for hour in range(9, 20)],
+                student_name="Student",
+                student_email="student@example.com",
+                student_timezone="UTC",
+                notes=None,
+            )
+
+        with self.assertRaisesRegex(SchedulingValidationError, "unique"):
+            await service.book_many(
+                profile=profile,
+                lesson_type=lesson_type,
+                starts_at=[base, base],
+                student_name="Student",
+                student_email="student@example.com",
+                student_timezone="UTC",
+                notes=None,
+            )
+
+        with self.assertRaisesRegex(SchedulingValidationError, "cannot overlap"):
+            await service.book_many(
+                profile=profile,
+                lesson_type=lesson_type,
+                starts_at=[base, base.replace(minute=30)],
+                student_name="Student",
+                student_email="student@example.com",
+                student_timezone="UTC",
+                notes=None,
+            )
+
 if __name__ == "__main__":
     unittest.main()

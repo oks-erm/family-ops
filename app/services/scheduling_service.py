@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -10,6 +11,7 @@ from app.db.models import (
     CalendarConnection,
     CalendarProvider,
     LessonBooking,
+    LessonPaymentAllocation,
     LessonType,
     SchedulingCalendar,
     SchedulingProfile,
@@ -28,6 +30,9 @@ from app.services.scheduling_rules import (
 
 class SlotUnavailableError(RuntimeError):
     pass
+
+
+logger = logging.getLogger(__name__)
 
 
 class SchedulingService:
@@ -249,15 +254,46 @@ class SchedulingService:
         student_timezone: str,
         notes: str | None,
     ) -> LessonBooking:
+        bookings = await self.book_many(
+            profile=profile,
+            lesson_type=lesson_type,
+            starts_at=[starts_at],
+            student_name=student_name,
+            student_email=student_email,
+            student_timezone=student_timezone,
+            notes=notes,
+        )
+        return bookings[0]
+
+    async def book_many(
+        self,
+        *,
+        profile: SchedulingProfile,
+        lesson_type: LessonType,
+        starts_at: list[datetime],
+        student_name: str,
+        student_email: str,
+        student_timezone: str,
+        notes: str | None,
+    ) -> list[LessonBooking]:
         validate_timezone(student_timezone)
-        if starts_at.tzinfo is None:
-            raise SchedulingValidationError("The selected lesson time must include a timezone.")
+        if not 1 <= len(starts_at) <= 10:
+            raise SchedulingValidationError("Choose between 1 and 10 lesson times.")
+        if len(set(starts_at)) != len(starts_at):
+            raise SchedulingValidationError("Each lesson time must be unique.")
+        if any(value.tzinfo is None for value in starts_at):
+            raise SchedulingValidationError("Every selected lesson time must include a timezone.")
+        starts_at = sorted(starts_at)
+        duration = timedelta(minutes=lesson_type.duration_minutes)
+        for previous, current in zip(starts_at, starts_at[1:], strict=False):
+            if current < previous + duration:
+                raise SchedulingValidationError("Selected lesson times cannot overlap.")
         recent_count = await self.repository.recent_booking_count(
             profile_id=profile.id,
             student_email=student_email,
             created_after=datetime.now(UTC) - timedelta(hours=1),
         )
-        if recent_count >= 5:
+        if recent_count + len(starts_at) > 20:
             raise SchedulingValidationError(
                 "Too many lessons were booked with this email recently. Try again later."
             )
@@ -266,69 +302,142 @@ class SchedulingService:
         # calendars must not prevent bookings, while any selected source still fails closed.
         calendar_service = await self._refresh_booking_calendars(profile=profile)
         await self.repository.lock_profile(profile_id=profile.id)
-        local_start = starts_at.astimezone(ZoneInfo(profile.timezone))
-        available = await self.slots(
-            profile=profile,
-            lesson_type=lesson_type,
-            start_day=local_start.date(),
-            end_day=local_start.date(),
-        )
-        if not any(slot == local_start for slot in available):
-            await self.session.rollback()
-            raise SlotUnavailableError(
-                "That lesson time is no longer available. Choose another time."
+        for requested_start in starts_at:
+            local_start = requested_start.astimezone(ZoneInfo(profile.timezone))
+            available = await self.slots(
+                profile=profile,
+                lesson_type=lesson_type,
+                start_day=local_start.date(),
+                end_day=local_start.date(),
             )
-        ends_at = starts_at + timedelta(minutes=lesson_type.duration_minutes)
+            if not any(slot == local_start for slot in available):
+                await self.session.rollback()
+                raise SlotUnavailableError(
+                    "One of those lesson times is no longer available. Choose another time."
+                )
         title = f"{lesson_type.name} — {student_name.strip()}"
         normalized_student_email = student_email.strip().casefold()
         student_meeting = await self.repository.student_meeting(
             profile_id=profile.id,
             student_email=normalized_student_email,
         )
-        calendar_event = await calendar_service.create_google_event(
-            household_id=profile.household_id,
-            user_id=profile.user_id,
-            title=title,
-            starts_at=starts_at,
-            ends_at=ends_at,
-            timezone=profile.timezone,
-            location=lesson_type.location,
-            calendar_id_override=profile.booking_calendar_id,
-            description=f"Student: {student_name.strip()}\nEmail: {student_email.strip()}",
-            attendee_email=normalized_student_email,
-            conference_data=(
-                student_meeting.conference_data if student_meeting is not None else None
-            ),
-            create_google_meet=student_meeting is None,
-        )
-        if calendar_event.meeting_url is None or calendar_event.conference_data is None:
-            raise CalendarEventMatchError("Google did not attach a Meet conference to the lesson.")
-        if student_meeting is None:
-            student_meeting = StudentMeeting(
+        conference_data = student_meeting.conference_data if student_meeting else None
+        created_events: list[tuple[str | None, str]] = []
+        bookings: list[LessonBooking] = []
+        try:
+            for requested_start in starts_at:
+                ends_at = requested_start + duration
+                calendar_event = await calendar_service.create_google_event(
+                    household_id=profile.household_id,
+                    user_id=profile.user_id,
+                    title=title,
+                    starts_at=requested_start,
+                    ends_at=ends_at,
+                    timezone=profile.timezone,
+                    location=lesson_type.location,
+                    calendar_id_override=profile.booking_calendar_id,
+                    description=(
+                        f"Student: {student_name.strip()}\nEmail: {normalized_student_email}"
+                    ),
+                    attendee_email=normalized_student_email,
+                    conference_data=conference_data,
+                    create_google_meet=conference_data is None,
+                )
+                if calendar_event.meeting_url is None or calendar_event.conference_data is None:
+                    raise CalendarEventMatchError(
+                        "Google did not attach a Meet conference to the lesson."
+                    )
+                if not calendar_event.external_event_id:
+                    raise CalendarEventMatchError("Google did not return an event ID.")
+                created_events.append(
+                    (calendar_event.external_calendar_id, calendar_event.external_event_id)
+                )
+                conference_data = calendar_event.conference_data
+                if student_meeting is None:
+                    student_meeting = StudentMeeting(
+                        profile_id=profile.id,
+                        student_email=normalized_student_email,
+                        meeting_url=calendar_event.meeting_url,
+                        conference_data=conference_data,
+                    )
+                    await self.repository.add_student_meeting(student_meeting)
+                booking = LessonBooking(
+                    profile_id=profile.id,
+                    lesson_type_id=lesson_type.id,
+                    student_name=student_name.strip(),
+                    student_email=normalized_student_email,
+                    student_timezone=student_timezone,
+                    notes=(notes or "").strip() or None,
+                    starts_at=requested_start,
+                    ends_at=ends_at,
+                    status="confirmed",
+                    external_calendar_id=calendar_event.external_calendar_id,
+                    external_event_id=calendar_event.external_event_id,
+                    meeting_url=calendar_event.meeting_url,
+                )
+                await self.repository.add_booking(booking)
+                bookings.append(booking)
+            await self._allocate_available_credits(
                 profile_id=profile.id,
                 student_email=normalized_student_email,
-                meeting_url=calendar_event.meeting_url,
-                conference_data=calendar_event.conference_data,
+                bookings=bookings,
             )
-            await self.repository.add_student_meeting(student_meeting)
-        booking = LessonBooking(
-            profile_id=profile.id,
-            lesson_type_id=lesson_type.id,
-            student_name=student_name.strip(),
-            student_email=normalized_student_email,
-            student_timezone=student_timezone,
-            notes=(notes or "").strip() or None,
-            starts_at=starts_at,
-            ends_at=ends_at,
-            status="confirmed",
-            external_calendar_id=calendar_event.external_calendar_id,
-            external_event_id=calendar_event.external_event_id,
-            meeting_url=calendar_event.meeting_url,
+            await self.session.commit()
+            for booking in bookings:
+                await self.session.refresh(booking)
+            return bookings
+        except Exception:
+            await self.session.rollback()
+            for calendar_id, event_id in reversed(created_events):
+                try:
+                    await calendar_service.delete_google_event_by_id(
+                        household_id=profile.household_id,
+                        calendar_id=calendar_id,
+                        event_id=event_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to remove Google event during batch booking rollback",
+                        extra={"calendar_id": calendar_id, "event_id": event_id},
+                    )
+            raise
+
+    async def _allocate_available_credits(
+        self,
+        *,
+        profile_id: UUID,
+        student_email: str,
+        bookings: list[LessonBooking],
+    ) -> None:
+        payments = await self.repository.student_payments(
+            profile_id=profile_id,
+            student_email=student_email,
         )
-        await self.repository.add_booking(booking)
-        await self.session.commit()
-        await self.session.refresh(booking)
-        return booking
+        all_allocated_ids = await self.repository.allocation_booking_ids(
+            payment_ids=[payment.id for payment in payments]
+        )
+        for payment in payments:
+            allocated_ids = await self.repository.allocation_booking_ids(
+                payment_ids=[payment.id]
+            )
+            remaining = payment.lessons_purchased - len(allocated_ids)
+            if remaining <= 0:
+                continue
+            for booking in bookings:
+                if remaining <= 0:
+                    break
+                if booking.id in all_allocated_ids:
+                    continue
+                if payment.valid_from is None:
+                    payment.valid_from = booking.starts_at
+                    payment.expires_at = booking.starts_at + timedelta(weeks=5)
+                if payment.expires_at is not None and booking.starts_at > payment.expires_at:
+                    continue
+                self.session.add(
+                    LessonPaymentAllocation(payment_id=payment.id, booking_id=booking.id)
+                )
+                all_allocated_ids.add(booking.id)
+                remaining -= 1
 
     async def _refresh_booking_calendars(
         self, *, profile: SchedulingProfile

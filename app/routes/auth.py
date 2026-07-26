@@ -1,3 +1,4 @@
+import re
 import secrets
 from urllib.parse import urlencode
 
@@ -36,6 +37,8 @@ async def google_auth_start(
         request.session["dashboard_link_token"] = link_token
     if next == "scheduling":
         request.session["oauth_next"] = "scheduling"
+    elif next and re.fullmatch(r"book:[a-z0-9-]{3,100}", next):
+        request.session["oauth_next"] = next
     else:
         request.session.pop("oauth_next", None)
 
@@ -84,6 +87,18 @@ async def google_auth_callback(request: Request, code: str, state: str) -> Redir
     if not email:
         raise HTTPException(status_code=400, detail="Google did not return an email address.")
 
+    oauth_next = request.session.pop("oauth_next", None)
+    if isinstance(oauth_next, str) and oauth_next.startswith("book:"):
+        request.session.pop("dashboard_link_token", None)
+        slug = oauth_next.removeprefix("book:")
+        request.session["student_google_email"] = email
+        request.session["student_google_name"] = str(profile.get("name") or "").strip()
+        scheduling_base = settings.scheduling_public_base_url or settings.public_base_url
+        return RedirectResponse(
+            f"{scheduling_base.rstrip('/')}/book/{slug}",
+            status_code=303,
+        )
+
     async with async_session_factory() as session:
         repository = UserRepository(session)
         link_token = request.session.pop("dashboard_link_token", None)
@@ -101,7 +116,7 @@ async def google_auth_callback(request: Request, code: str, state: str) -> Redir
                 return RedirectResponse("/auth/not-invited", status_code=303)
 
     request.session["google_email"] = email
-    if request.session.pop("oauth_next", None) == "scheduling":
+    if oauth_next == "scheduling":
         scheduling_base = settings.scheduling_public_base_url or settings.public_base_url
         return RedirectResponse(
             f"{scheduling_base.rstrip('/')}/schedule/manage",

@@ -9,10 +9,12 @@ from app.db.models import (
     CalendarEventCache,
     ICalFeed,
     LessonBooking,
+    LessonPaymentAllocation,
     LessonType,
     SchedulingCalendar,
     SchedulingProfile,
     StudentMeeting,
+    StudentPayment,
 )
 
 
@@ -168,6 +170,52 @@ class SchedulingRepository:
             .limit(200)
         )
         return list(result.scalars().all())
+
+    async def student_bookings(
+        self, *, profile_id: UUID, student_email: str
+    ) -> list[LessonBooking]:
+        result = await self.session.execute(
+            select(LessonBooking)
+            .where(
+                LessonBooking.profile_id == profile_id,
+                LessonBooking.student_email == student_email.strip().casefold(),
+            )
+            .order_by(LessonBooking.starts_at)
+        )
+        return list(result.scalars().all())
+
+    async def student_payments(
+        self, *, profile_id: UUID, student_email: str
+    ) -> list[StudentPayment]:
+        result = await self.session.execute(
+            select(StudentPayment)
+            .where(
+                StudentPayment.profile_id == profile_id,
+                StudentPayment.student_email == student_email.strip().casefold(),
+            )
+            .order_by(StudentPayment.paid_at, StudentPayment.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def allocation_booking_ids(self, *, payment_ids: list[UUID]) -> set[UUID]:
+        if not payment_ids:
+            return set()
+        result = await self.session.execute(
+            select(LessonPaymentAllocation.booking_id).where(
+                LessonPaymentAllocation.payment_id.in_(payment_ids)
+            )
+        )
+        return set(result.scalars().all())
+
+    async def allocation_for_booking(
+        self, *, booking_id: UUID
+    ) -> LessonPaymentAllocation | None:
+        result = await self.session.execute(
+            select(LessonPaymentAllocation).where(
+                LessonPaymentAllocation.booking_id == booking_id
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def lock_profile(self, *, profile_id: UUID) -> None:
         # Serialize bookings for one tutor so two simultaneous requests cannot take one slot.

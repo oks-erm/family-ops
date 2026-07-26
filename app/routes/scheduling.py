@@ -1,6 +1,6 @@
 import html
 import re
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, SecretStr
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
@@ -19,8 +19,10 @@ from app.db.models import (
     CalendarProvider,
     ICalFeed,
     LessonBooking,
+    LessonPaymentAllocation,
     LessonType,
     SchedulingCalendar,
+    StudentPayment,
 )
 from app.db.repositories.calendar import CalendarRepository
 from app.db.repositories.households import HouseholdRepository
@@ -98,12 +100,17 @@ class ICloudConnectionRequest(BaseModel):
 
 class BookingRequest(BaseModel):
     lesson_type_id: UUID
-    starts_at: datetime
-    student_name: str = Field(min_length=1, max_length=255)
-    student_email: str = Field(min_length=3, max_length=320)
+    starts_at: list[datetime] = Field(min_length=1, max_length=10)
     student_timezone: str = Field(min_length=1, max_length=64)
     notes: str | None = Field(default=None, max_length=2000)
     website: str | None = Field(default=None, max_length=200)  # Honeypot.
+
+
+class StudentPaymentRequest(BaseModel):
+    student_email: str = Field(min_length=3, max_length=320)
+    lessons_purchased: int = Field(ge=1, le=100)
+    amount_cents: int | None = Field(default=None, ge=0, le=10_000_000)
+    booking_ids: list[UUID] = Field(default_factory=list, max_length=100)
 
 
 async def _dashboard_context(request: Request, session):
@@ -133,6 +140,14 @@ def _require_same_origin(request: Request) -> None:
 
 def _email_is_valid(value: str) -> bool:
     return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value.strip()))
+
+
+def _student_identity(request: Request) -> tuple[str, str]:
+    email = str(request.session.get("student_google_email") or "").strip().casefold()
+    if not _email_is_valid(email):
+        raise HTTPException(status_code=401, detail="Google sign-in required.")
+    name = str(request.session.get("student_google_name") or "").strip() or email.split("@", 1)[0]
+    return email, name[:255]
 
 
 async def _management_profile(request: Request, session):
@@ -181,6 +196,31 @@ async def scheduling_management_data(request: Request) -> dict[str, object]:
         connection_items = [*google_connection_items, *icloud_connection_items]
         connections = {item.id: item for item in connection_items}
         calendars = await repository.list_calendars(profile_id=profile.id)
+        booking_result = await session.execute(
+            select(LessonBooking)
+            .where(LessonBooking.profile_id == profile.id)
+            .order_by(LessonBooking.starts_at)
+        )
+        all_bookings = list(booking_result.scalars().all())
+        payment_result = await session.execute(
+            select(StudentPayment)
+            .where(StudentPayment.profile_id == profile.id)
+            .order_by(StudentPayment.paid_at)
+        )
+        all_payments = list(payment_result.scalars().all())
+        payment_ids = [item.id for item in all_payments]
+        allocation_result = await session.execute(
+            select(LessonPaymentAllocation).where(
+                LessonPaymentAllocation.payment_id.in_(payment_ids)
+            )
+        )
+        allocations = {
+            item.booking_id: item.payment_id for item in allocation_result.scalars().all()
+        }
+        student_emails = sorted(
+            {item.student_email for item in all_bookings}
+            | {item.student_email for item in all_payments}
+        )
         settings = get_settings()
         public_base = (settings.scheduling_public_base_url or settings.public_base_url).rstrip("/")
         return {
@@ -266,6 +306,41 @@ async def scheduling_management_data(request: Request) -> dict[str, object]:
                 for item in await repository.upcoming_bookings(
                     profile_id=profile.id, now=datetime.now(UTC)
                 )
+            ],
+            "students": [
+                {
+                    "email": student_email,
+                    "name": next(
+                        (
+                            item.student_name
+                            for item in reversed(all_bookings)
+                            if item.student_email == student_email
+                        ),
+                        student_email,
+                    ),
+                    "purchased": sum(
+                        item.lessons_purchased
+                        for item in all_payments
+                        if item.student_email == student_email
+                    ),
+                    "allocated": sum(
+                        item.id in allocations
+                        for item in all_bookings
+                        if item.student_email == student_email
+                    ),
+                    "bookings": [
+                        {
+                            "id": str(item.id),
+                            "starts_at": item.starts_at.isoformat(),
+                            "status": item.status,
+                            "cancellation_consumes_credit": item.cancellation_consumes_credit,
+                            "paid": item.id in allocations,
+                        }
+                        for item in all_bookings
+                        if item.student_email == student_email
+                    ],
+                }
+                for student_email in student_emails
             ],
         }
 
@@ -372,6 +447,7 @@ async def cancel_booking(request: Request, booking_id: UUID) -> dict[str, bool]:
                 )
             except (
                 CalendarNotConnectedError,
+                CalendarSyncError,
                 CalendarWritePermissionError,
                 httpx.HTTPError,
             ) as exc:
@@ -380,8 +456,85 @@ async def cancel_booking(request: Request, booking_id: UUID) -> dict[str, bool]:
                     detail="The calendar event could not be removed, so the lesson was not cancelled.",
                 ) from exc
         booking.status = "cancelled"
+        booking.cancelled_at = datetime.now(UTC)
+        booking.cancellation_consumes_credit = False
+        allocation = await SchedulingRepository(session).allocation_for_booking(
+            booking_id=booking.id
+        )
+        if allocation is not None:
+            await session.delete(allocation)
         await session.commit()
         return {"cancelled": True}
+
+
+@router.post("/api/scheduling/student-payments", status_code=201)
+async def add_student_payment(
+    request: Request, payload: StudentPaymentRequest
+) -> dict[str, object]:
+    _require_same_origin(request)
+    email = payload.student_email.strip().casefold()
+    if not _email_is_valid(email):
+        raise HTTPException(status_code=400, detail="Enter a valid student email address.")
+    if len(set(payload.booking_ids)) != len(payload.booking_ids):
+        raise HTTPException(status_code=400, detail="Select each lesson only once.")
+    if len(payload.booking_ids) > payload.lessons_purchased:
+        raise HTTPException(
+            status_code=400,
+            detail="A payment cannot be assigned to more lessons than it purchased.",
+        )
+    async with async_session_factory() as session:
+        _, _, profile = await _management_profile(request, session)
+        bookings: list[LessonBooking] = []
+        if payload.booking_ids:
+            result = await session.execute(
+                select(LessonBooking).where(LessonBooking.id.in_(payload.booking_ids))
+            )
+            bookings = list(result.scalars().all())
+            if len(bookings) != len(payload.booking_ids) or any(
+                item.profile_id != profile.id or item.student_email != email for item in bookings
+            ):
+                raise HTTPException(status_code=400, detail="A selected lesson is invalid.")
+            if any(
+                item.status == "cancelled" and not item.cancellation_consumes_credit
+                for item in bookings
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="An on-time cancelled lesson cannot consume a payment credit.",
+                )
+            existing = await session.execute(
+                select(func.count(LessonPaymentAllocation.id)).where(
+                    LessonPaymentAllocation.booking_id.in_(payload.booking_ids)
+                )
+            )
+            if existing.scalar_one():
+                raise HTTPException(status_code=409, detail="A selected lesson is already paid.")
+        payment = StudentPayment(
+            profile_id=profile.id,
+            student_email=email,
+            lessons_purchased=payload.lessons_purchased,
+            amount_cents=payload.amount_cents,
+            paid_at=datetime.now(UTC),
+            valid_from=min((item.starts_at for item in bookings), default=None),
+            expires_at=(
+                min(item.starts_at for item in bookings) + timedelta(weeks=5)
+                if bookings
+                else None
+            ),
+        )
+        session.add(payment)
+        await session.flush()
+        session.add_all(
+            LessonPaymentAllocation(payment_id=payment.id, booking_id=item.id)
+            for item in bookings
+        )
+        await session.commit()
+        return {
+            "id": str(payment.id),
+            "lessons_purchased": payment.lessons_purchased,
+            "allocated": len(bookings),
+            "remaining": payment.lessons_purchased - len(bookings),
+        }
 
 
 @router.post("/api/scheduling/calendars/discover")
@@ -600,9 +753,131 @@ async def delete_ical_feed(request: Request, feed_id: UUID) -> dict[str, bool]:
 
 
 @router.get("/book/{slug}", response_class=HTMLResponse)
-async def public_booking_page(slug: str) -> HTMLResponse:
+async def public_booking_page(request: Request, slug: str) -> HTMLResponse:
     safe_slug = html.escape(slug, quote=True)
-    return HTMLResponse(PUBLIC_HTML.replace("__BOOKING_SLUG__", safe_slug))
+    signed_in = bool(request.session.get("student_google_email"))
+    page = PUBLIC_HTML.replace("__BOOKING_SLUG__", safe_slug)
+    page = page.replace(
+        '<div class="types" id="types"></div>',
+        '<div class="types" id="types"></div>' + PUBLIC_INFO_HTML,
+    )
+    page = page.replace("__STUDENT_SIGNED_IN__", "true" if signed_in else "false")
+    return HTMLResponse(page)
+
+
+@router.get("/book/{slug}/lessons", response_class=HTMLResponse)
+async def student_lessons_page(request: Request, slug: str):
+    if not request.session.get("student_google_email"):
+        return RedirectResponse(f"/auth/google/start?next=book:{slug}", status_code=303)
+    return HTMLResponse(STUDENT_HTML.replace("__BOOKING_SLUG__", html.escape(slug, quote=True)))
+
+
+@router.get("/api/public/scheduling/{slug}/my-lessons")
+async def student_lessons(request: Request, slug: str) -> dict[str, object]:
+    email, name = _student_identity(request)
+    async with async_session_factory() as session:
+        repository = SchedulingRepository(session)
+        profile = await repository.profile_by_slug(slug=slug)
+        if profile is None:
+            raise HTTPException(status_code=404, detail="Booking page not found.")
+        bookings = await repository.student_bookings(
+            profile_id=profile.id, student_email=email
+        )
+        payments = await repository.student_payments(
+            profile_id=profile.id, student_email=email
+        )
+        paid_booking_ids = await repository.allocation_booking_ids(
+            payment_ids=[item.id for item in payments]
+        )
+        payment_allocations = {
+            item.id: await repository.allocation_booking_ids(payment_ids=[item.id])
+            for item in payments
+        }
+        now = datetime.now(UTC)
+        return {
+            "student_name": name,
+            "student_email": email,
+            "tutor_name": profile.display_name,
+            "purchased": sum(item.lessons_purchased for item in payments),
+            "allocated": len(paid_booking_ids),
+            "remaining": sum(item.lessons_purchased for item in payments)
+            - len(paid_booking_ids),
+            "packages": [
+                {
+                    "lessons_purchased": item.lessons_purchased,
+                    "allocated": len(payment_allocations[item.id]),
+                    "remaining": item.lessons_purchased
+                    - len(payment_allocations[item.id]),
+                    "valid_from": item.valid_from.isoformat() if item.valid_from else None,
+                    "expires_at": item.expires_at.isoformat() if item.expires_at else None,
+                }
+                for item in payments
+            ],
+            "lessons": [
+                {
+                    "id": str(item.id),
+                    "starts_at": item.starts_at.isoformat(),
+                    "ends_at": item.ends_at.isoformat(),
+                    "status": item.status,
+                    "paid": item.id in paid_booking_ids,
+                    "can_cancel": item.status == "confirmed" and item.starts_at > now,
+                    "late": item.starts_at - now < timedelta(hours=12),
+                    "meeting_url": item.meeting_url,
+                }
+                for item in bookings
+            ],
+        }
+
+
+@router.post("/api/public/scheduling/{slug}/my-lessons/{booking_id}/cancel")
+async def student_cancel_lesson(
+    request: Request, slug: str, booking_id: UUID
+) -> dict[str, object]:
+    _require_same_origin(request)
+    email, _ = _student_identity(request)
+    async with async_session_factory() as session:
+        repository = SchedulingRepository(session)
+        profile = await repository.profile_by_slug(slug=slug)
+        booking = await session.get(LessonBooking, booking_id)
+        if (
+            profile is None
+            or booking is None
+            or booking.profile_id != profile.id
+            or booking.student_email != email
+        ):
+            raise HTTPException(status_code=404, detail="Lesson not found.")
+        if booking.status == "cancelled":
+            return {"cancelled": True, "credit_restored": False}
+        now = datetime.now(UTC)
+        if booking.starts_at <= now:
+            raise HTTPException(status_code=409, detail="Past lessons cannot be cancelled.")
+        late = booking.starts_at - now < timedelta(hours=12)
+        if booking.external_event_id:
+            try:
+                await CalendarService(session).delete_google_event_by_id(
+                    household_id=profile.household_id,
+                    calendar_id=booking.external_calendar_id,
+                    event_id=booking.external_event_id,
+                )
+            except (
+                CalendarNotConnectedError,
+                CalendarSyncError,
+                CalendarWritePermissionError,
+                httpx.HTTPError,
+            ) as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="The calendar event could not be removed, so the lesson was not cancelled.",
+                ) from exc
+        allocation = await repository.allocation_for_booking(booking_id=booking.id)
+        credit_restored = allocation is not None and not late
+        if credit_restored:
+            await session.delete(allocation)
+        booking.status = "cancelled"
+        booking.cancelled_at = now
+        booking.cancellation_consumes_credit = late
+        await session.commit()
+        return {"cancelled": True, "credit_restored": credit_restored, "late": late}
 
 
 @router.get("/api/public/scheduling/{slug}")
@@ -655,11 +930,10 @@ async def public_slots(
 
 
 @router.post("/api/public/scheduling/{slug}/book", status_code=201)
-async def public_book(slug: str, payload: BookingRequest) -> dict[str, object]:
+async def public_book(request: Request, slug: str, payload: BookingRequest) -> dict[str, object]:
+    student_email, student_name = _student_identity(request)
     if payload.website:
         raise HTTPException(status_code=400, detail="Invalid booking request.")
-    if not _email_is_valid(payload.student_email):
-        raise HTTPException(status_code=400, detail="Enter a valid email address.")
     async with async_session_factory() as session:
         repository = SchedulingRepository(session)
         profile = await repository.profile_by_slug(slug=slug)
@@ -671,12 +945,12 @@ async def public_book(slug: str, payload: BookingRequest) -> dict[str, object]:
         if lesson_type is None or not lesson_type.is_active:
             raise HTTPException(status_code=404, detail="Lesson type not found.")
         try:
-            booking = await SchedulingService(session).book(
+            bookings = await SchedulingService(session).book_many(
                 profile=profile,
                 lesson_type=lesson_type,
                 starts_at=payload.starts_at,
-                student_name=payload.student_name,
-                student_email=payload.student_email,
+                student_name=student_name,
+                student_email=student_email,
                 student_timezone=payload.student_timezone,
                 notes=payload.notes,
             )
@@ -696,10 +970,16 @@ async def public_book(slug: str, payload: BookingRequest) -> dict[str, object]:
                 detail="Calendars could not be checked safely. Please try again shortly.",
             ) from exc
         return {
-            "id": str(booking.id),
-            "status": booking.status,
-            "starts_at": booking.starts_at.isoformat(),
-            "ends_at": booking.ends_at.isoformat(),
+            "count": len(bookings),
+            "bookings": [
+                {
+                    "id": str(booking.id),
+                    "status": booking.status,
+                    "starts_at": booking.starts_at.isoformat(),
+                    "ends_at": booking.ends_at.isoformat(),
+                }
+                for booking in bookings
+            ],
         }
 
 
@@ -722,12 +1002,13 @@ button,.button{min-height:42px;border:1px solid transparent;border-radius:999px;
 <div class="column"><section class="card availability-card"><h2>Weekly availability</h2><p class="muted">Set times for all seven days. Disable any day you do not teach. Times use your timezone.</p><div class="list" id="availability"></div><div class="row"><button id="add-window" class="secondary" type="button">Add another time</button><button id="save-availability" type="button">Save availability</button></div></section>
 <section class="card"><h2>iCloud calendars</h2><p class="muted">Connect privately with an Apple app-specific password. Access is read-only and your calendars remain private.</p><form id="icloud"><label>Apple Account email<input name="account_email" type="email" autocomplete="username" required></label><label>App-specific password<input name="app_specific_password" type="password" autocomplete="new-password" required></label><p class="muted help">Use a password created for this scheduler, never your main Apple password. <a href="https://account.apple.com/account/manage/section/security" target="_blank" rel="noopener">Create one in Apple Account security</a>.</p><button>Connect iCloud</button></form><div class="list" id="icloud-accounts"></div><div class="list" id="icloud-calendars"></div></section></div>
 <div class="column"><section class="card"><h2>Lesson types</h2><form id="lesson"><input name="id" type="hidden"><label>Name<input name="name" required placeholder="English lesson"></label><label>Length (minutes)<input name="duration_minutes" type="number" min="15" value="60" required></label><label>Location or call link<input name="location"></label><label>Description<textarea name="description"></textarea></label><label class="row"><input name="is_active" type="checkbox" style="width:auto" checked>Active</label><button>Save lesson type</button></form><div class="list" id="lessons"></div></section>
-<section class="card"><h2>Upcoming lessons</h2><div class="list" id="bookings"></div></section></div></div><p class="status" id="status"></p></main>
+<section class="card"><h2>Upcoming lessons</h2><div class="list" id="bookings"></div></section>
+<section class="card"><h2>Student payments</h2><p class="muted">Record a package without blocking bookings. Select any lessons this payment covers; unused lessons remain as credit.</p><form id="payment"><label>Student email<input name="student_email" type="email" list="student-emails" required></label><datalist id="student-emails"></datalist><div class="row"><label>Lessons purchased<input name="lessons_purchased" type="number" min="1" max="100" required></label><label>Amount paid (€)<input name="amount_euros" type="number" min="0" step="0.01"></label></div><div class="list" id="payment-lessons"></div><button>Record payment</button></form><div class="list" id="students"></div></section></div></div><p class="status" id="status"></p></main>
 <script>
 const $=s=>document.querySelector(s), esc=s=>String(s??""); let state,googleDiscoveryFailures=new Map();
 async function api(url,opt={}){const r=await fetch(url,{...opt,headers:{"Content-Type":"application/json",...(opt.headers||{})}});if(!r.ok){let m="Request failed";try{m=(await r.json()).detail||m}catch{}throw Error(m)}return r.status===204?null:r.json()}
 function field(form,n,v){const e=form.elements[n];if(e.type==="checkbox")e.checked=!!v;else e.value=v??""}
-async function load(){state=await api('/api/scheduling/manage');const f=$('#profile');for(const [k,v] of Object.entries(state.profile))if(f.elements[k])field(f,k,v);$('#public-link').innerHTML=`Public page: <a href="${state.profile.public_url}" target="_blank" rel="noopener">${state.profile.public_url}</a>`;render();renderBookingActions()}
+async function load(){state=await api('/api/scheduling/manage');const f=$('#profile');for(const [k,v] of Object.entries(state.profile))if(f.elements[k])field(f,k,v);$('#public-link').innerHTML=`Public page: <a href="${state.profile.public_url}" target="_blank" rel="noopener">${state.profile.public_url}</a>`;render();renderBookingActions();renderStudents()}
 function render(){
  const names=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
  $('#lessons').replaceChildren(...state.lesson_types.map(x=>node(`${x.name} · ${x.duration_minutes} min`,x.is_active?'Active':'Inactive',()=>editLesson(x))));
@@ -745,6 +1026,7 @@ function node(a,b,click,label='Edit'){const d=document.createElement('div');d.cl
 function calendarToggleNode(x){const d=document.createElement('label');d.className='item';const t=document.createElement('span');t.textContent=`${x.name}${x.account_email?' · '+x.account_email:''} (${x.access_role||'read'})`;const c=document.createElement('input');c.type='checkbox';c.style.width='auto';c.checked=x.include_in_conflicts;c.onchange=async()=>{const result=await api(`/api/scheduling/calendars/${x.id}`,{method:'PUT',body:JSON.stringify({include_in_conflicts:c.checked})});status(result.sync_warning||'Calendar selection saved.')};d.append(t,c);return d}
 function icloudAccountNode(x){const d=node(x.account_email||'Apple Account',`${x.calendar_count} calendar${x.calendar_count===1?'':'s'} found`),actions=document.createElement('div'),refresh=document.createElement('button'),disconnect=document.createElement('button');actions.className='item-actions';refresh.type='button';refresh.className='secondary';refresh.textContent='Refresh';refresh.onclick=async()=>{const result=await api(`/api/scheduling/icloud-connections/${x.id}/refresh`,{method:'POST',body:'{}'});await load();status(`Refreshed ${result.discovered} calendar${result.discovered===1?'':'s'}.`)};disconnect.type='button';disconnect.className='danger';disconnect.textContent='Disconnect';disconnect.onclick=async()=>{if(!confirm(`Disconnect ${x.account_email}?`))return;await api(`/api/scheduling/icloud-connections/${x.id}`,{method:'DELETE'});await load();status('iCloud disconnected.')};actions.append(refresh,disconnect);d.append(actions);return d}
 function renderBookingActions(){if(!state.bookings.length)return;$('#bookings').replaceChildren(...state.bookings.map(x=>node(x.student_name,new Date(x.starts_at).toLocaleString()+` · ${x.student_email}`,async()=>{if(!confirm(`Cancel the lesson with ${x.student_name}?`))return;await api(`/api/scheduling/bookings/${x.id}/cancel`,{method:'POST',body:'{}'});await load();status('Lesson cancelled.')},'Cancel')))}
+function renderStudents(){const input=$('#payment').elements.student_email;$('#student-emails').replaceChildren(...state.students.map(x=>new Option(x.email)));$('#students').replaceChildren(...state.students.map(x=>node(x.name,`${x.email} · ${x.allocated} assigned · ${Math.max(0,x.purchased-x.allocated)} paid lessons remaining`)));const student=state.students.find(x=>x.email===input.value);const bookings=student?student.bookings.filter(x=>!x.paid):[];$('#payment-lessons').replaceChildren(...bookings.map(x=>{const label=document.createElement('label'),box=document.createElement('input');label.className='row';box.type='checkbox';box.name='booking_id';box.value=x.id;box.style.width='auto';label.append(box,document.createTextNode(`${new Date(x.starts_at).toLocaleString()} · ${x.status}`));return label}))}
 const disableIcon='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/></svg>',enableIcon='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v8m-4-4h8"/></svg>';
 function setWindowEnabled(d,enabled){d.classList.toggle('disabled',!enabled);d.querySelectorAll('select,input').forEach(control=>control.disabled=!enabled);const toggle=d.querySelector('.day-toggle'),day=d.querySelector('select').selectedOptions[0]?.text||'day';toggle.innerHTML=enabled?disableIcon:enableIcon;toggle.setAttribute('aria-label',enabled?`Disable ${day}`:`Enable ${day}`);toggle.title=enabled?`Disable ${day}`:`Enable ${day}`}
 function windowNode(day=0,start='09:00',end='17:00',names=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'],enabled=true){const d=document.createElement('div');d.className='days';const s=document.createElement('select');s.setAttribute('aria-label','Day');names.forEach((n,i)=>s.add(new Option(n,i)));s.value=day;const a=document.createElement('input');a.type='time';a.setAttribute('aria-label','Available from');a.value=start;const b=document.createElement('input');b.type='time';b.setAttribute('aria-label','Available until');b.value=end;const toggle=document.createElement('button');toggle.type='button';toggle.className='day-toggle';toggle.onclick=()=>setWindowEnabled(d,d.classList.contains('disabled'));s.onchange=()=>setWindowEnabled(d,!d.classList.contains('disabled'));d.append(s,a,b,toggle);setWindowEnabled(d,enabled);return d}
@@ -754,29 +1036,43 @@ $('#lesson').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,d=Obj
 $('#add-window').onclick=()=>$('#availability').append(windowNode());$('#save-availability').onclick=async()=>{const rules=[...$('#availability').children].filter(d=>!d.classList.contains('disabled')).map(d=>({weekday:Number(d.children[0].value),starts_at:d.children[1].value,ends_at:d.children[2].value}));await api('/api/scheduling/availability',{method:'PUT',body:JSON.stringify({rules})});status('Availability saved.');await load()};
 $('#discover').onclick=async()=>{status('Checking Google calendars…');const result=await api('/api/scheduling/calendars/discover',{method:'POST',body:'{}'});googleDiscoveryFailures=new Map((result.failures||[]).map(x=>[x.connection_id,x.message]));await load();status(result.failures?.length?`Loaded ${result.discovered} calendar${result.discovered===1?'':'s'}; ${result.failures.length} account${result.failures.length===1?' needs':'s need'} attention.`:`Found ${result.discovered} calendar${result.discovered===1?'':'s'}.`)};
 $('#icloud').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget,d=Object.fromEntries(new FormData(form));status('Connecting privately to iCloud…');const result=await api('/api/scheduling/icloud-connections',{method:'POST',body:JSON.stringify(d)});form.reset();await load();status(result.sync_warning||`Connected ${result.calendar_count} iCloud calendar${result.calendar_count===1?'':'s'}.`)};
+$('#payment').elements.student_email.onchange=renderStudents;
+$('#payment').elements.student_email.oninput=renderStudents;
+$('#payment').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget,data=new FormData(form),euros=data.get('amount_euros'),payload={student_email:data.get('student_email'),lessons_purchased:Number(data.get('lessons_purchased')),amount_cents:euros===''?null:Math.round(Number(euros)*100),booking_ids:data.getAll('booking_id')};await api('/api/scheduling/student-payments',{method:'POST',body:JSON.stringify(payload)});form.reset();await load();status('Payment recorded and selected lessons marked as paid.')};
 document.addEventListener('unhandledrejection',e=>{e.preventDefault();status(e.reason?.message||'Something went wrong.')});load().then(()=>{const result=new URLSearchParams(location.search).get('calendar');if(result==='connected')status('Google Calendar connected and calendars loaded.');else if(result)status('Google connected, but calendars could not be loaded. Please reconnect and grant calendar access.');if(result)history.replaceState({},'',location.pathname)}).catch(e=>status(e.message));
 </script></body></html>"""
 
 
+PUBLIC_INFO_HTML = r"""<div style="margin-top:28px;padding-top:22px;border-top:1px solid #e4e3f2"><h3 style="margin-bottom:10px">Pricing</h3><p class="muted" style="line-height:1.7">Single lesson — €30<br>8 lessons — €224 (€28/hour)<br>12 lessons — €324 (€27/hour)<br>20 lessons — €500 (€25/hour)</p><h3 style="margin:18px 0 8px">Booking conditions</h3><p class="muted" style="line-height:1.55">Packages are valid for five weeks from the first booked lesson. Book up to 10 lessons at once. Cancellations and rescheduling at least 12 hours ahead restore the lesson credit. Later changes remain available but consume the credit.</p></div>"""
+
+
+STUDENT_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>My lessons</title><style>
+:root{font-family:"Google Sans",Inter,system-ui,sans-serif;color:#28243f;background:#f8f7ff;--indigo:#5f72dc;--violet:#8b5bd6;--line:#dedff1;--muted:#716d87}*{box-sizing:border-box}body{margin:0;min-height:100vh;padding:42px 20px;background:radial-gradient(circle at 10% 5%,#e9efff 0,transparent 34%),radial-gradient(circle at 92% 8%,#f3eaff 0,transparent 31%),#f8f7ff}main{width:min(900px,100%);margin:auto}.header,.summary,.lesson{background:#fff;border:1px solid var(--line);border-radius:20px;box-shadow:0 14px 35px rgba(75,73,145,.08)}.header{padding:26px 30px;display:flex;justify-content:space-between;align-items:center;gap:18px}.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;margin:18px 0;overflow:hidden}.metric{padding:22px;background:#fff}.metric strong{display:block;font-size:25px}.metric span,.muted{color:var(--muted);font-size:13px}.list{display:grid;gap:12px}.lesson{padding:18px 20px;display:flex;justify-content:space-between;align-items:center;gap:18px}.actions{display:flex;gap:8px;flex-wrap:wrap}a,button{font:inherit;font-weight:750;border-radius:11px;padding:9px 13px;text-decoration:none;cursor:pointer}a.primary,button.primary{border:0;color:#fff;background:linear-gradient(135deg,var(--indigo),var(--violet))}button.secondary,a.secondary{border:1px solid var(--line);color:#514d76;background:#fff}.badge{display:inline-block;margin-top:6px;padding:4px 8px;border-radius:999px;background:#efefff;color:#5549b8;font-size:12px;font-weight:700}.error{color:#a6405d}@media(max-width:620px){.header,.lesson{align-items:flex-start;flex-direction:column}.summary{grid-template-columns:1fr}.actions{width:100%}}
+</style></head><body><main><section class="header"><div><h1>My lessons</h1><p class="muted" id="identity"></p></div><a class="primary" href="/book/__BOOKING_SLUG__">Book lessons</a></section><section class="summary"><div class="metric"><strong id="purchased">0</strong><span>Paid lessons</span></div><div class="metric"><strong id="allocated">0</strong><span>Assigned to lessons</span></div><div class="metric"><strong id="remaining">0</strong><span>Paid lessons remaining</span></div></section><div class="list" id="lessons"></div><p class="error" id="error"></p></main><script>
+const slug='__BOOKING_SLUG__',$=s=>document.querySelector(s);async function api(u,o={}){const r=await fetch(u,{...o,headers:{'Content-Type':'application/json'}});if(!r.ok){let m='Request failed';try{m=(await r.json()).detail||m}catch{}throw Error(m)}return r.json()}function lessonNode(x){const n=document.createElement('article'),copy=document.createElement('div'),actions=document.createElement('div'),when=document.createElement('strong'),status=document.createElement('span');n.className='lesson';actions.className='actions';when.textContent=new Date(x.starts_at).toLocaleString([],{weekday:'long',day:'numeric',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit'});status.className='badge';status.textContent=x.status==='cancelled'?'Cancelled':x.paid?'Paid':'Payment not recorded';copy.append(when,document.createElement('br'),status);if(x.can_cancel){const cancel=document.createElement('button'),move=document.createElement('button');cancel.className='secondary';cancel.textContent='Cancel';cancel.onclick=()=>cancelLesson(x.id,false);move.className='primary';move.textContent='Reschedule';move.onclick=()=>cancelLesson(x.id,true);actions.append(move,cancel)}else if(x.meeting_url&&x.status==='confirmed'){const meet=document.createElement('a');meet.className='primary';meet.href=x.meeting_url;meet.textContent='Join Meet';actions.append(meet)}n.append(copy,actions);return n}async function cancelLesson(id,reschedule){const warning=reschedule?'This will cancel this lesson and let you choose a replacement.':'Cancel this lesson?';if(!confirm(warning))return;try{const result=await api(`/api/public/scheduling/${slug}/my-lessons/${id}/cancel`,{method:'POST',body:'{}'});if(result.late)alert('This is within 12 hours, so the lesson credit is still consumed.');if(reschedule)location.href=`/book/${slug}`;else await load()}catch(e){$('#error').textContent=e.message}}async function load(){const d=await api(`/api/public/scheduling/${slug}/my-lessons`);$('#identity').textContent=`${d.student_email} · ${d.tutor_name}`;$('#purchased').textContent=d.purchased;$('#allocated').textContent=d.allocated;$('#remaining').textContent=d.remaining;$('#lessons').replaceChildren(...d.lessons.slice().reverse().map(lessonNode))}load().catch(e=>$('#error').textContent=e.message);
+</script></body></html>"""
+
+
 PUBLIC_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Book a lesson</title><style>
+.page-header{display:flex;justify-content:space-between;align-items:center;gap:18px}.page-header a{color:#5549b8;font-weight:750;text-decoration:none}a.primary{display:inline-flex;align-items:center;min-height:42px;background:linear-gradient(135deg,#5f72dc,#8b5bd6);color:#fff;padding:10px 18px;border-radius:11px;font-weight:750;text-decoration:none;box-shadow:0 7px 18px rgba(105,91,204,.24)}
 :root{font-family:"Google Sans",Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;color:#28243f;background:#f8f7ff;--indigo:#5f72dc;--violet:#8b5bd6;--accent:#7065dc;--accent-dark:#5549b8;--accent-soft:#efefff;--surface:#fafaff;--line:#dedff1;--muted:#716d87}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:clamp(18px,4vw,48px);background:radial-gradient(circle at 10% 5%,#e9efff 0,transparent 34%),radial-gradient(circle at 92% 8%,#f3eaff 0,transparent 31%),linear-gradient(145deg,#f8f9ff,#faf7ff)}.shell{width:min(1100px,100%);background:rgba(255,255,255,.97);border:1px solid rgba(211,213,238,.95);border-radius:26px;box-shadow:0 22px 60px rgba(75,73,145,.13);overflow:hidden;backdrop-filter:blur(12px);transition:width .25s ease}.shell.confirmed{width:min(780px,100%)}.page-header{padding:28px 34px;border-bottom:1px solid #ebeaf6}.confirmed .page-header{padding:25px 32px;background:linear-gradient(120deg,rgba(239,243,255,.78),rgba(248,239,255,.7))}h1{font-size:clamp(25px,3vw,30px);line-height:1.2;letter-spacing:-.025em;margin:0}h2{font-size:17px;line-height:1.3;letter-spacing:-.015em;margin:0}h3{font-size:15px;line-height:1.35;margin:0}.booking-layout{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:470px}.lesson-panel{padding:30px 26px;border-right:1px solid #ebeaf6;background:linear-gradient(180deg,#f9faff,#faf7ff)}.step-heading{display:flex;align-items:center;gap:10px;margin-bottom:18px}.step-number{width:28px;height:28px;display:grid;place-items:center;flex:0 0 auto;border-radius:10px;background:linear-gradient(135deg,#e8eeff,#f0e8ff);color:var(--accent-dark);font-size:13px;font-weight:800}.types{display:grid;gap:10px}.type-choice{width:100%;text-align:left;min-height:44px;border:1px solid #d9d9ee;background:#fff;color:#494566;border-radius:13px;padding:11px 13px;cursor:pointer;font-weight:700;font-size:13px;transition:.14s}.type-choice.active,.type-choice:hover{background:linear-gradient(135deg,#eef2ff,#f1eaff);border-color:#bfc3ec;color:var(--accent-dark);box-shadow:0 5px 14px rgba(95,114,220,.12)}.scheduler{padding:30px 32px}.calendar-layout{display:grid;grid-template-columns:minmax(330px,1fr) 220px;gap:28px}.calendar-panel{min-width:0}.calendar-toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}.calendar-nav{display:flex;gap:7px}.icon-button{width:36px;height:36px;border:1px solid var(--line);border-radius:50%;background:#fff;color:#514d76;display:grid;place-items:center;cursor:pointer;font-size:20px;line-height:1}.icon-button:hover:not(:disabled){background:linear-gradient(135deg,#eef2ff,#f2ebff);border-color:#c5c6ed}.icon-button:disabled{opacity:.3;cursor:default}.calendar{display:grid;grid-template-columns:repeat(7,minmax(36px,1fr));gap:6px}.weekday{text-align:center;color:#817d98;font-size:11px;font-weight:750;text-transform:uppercase;padding:6px 0}.calendar-blank{aspect-ratio:1}.day{width:100%;aspect-ratio:1;border:0;border-radius:50%;background:transparent;color:#9995a8;font-size:13px;font-weight:650;cursor:default}.day.available{background:linear-gradient(135deg,#edf2ff,#f2ebff);color:#4e4975;cursor:pointer}.day.available:hover{background:linear-gradient(135deg,#dfe7ff,#e8dcff);color:var(--accent-dark)}.day.selected{background:linear-gradient(135deg,var(--indigo),var(--violet));color:#fff;box-shadow:0 6px 16px rgba(105,91,204,.28)}.day.today:not(.selected){box-shadow:inset 0 0 0 1px #98a5e3}.time-panel{border-left:1px solid #ebeaf6;padding-left:24px;min-width:0}.time-panel .muted{font-size:12px;margin:6px 0 18px}.time-slots{display:grid;gap:8px;max-height:350px;overflow:auto;padding-right:4px}.time-placeholder{color:#817d98;font-size:13px;line-height:1.5;padding:12px 0}.time-choice{width:100%;min-height:40px;border:1px solid #d6d7ed;background:#fff;color:#494566;border-radius:11px;padding:9px 12px;cursor:pointer;font-size:13px;font-weight:750;transition:.14s}.time-choice:hover,.time-choice.active{background:linear-gradient(135deg,var(--indigo),var(--violet));border-color:transparent;color:#fff;box-shadow:0 6px 16px rgba(105,91,204,.24)}.details{margin-top:26px;border-top:1px solid #ebeaf6;padding-top:24px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.form-grid .full{grid-column:1/-1}label{display:grid;gap:7px;margin:12px 0;font-weight:650;font-size:13px}input,textarea,button{font:inherit}input,textarea{min-height:44px;padding:10px 12px;border:1px solid #d6d7ed;border-radius:11px;outline:none;background:#fff}textarea{min-height:82px;resize:vertical}input:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(112,101,220,.14)}button.primary{min-height:42px;border:0;background:linear-gradient(135deg,var(--indigo),var(--violet));color:#fff;padding:10px 18px;border-radius:11px;font-weight:750;cursor:pointer;box-shadow:0 7px 18px rgba(105,91,204,.24)}button.primary:hover{filter:brightness(.94)}.hidden{display:none}.error{color:#a6405d;margin:14px 0 0;font-size:13px}.success{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 230px;align-items:center;min-height:330px;overflow:hidden;padding:46px 44px;background:linear-gradient(135deg,rgba(250,251,255,.98),rgba(250,246,255,.98))}.success.hidden{display:none}.success-copy{position:relative;z-index:1}.success-kicker{display:inline-flex;align-items:center;gap:8px;margin-bottom:18px;color:#584bb1;font-size:13px;font-weight:800;letter-spacing:.02em;text-transform:uppercase}.success-check{width:28px;height:28px;display:grid;place-items:center;border-radius:10px;background:linear-gradient(135deg,#dfe8ff,#eadcff);box-shadow:0 5px 14px rgba(105,91,204,.14)}.success-check svg{width:16px;height:16px}.success h2{font-size:clamp(28px,4vw,38px);line-height:1.08;letter-spacing:-.035em;margin:0 0 13px}.success-time{color:#4f4868;font-size:17px;font-weight:750;line-height:1.45;margin:0}.success-meta{color:var(--muted);font-size:14px;line-height:1.55;margin:10px 0 0}.success-note{display:flex;gap:10px;align-items:flex-start;margin:26px 0 0;padding-top:20px;border-top:1px solid #e5e2f1;color:#625b75;font-size:13px;line-height:1.5}.success-note svg{width:18px;flex:0 0 auto;color:#6d63ca;margin-top:1px}.success-sketch{position:relative;z-index:0;display:grid;place-items:center}.success-sketch:before{content:"";position:absolute;width:230px;height:230px;border-radius:50%;background:linear-gradient(135deg,rgba(216,228,255,.68),rgba(238,216,255,.65));filter:blur(1px)}.success-sketch svg{position:relative;width:230px;max-width:100%;opacity:.58;filter:drop-shadow(0 12px 18px rgba(91,82,157,.09))}.hp{position:absolute;left:-9999px}@media(max-width:900px){body{place-items:start center}.booking-layout{grid-template-columns:1fr}.lesson-panel{border-right:0;border-bottom:1px solid #ebeaf6;padding:22px 26px}.types{display:flex;flex-wrap:wrap}.type-choice{width:auto}.scheduler{padding:26px}.calendar-layout{grid-template-columns:minmax(300px,1fr) 200px;gap:22px}.time-panel{padding-left:20px}}@media(max-width:650px){body{padding:0}.shell{border-radius:0;border-left:0;border-right:0;min-height:100vh}.page-header{padding:22px}.confirmed .page-header{padding:22px}.scheduler{padding:22px}.calendar-layout{grid-template-columns:1fr}.time-panel{border-left:0;border-top:1px solid #ebeaf6;padding:20px 0 0}.time-slots{grid-template-columns:repeat(2,1fr);max-height:none}.form-grid{grid-template-columns:1fr}.form-grid .full{grid-column:auto}.success{grid-template-columns:1fr;min-height:0;padding:38px 26px 30px}.success-sketch{margin:18px auto -18px}.success-sketch:before{width:180px;height:180px}.success-sketch svg{width:180px}.success-note{margin-top:20px}}
-</style></head><body><main class="shell"><header class="page-header"><h1 id="title">Book a lesson</h1></header><div id="app" class="booking-layout"><aside class="lesson-panel"><div class="step-heading"><span class="step-number">1</span><h2>Choose a lesson</h2></div><div class="types" id="types"></div></aside><section class="scheduler"><div class="step-heading"><span class="step-number">2</span><h2>Choose a date and time</h2></div><div class="calendar-layout"><div class="calendar-panel"><div class="calendar-toolbar"><h2 id="month-label">Select a lesson</h2><div class="calendar-nav"><button class="icon-button" id="previous-month" type="button" aria-label="Previous month">‹</button><button class="icon-button" id="next-month" type="button" aria-label="Next month">›</button></div></div><div class="calendar" id="calendar"></div></div><aside class="time-panel"><h3 id="selected-date">Select a date</h3><p class="muted" id="tz"></p><div class="time-slots" id="slots"><p class="time-placeholder">Choose a lesson to view available dates.</p></div></aside></div><form id="booking" class="details hidden"><h2>Your details</h2><div class="form-grid"><label>Name<input name="student_name" required maxlength="255"></label><label>Email<input name="student_email" type="email" required maxlength="320"></label><label class="full">Anything I should know?<textarea name="notes" maxlength="2000"></textarea></label></div><label class="hp">Website<input name="website" tabindex="-1" autocomplete="off"></label><button class="primary">Confirm lesson</button></form><p id="error" class="error"></p></section></div><section id="success" class="success hidden" aria-live="polite"><div class="success-copy"><div class="success-kicker"><span class="success-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 4 4 8-9"/></svg></span>Lesson confirmed</div><h2>You’re all set.</h2><p id="success-time" class="success-time"></p><p id="success-meta" class="success-meta"></p><p class="success-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4m8-4v4M3 10h18"/></svg><span>The Google Meet link is waiting in the calendar invitation. You can close this page.</span></p></div><div class="success-sketch" aria-hidden="true"><svg viewBox="0 0 260 250" fill="none"><defs><linearGradient id="sketch" x1="42" y1="30" x2="218" y2="223" gradientUnits="userSpaceOnUse"><stop stop-color="#5976df"/><stop offset="1" stop-color="#9860d7"/></linearGradient></defs><g stroke="url(#sketch)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M59 58c0-10 8-18 18-18h112c10 0 18 8 18 18v123c0 10-8 18-18 18H77c-10 0-18-8-18-18V58Z" fill="#fff" fill-opacity=".52"/><path d="M59 76h148M91 31v20m84-20v20"/><path d="M96 116h74M96 138h47" opacity=".75"/><circle cx="173" cy="158" r="24" fill="#fff" fill-opacity=".55"/><path d="m161 158 8 8 16-18"/><path d="m41 191-17 25 29-8 83-83-12-12-83 78Z" fill="#fff" fill-opacity=".45"/><path d="m116 121 12 12M24 216l17-25 12 17-29 8Z"/><path d="M221 53v-14m-7 7h14M225 99l5-8 5 8 8 5-8 5-5 8-5-8-8-5 8-5Z" opacity=".72"/></g></svg></div></section></main>
+</style></head><body><main class="shell"><header class="page-header"><h1 id="title">Book a lesson</h1><a id="my-lessons" href="/book/__BOOKING_SLUG__/lessons">My lessons</a></header><section id="login" class="scheduler hidden"><h2>Sign in to book</h2><p class="muted">Google sign-in keeps your lessons and permanent Meet link together.</p><a class="primary" href="/auth/google/start?next=book:__BOOKING_SLUG__">Continue with Google</a></section><div id="app" class="booking-layout"><aside class="lesson-panel"><div class="step-heading"><span class="step-number">1</span><h2>Choose a lesson</h2></div><div class="types" id="types"></div></aside><section class="scheduler"><div class="step-heading"><span class="step-number">2</span><h2>Choose up to 10 times</h2></div><div class="calendar-layout"><div class="calendar-panel"><div class="calendar-toolbar"><h2 id="month-label">Select a lesson</h2><div class="calendar-nav"><button class="icon-button" id="previous-month" type="button" aria-label="Previous month">‹</button><button class="icon-button" id="next-month" type="button" aria-label="Next month">›</button></div></div><div class="calendar" id="calendar"></div></div><aside class="time-panel"><h3 id="selected-date">Select a date</h3><p class="muted" id="tz"></p><p class="muted" id="selection-count">0 of 10 selected</p><div class="time-slots" id="slots"><p class="time-placeholder">Choose a lesson to view available dates.</p></div></aside></div><form id="booking" class="details hidden"><h2>Finish booking</h2><div class="form-grid"><label class="full">Anything I should know?<textarea name="notes" maxlength="2000"></textarea></label></div><label class="hp">Website<input name="website" tabindex="-1" autocomplete="off"></label><button class="primary">Confirm selected lessons</button></form><p id="error" class="error"></p></section></div><section id="success" class="success hidden" aria-live="polite"><div class="success-copy"><div class="success-kicker"><span class="success-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 4 4 8-9"/></svg></span>Lessons confirmed</div><h2>You’re all set.</h2><p id="success-time" class="success-time"></p><p id="success-meta" class="success-meta"></p><p class="success-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4m8-4v4M3 10h18"/></svg><span>Your permanent Google Meet link is included in every calendar invitation.</span></p></div><div class="success-sketch" aria-hidden="true"><svg viewBox="0 0 260 250" fill="none"><defs><linearGradient id="sketch" x1="42" y1="30" x2="218" y2="223" gradientUnits="userSpaceOnUse"><stop stop-color="#5976df"/><stop offset="1" stop-color="#9860d7"/></linearGradient></defs><g stroke="url(#sketch)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M59 58c0-10 8-18 18-18h112c10 0 18 8 18 18v123c0 10-8 18-18 18H77c-10 0-18-8-18-18V58Z" fill="#fff" fill-opacity=".52"/><path d="M59 76h148M91 31v20m84-20v20"/><path d="M96 116h74M96 138h47" opacity=".75"/><circle cx="173" cy="158" r="24" fill="#fff" fill-opacity=".55"/><path d="m161 158 8 8 16-18"/></g></svg></div></section></main>
 <script>
-const slug='__BOOKING_SLUG__',$=s=>document.querySelector(s),timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC';
-let profile,type,start,calendarMonth,selectedDayKey;let slotsByDay=new Map(),loadedMonths=new Set();
+const slug='__BOOKING_SLUG__',signedIn=__STUDENT_SIGNED_IN__,$=s=>document.querySelector(s),timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC';
+let profile,type,calendarMonth,selectedDayKey;let selectedStarts=[],slotsByDay=new Map(),loadedMonths=new Set();
 const pad=n=>String(n).padStart(2,'0'),dayKey=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`,startOfDay=d=>new Date(d.getFullYear(),d.getMonth(),d.getDate()),monthKey=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}`;
 async function api(u,o={}){const r=await fetch(u,{...o,headers:{'Content-Type':'application/json'}});if(!r.ok){let m='Request failed';try{m=(await r.json()).detail||m}catch{}throw Error(m)}return r.json()}
 function typeButton(item){const b=document.createElement('button');b.type='button';b.className='type-choice';b.textContent=`${item.name} · ${item.duration_minutes} min`;b.onclick=()=>chooseType(item,b);return b}
-function timeButton(date){const b=document.createElement('button');b.type='button';b.className='time-choice';b.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});b.onclick=()=>chooseSlot(date,b);return b}
+function timeButton(date){const b=document.createElement('button'),key=date.toISOString();b.type='button';b.className='time-choice';if(selectedStarts.some(x=>x.toISOString()===key))b.classList.add('active');b.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});b.onclick=()=>chooseSlot(date);return b}
 function latestBookingDay(){const d=startOfDay(new Date());d.setDate(d.getDate()+profile.booking_window_days);return d}
 function canShowMonth(month){const first=new Date(month.getFullYear(),month.getMonth(),1),today=new Date();return first<=new Date(latestBookingDay().getFullYear(),latestBookingDay().getMonth(),1)&&new Date(first.getFullYear(),first.getMonth()+1,0)>=startOfDay(today)}
 function renderTimes(){const container=$('#slots'),dates=selectedDayKey?(slotsByDay.get(selectedDayKey)||[]):[];if(!selectedDayKey){$('#selected-date').textContent='Select a date';container.replaceChildren(Object.assign(document.createElement('p'),{className:'time-placeholder',textContent:'Choose an available date from the calendar.'}));return}const selected=dates[0]||new Date(`${selectedDayKey}T12:00:00`);$('#selected-date').textContent=selected.toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'});container.replaceChildren(...dates.map(timeButton))}
 function renderCalendar(){const calendar=$('#calendar'),year=calendarMonth.getFullYear(),month=calendarMonth.getMonth(),first=new Date(year,month,1),last=new Date(year,month+1,0),today=startOfDay(new Date()),latest=latestBookingDay(),nodes=[];$('#month-label').textContent=first.toLocaleDateString([],{month:'long',year:'numeric'});for(const name of ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'])nodes.push(Object.assign(document.createElement('div'),{className:'weekday',textContent:name}));for(let i=0;i<(first.getDay()+6)%7;i++)nodes.push(Object.assign(document.createElement('span'),{className:'calendar-blank'}));const available=[];for(let day=1;day<=last.getDate();day++){const date=new Date(year,month,day),key=dayKey(date),has=(slotsByDay.get(key)||[]).length>0,b=document.createElement('button');b.type='button';b.className='day';b.textContent=String(day);b.disabled=!has;b.setAttribute('aria-label',date.toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'}));if(has){available.push(key);b.classList.add('available');b.onclick=()=>selectDay(key)}if(key===dayKey(today))b.classList.add('today');if(key===selectedDayKey)b.classList.add('selected');if(date<today||date>latest)b.disabled=true;nodes.push(b)}if(!selectedDayKey||!selectedDayKey.startsWith(monthKey(calendarMonth)))selectedDayKey=available[0]||null;calendar.replaceChildren(...nodes);if(selectedDayKey){const active=[...calendar.querySelectorAll('.day')].find(b=>b.getAttribute('aria-label')===new Date(`${selectedDayKey}T12:00:00`).toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'}));active?.classList.add('selected')}$('#previous-month').disabled=!canShowMonth(new Date(year,month-1,1));$('#next-month').disabled=!canShowMonth(new Date(year,month+1,1));renderTimes()}
 async function loadMonth(){const key=monthKey(calendarMonth);if(loadedMonths.has(key)){renderCalendar();return}const today=startOfDay(new Date()),latest=latestBookingDay(),first=new Date(calendarMonth.getFullYear(),calendarMonth.getMonth(),1),last=new Date(calendarMonth.getFullYear(),calendarMonth.getMonth()+1,0),rangeStart=first<today?today:first,rangeEnd=last>latest?latest:last;$('#calendar').replaceChildren(Object.assign(document.createElement('p'),{className:'time-placeholder',textContent:'Loading availability…'}));if(rangeEnd>=rangeStart){const data=await api(`/api/public/scheduling/${slug}/slots?lesson_type_id=${type.id}&start=${dayKey(rangeStart)}&end=${dayKey(rangeEnd)}`);for(const value of data.slots){const date=new Date(value),key=dayKey(date),group=slotsByDay.get(key)||[];group.push(date);slotsByDay.set(key,group)}}loadedMonths.add(key);renderCalendar()}
-function selectDay(key){selectedDayKey=key;start=undefined;$('#booking').classList.add('hidden');renderCalendar()}
-function chooseSlot(date,button){start=date;[...$('#slots').children].forEach(n=>n.classList?.remove('active'));button.classList.add('active');$('#booking').classList.remove('hidden')}
-async function chooseType(item,button){type=item;start=undefined;selectedDayKey=null;slotsByDay=new Map();loadedMonths=new Set();calendarMonth=new Date(new Date().getFullYear(),new Date().getMonth(),1);[...$('#types').children].forEach(n=>n.classList.remove('active'));button.classList.add('active');$('#booking').classList.add('hidden');$('#error').textContent='';await loadMonth()}
-async function changeMonth(offset){const next=new Date(calendarMonth.getFullYear(),calendarMonth.getMonth()+offset,1);if(!canShowMonth(next))return;calendarMonth=next;selectedDayKey=null;start=undefined;$('#booking').classList.add('hidden');await loadMonth()}
-async function load(){profile=await api(`/api/public/scheduling/${slug}`);$('#title').textContent=`Book a lesson with ${profile.display_name}`;$('#tz').textContent=`Times shown in ${timezone.replaceAll('_',' ')}`;const buttons=profile.lesson_types.map(typeButton);$('#types').replaceChildren(...buttons);if(buttons.length)await chooseType(profile.lesson_types[0],buttons[0]);else $('#error').textContent='No lesson types are currently available.'}
-$('#previous-month').onclick=()=>changeMonth(-1);$('#next-month').onclick=()=>changeMonth(1);$('#booking').onsubmit=async e=>{e.preventDefault();$('#error').textContent='';const d=Object.fromEntries(new FormData(e.currentTarget));Object.assign(d,{lesson_type_id:type.id,starts_at:start.toISOString(),student_timezone:timezone});try{const result=await api(`/api/public/scheduling/${slug}/book`,{method:'POST',body:JSON.stringify(d)}),lessonStart=new Date(result.starts_at);$('#app').classList.add('hidden');$('.shell').classList.add('confirmed');$('#title').textContent='Your lesson is booked';$('#success-time').textContent=lessonStart.toLocaleDateString([],{weekday:'long',day:'numeric',month:'long',year:'numeric'})+` at ${lessonStart.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`;$('#success-meta').textContent=`${type.name} · ${type.duration_minutes} minutes · ${timezone.replaceAll('_',' ')}`;$('#success').classList.remove('hidden')}catch(err){$('#error').textContent=err.message}};load().catch(e=>$('#error').textContent=e.message);
+function selectDay(key){selectedDayKey=key;renderCalendar()}
+function chooseSlot(date){const key=date.toISOString(),index=selectedStarts.findIndex(x=>x.toISOString()===key);if(index>=0)selectedStarts.splice(index,1);else if(selectedStarts.length<10)selectedStarts.push(date);else{$('#error').textContent='You can book up to 10 lessons at once.';return}$('#selection-count').textContent=`${selectedStarts.length} of 10 selected`;$('#booking').classList.toggle('hidden',!selectedStarts.length);renderTimes()}
+async function chooseType(item,button){type=item;selectedStarts=[];selectedDayKey=null;slotsByDay=new Map();loadedMonths=new Set();calendarMonth=new Date(new Date().getFullYear(),new Date().getMonth(),1);[...$('#types').children].forEach(n=>n.classList.remove('active'));button.classList.add('active');$('#booking').classList.add('hidden');$('#selection-count').textContent='0 of 10 selected';$('#error').textContent='';await loadMonth()}
+async function changeMonth(offset){const next=new Date(calendarMonth.getFullYear(),calendarMonth.getMonth()+offset,1);if(!canShowMonth(next))return;calendarMonth=next;selectedDayKey=null;await loadMonth()}
+async function load(){profile=await api(`/api/public/scheduling/${slug}`);$('#title').textContent=`Book a lesson with ${profile.display_name}`;if(!signedIn){$('#app').classList.add('hidden');$('#my-lessons').classList.add('hidden');$('#login').classList.remove('hidden');return}$('#tz').textContent=`Times shown in ${timezone.replaceAll('_',' ')}`;const buttons=profile.lesson_types.map(typeButton);$('#types').replaceChildren(...buttons);if(buttons.length)await chooseType(profile.lesson_types[0],buttons[0]);else $('#error').textContent='No lesson types are currently available.'}
+$('#previous-month').onclick=()=>changeMonth(-1);$('#next-month').onclick=()=>changeMonth(1);$('#booking').onsubmit=async e=>{e.preventDefault();$('#error').textContent='';const d=Object.fromEntries(new FormData(e.currentTarget));Object.assign(d,{lesson_type_id:type.id,starts_at:selectedStarts.map(x=>x.toISOString()),student_timezone:timezone});try{const result=await api(`/api/public/scheduling/${slug}/book`,{method:'POST',body:JSON.stringify(d)}),first=new Date(result.bookings[0].starts_at);$('#app').classList.add('hidden');$('.shell').classList.add('confirmed');$('#title').textContent=result.count===1?'Your lesson is booked':'Your lessons are booked';$('#success-time').textContent=result.count===1?first.toLocaleString():`${result.count} lessons booked`;$('#success-meta').textContent=`${type.name} · ${type.duration_minutes} minutes · ${timezone.replaceAll('_',' ')}`;$('#success').classList.remove('hidden')}catch(err){$('#error').textContent=err.message}};load().catch(e=>$('#error').textContent=e.message);
 </script></body></html>"""

@@ -439,6 +439,8 @@ class LessonBooking(Base, TimestampMixin):
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     status: Mapped[str] = mapped_column(String(32), default="confirmed", index=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancellation_consumes_credit: Mapped[bool] = mapped_column(Boolean, default=False)
     external_calendar_id: Mapped[str | None] = mapped_column(String(255))
     external_event_id: Mapped[str | None] = mapped_column(String(500))
     meeting_url: Mapped[str | None] = mapped_column(String(500))
@@ -461,6 +463,36 @@ class StudentMeeting(Base, TimestampMixin):
     student_email: Mapped[str] = mapped_column(String(320))
     meeting_url: Mapped[str] = mapped_column(String(500))
     conference_data: Mapped[dict[str, Any]] = mapped_column(JSONB)
+
+
+class StudentPayment(Base, TimestampMixin):
+    __tablename__ = "student_payments"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_profiles.id", ondelete="CASCADE"), index=True
+    )
+    student_email: Mapped[str] = mapped_column(String(320), index=True)
+    lessons_purchased: Mapped[int] = mapped_column(Integer)
+    amount_cents: Mapped[int | None] = mapped_column(Integer)
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class LessonPaymentAllocation(Base, TimestampMixin):
+    __tablename__ = "lesson_payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("booking_id", name="uq_lesson_payment_allocation_booking"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    payment_id: Mapped[UUID] = mapped_column(
+        ForeignKey("student_payments.id", ondelete="CASCADE"), index=True
+    )
+    booking_id: Mapped[UUID] = mapped_column(
+        ForeignKey("lesson_bookings.id", ondelete="CASCADE"), index=True
+    )
 
 
 class ScheduledJobLog(Base, TimestampMixin):

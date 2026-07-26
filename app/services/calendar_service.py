@@ -13,7 +13,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import CalendarConnection, CalendarProvider, SchedulingCalendar
+from app.db.models import (
+    CalendarConnection,
+    CalendarEventCache,
+    CalendarProvider,
+    SchedulingCalendar,
+)
 from app.db.repositories.calendar import CalendarRepository
 from app.services.credential_cipher import CredentialCipher, CredentialDecryptionError
 from app.services.planning_service import CalendarEventInput
@@ -903,11 +908,35 @@ class CalendarService:
         calendar_id: str | None,
         event_id: str,
     ) -> None:
-        connection = await self._google_write_connection(
-            household_id=household_id,
-            calendar_id=calendar_id,
+        target_calendar_id = calendar_id or "primary"
+        cached_external_id = f"{target_calendar_id}:{event_id}"
+        cached_source = await self.session.execute(
+            select(CalendarEventCache.source_id)
+            .where(
+                CalendarEventCache.household_id == household_id,
+                CalendarEventCache.source_type == CalendarProvider.google,
+                CalendarEventCache.external_event_id == cached_external_id,
+            )
+            .limit(1)
         )
-        target_calendar_id = calendar_id or self._connection_calendar_id(connection)
+        source_id = cached_source.scalar_one_or_none()
+        connection = await self.session.get(CalendarConnection, source_id) if source_id else None
+        if (
+            connection is None
+            or connection.household_id != household_id
+            or connection.provider != CalendarProvider.google
+        ):
+            connection = await self._google_write_connection(
+                household_id=household_id,
+                calendar_id=calendar_id,
+            )
+            target_calendar_id = calendar_id or self._connection_calendar_id(connection)
+            cached_external_id = f"{target_calendar_id}:{event_id}"
+        scopes = set(connection.scopes or [])
+        if "https://www.googleapis.com/auth/calendar.events" not in scopes:
+            raise CalendarWritePermissionError(
+                "Google Calendar needs to be reconnected with event access."
+            )
         async with httpx.AsyncClient(timeout=12) as client:
             access_token = await self._google_access_token(client=client, connection=connection)
             if not access_token:
@@ -921,7 +950,7 @@ class CalendarService:
                 self._raise_for_google_write(response)
         await self.repository.delete_cached_event_by_external_id(
             source_id=connection.id,
-            external_event_id=f"{target_calendar_id}:{event_id}",
+            external_event_id=cached_external_id,
         )
 
     async def delete_google_event(

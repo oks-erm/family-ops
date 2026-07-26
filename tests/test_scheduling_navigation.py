@@ -108,8 +108,14 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('id="success-time"', PUBLIC_HTML)
         self.assertIn('id="success-meta"', PUBLIC_HTML)
         self.assertIn("Your lesson is booked", PUBLIC_HTML)
-        self.assertIn("The Google Meet link is waiting", PUBLIC_HTML)
+        self.assertIn("Your permanent Google Meet link", PUBLIC_HTML)
         self.assertNotIn("$('#success').textContent=", PUBLIC_HTML)
+
+    def test_public_booking_requires_google_and_supports_ten_lessons(self) -> None:
+        self.assertIn("Continue with Google", PUBLIC_HTML)
+        self.assertIn("Choose up to 10 times", PUBLIC_HTML)
+        self.assertIn("selectedStarts.length<10", PUBLIC_HTML)
+        self.assertIn("starts_at:selectedStarts.map", PUBLIC_HTML)
 
     async def test_authenticated_lessons_root_opens_management(self) -> None:
         with patch("app.main.get_settings", return_value=self.settings):
@@ -148,6 +154,11 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
             await google_auth_start(request, next="https://attacker.example")
 
         self.assertNotIn("oauth_next", request.session)
+
+        with patch("app.routes.auth.get_settings", return_value=self.settings):
+            await google_auth_start(request, next="book:oksana-erm")
+
+        self.assertEqual(request.session["oauth_next"], "book:oksana-erm")
 
     async def test_calendar_result_returns_to_lessons_for_success_and_failure(self) -> None:
         for status in ("connected", "auth-failed"):
