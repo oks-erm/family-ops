@@ -92,6 +92,14 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("end.setDate(end.getDate()+13)", PUBLIC_HTML)
         self.assertNotIn('<p class="muted">Lesson scheduling</p>', PUBLIC_HTML)
 
+    def test_public_confirmation_has_structured_lesson_summary(self) -> None:
+        self.assertIn('class="success-sketch"', PUBLIC_HTML)
+        self.assertIn('id="success-time"', PUBLIC_HTML)
+        self.assertIn('id="success-meta"', PUBLIC_HTML)
+        self.assertIn("Your lesson is booked", PUBLIC_HTML)
+        self.assertIn("The Google Meet link is waiting", PUBLIC_HTML)
+        self.assertNotIn("$('#success').textContent=", PUBLIC_HTML)
+
     async def test_authenticated_lessons_root_opens_management(self) -> None:
         with patch("app.main.get_settings", return_value=self.settings):
             response = await root(_request(session={"google_email": "tutor@example.com"}))
