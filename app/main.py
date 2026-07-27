@@ -67,6 +67,7 @@ _SCHEDULING_HOST_PATHS = (
     "/auth/google/callback",
     "/auth/not-invited",
     "/auth/logout",
+    "/auth/student/logout",
     "/calendar/google/start",
     "/calendar/google/callback",
 )

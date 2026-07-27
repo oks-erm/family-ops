@@ -5,13 +5,14 @@ from starlette.requests import Request
 
 from app.config import Settings
 from app.main import root, scheduling_host_allows_path
-from app.routes.auth import google_auth_start
+from app.routes.auth import google_auth_start, student_logout
 from app.routes.calendar import _calendar_result_redirect
 from app.routes.scheduling import (
     MANAGEMENT_HTML,
     PUBLIC_HTML,
     PUBLIC_INFO_HTML,
     SELECTED_SUMMARY_HTML,
+    STUDENT_HTML,
     public_booking_page,
     scheduling_management_page,
 )
@@ -129,6 +130,49 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('id="selected-list"', SELECTED_SUMMARY_HTML)
         self.assertIn("Booking conditions", PUBLIC_INFO_HTML)
 
+    async def test_signed_in_student_sees_account_and_sign_out(self) -> None:
+        response = await public_booking_page(
+            _request(session={"student_google_email": "student@example.com"}),
+            "oksana-erm",
+        )
+        body = response.body.decode()
+
+        self.assertIn("Signed in as", body)
+        self.assertIn("student@example.com", body)
+        self.assertIn("/auth/student/logout?slug=oksana-erm", body)
+        self.assertIn('id="account-email"', STUDENT_HTML)
+        self.assertIn("Signed in as", STUDENT_HTML)
+
+    async def test_student_logout_preserves_tutor_session(self) -> None:
+        session = {
+            "student_google_email": "student@example.com",
+            "student_google_name": "Student",
+            "google_email": "tutor@example.com",
+        }
+        response = await student_logout(_request(session=session), slug="oksana-erm")
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/book/oksana-erm")
+        self.assertNotIn("student_google_email", session)
+        self.assertNotIn("student_google_name", session)
+        self.assertEqual(session["google_email"], "tutor@example.com")
+
+        unsafe_response = await student_logout(_request(session={}), slug="//attacker.example")
+        self.assertEqual(unsafe_response.headers["location"], "/")
+
+    def test_student_lesson_changes_use_an_in_page_modal(self) -> None:
+        self.assertIn('id="lesson-modal"', STUDENT_HTML)
+        self.assertIn("openLessonModal(x.id,false)", STUDENT_HTML)
+        self.assertIn("openLessonModal(x.id,true)", STUDENT_HTML)
+        self.assertIn("Lesson cancelled and the credit was restored.", STUDENT_HTML)
+        self.assertNotIn("confirm(", STUDENT_HTML)
+        self.assertNotIn("alert(", STUDENT_HTML)
+
+    def test_past_student_lessons_are_dimmed_and_not_joinable(self) -> None:
+        self.assertIn(".lesson.past{opacity:.5", STUDENT_HTML)
+        self.assertIn("x.is_past?' past'", STUDENT_HTML)
+        self.assertIn("!x.is_past&&x.meeting_url", STUDENT_HTML)
+
     def test_public_confirmation_has_structured_lesson_summary(self) -> None:
         self.assertIn('class="success-sketch"', PUBLIC_HTML)
         self.assertIn('id="success-time"', PUBLIC_HTML)
@@ -167,6 +211,7 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(scheduling_host_allows_path("/book/oksana-erm"))
         self.assertTrue(scheduling_host_allows_path("/api/scheduling/manage"))
         self.assertTrue(scheduling_host_allows_path("/calendar/google/start"))
+        self.assertTrue(scheduling_host_allows_path("/auth/student/logout"))
         self.assertFalse(scheduling_host_allows_path("/dashboard"))
         self.assertFalse(scheduling_host_allows_path("/api/dashboard"))
         self.assertFalse(scheduling_host_allows_path("/api/tasks/day"))

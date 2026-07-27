@@ -155,3 +155,11 @@ async def not_invited() -> str:
 async def logout(request: Request) -> RedirectResponse:
     request.session.clear()
     return RedirectResponse("/dashboard", status_code=303)
+
+
+@router.post("/auth/student/logout")
+async def student_logout(request: Request, slug: str = "") -> RedirectResponse:
+    request.session.pop("student_google_email", None)
+    request.session.pop("student_google_name", None)
+    destination = f"/book/{slug}" if re.fullmatch(r"[a-z0-9-]{3,100}", slug) else "/"
+    return RedirectResponse(destination, status_code=303)
