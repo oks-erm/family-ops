@@ -8,6 +8,7 @@ from app.main import root, scheduling_host_allows_path
 from app.routes.auth import google_auth_start, student_logout
 from app.routes.calendar import _calendar_result_redirect
 from app.routes.scheduling import (
+    ACCOUNT_CONTROL_CSS,
     MANAGEMENT_HTML,
     PUBLIC_HTML,
     PUBLIC_INFO_HTML,
@@ -15,6 +16,7 @@ from app.routes.scheduling import (
     STUDENT_HTML,
     public_booking_page,
     scheduling_management_page,
+    student_lessons_page,
 )
 
 
@@ -148,8 +150,15 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         page_header = body[body.index('<header class="page-header">') : body.index("</header>")]
         self.assertNotIn('id="account"', page_header)
         self.assertIn(".page-account{position:fixed;top:20px;right:24px", body)
-        self.assertIn('id="account-email"', STUDENT_HTML)
-        self.assertIn("Signed in as", STUDENT_HTML)
+
+    async def test_signed_out_booking_uses_same_top_right_account_position(self) -> None:
+        response = await public_booking_page(_request(), "oksana-erm")
+        body = response.body.decode()
+
+        self.assertIn('<div class="page-account" id="account">', body)
+        self.assertIn('class="account-sign-in"', body)
+        self.assertIn(">Sign in</a>", body)
+        self.assertIn(ACCOUNT_CONTROL_CSS, body)
 
     async def test_student_logout_preserves_tutor_session(self) -> None:
         session = {
@@ -183,12 +192,18 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("isPast?'Past'", STUDENT_HTML)
         self.assertIn("!isPast&&x.meeting_url", STUDENT_HTML)
 
-    def test_student_account_is_fixed_to_the_page_corner(self) -> None:
-        self.assertIn(
-            ".account{position:fixed;top:20px;right:24px;width:auto;z-index:10",
-            STUDENT_HTML,
+    async def test_student_account_matches_booking_account_control(self) -> None:
+        response = await student_lessons_page(
+            _request(session={"student_google_email": "student@example.com"}),
+            "oksana-erm",
         )
-        self.assertIn("body{padding-top:82px}.account{top:10px;right:10px", STUDENT_HTML)
+        body = response.body.decode()
+
+        self.assertIn(ACCOUNT_CONTROL_CSS, STUDENT_HTML)
+        self.assertIn('<div class="page-account" id="account">', body)
+        self.assertIn('<div class="signed-in">', body)
+        self.assertIn('id="account-email">student@example.com', body)
+        self.assertNotIn('<div class="account">', body)
 
     def test_cancelled_lessons_are_distinct_and_sorted_after_active_lessons(self) -> None:
         self.assertIn(".lesson.cancelled{opacity:.62", STUDENT_HTML)
