@@ -22,6 +22,9 @@ Lesson scheduling uses:
 - `StudentPayment` records purchased lesson credits and `LessonPaymentAllocation` assigns credits
   to bookings. A missing/zero balance never blocks booking. Unused credits are automatically applied
   to later lessons and packages become valid for five weeks from their first assigned lesson.
+- Tutor monthly revenue metrics recognize the registered package value per allocated lesson;
+  deleting a payment removes its allocations. `hidden_scheduling_students` hides students with
+  retained lesson/payment history from the management panel without deleting that history.
 - `student_meetings` to keep one Google Meet conference per normalized student email and tutor
   profile. Each separately booked lesson copies that conference onto its own calendar event.
 

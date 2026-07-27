@@ -69,6 +69,15 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('id="copy-public-link"', MANAGEMENT_HTML)
         self.assertIn("navigator.clipboard.writeText(state.profile.public_url)", MANAGEMENT_HTML)
         self.assertIn("Booking link copied.", MANAGEMENT_HTML)
+        self.assertIn('id="completed-count"', MANAGEMENT_HTML)
+        self.assertIn('id="monthly-count"', MANAGEMENT_HTML)
+        self.assertIn('id="earned-income"', MANAGEMENT_HTML)
+        self.assertIn('id="projected-income"', MANAGEMENT_HTML)
+        self.assertNotIn("Paid lessons remaining", MANAGEMENT_HTML)
+        self.assertIn('id="registered-payments"', MANAGEMENT_HTML)
+        self.assertIn("/api/scheduling/student-payments/${x.id}", MANAGEMENT_HTML)
+        self.assertIn("/api/scheduling/students/${encodeURIComponent(x.email)}", MANAGEMENT_HTML)
+        self.assertIn("?'setup':'lessons'", MANAGEMENT_HTML)
         self.assertIn('class="card availability-card"', MANAGEMENT_HTML)
         self.assertNotIn('class="card wide"', MANAGEMENT_HTML)
         self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", MANAGEMENT_HTML)
@@ -97,7 +106,7 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<h2>Students and balances</h2>", MANAGEMENT_HTML)
         self.assertIn('id="student-search"', MANAGEMENT_HTML)
         self.assertIn("<h2>Register payment</h2>", MANAGEMENT_HTML)
-        self.assertIn('id="upcoming-count"', MANAGEMENT_HTML)
+        self.assertNotIn('id="upcoming-count"', MANAGEMENT_HTML)
         self.assertLess(
             MANAGEMENT_HTML.index('id="setup-panel"'),
             MANAGEMENT_HTML.index('id="lessons-panel"'),

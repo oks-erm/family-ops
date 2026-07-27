@@ -473,6 +473,23 @@ class StudentMeeting(Base, TimestampMixin):
     conference_data: Mapped[dict[str, Any]] = mapped_column(JSONB)
 
 
+class HiddenSchedulingStudent(Base, TimestampMixin):
+    __tablename__ = "hidden_scheduling_students"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "student_email",
+            name="uq_hidden_scheduling_student_profile_email",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_profiles.id", ondelete="CASCADE"), index=True
+    )
+    student_email: Mapped[str] = mapped_column(String(320))
+
+
 class StudentPayment(Base, TimestampMixin):
     __tablename__ = "student_payments"
 
