@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 from app.db.models import CalendarConnection, CalendarProvider
-from app.services.calendar_service import CalendarService
+from app.services.calendar_service import CalendarService, CalendarSyncError
 
 
 class _Response:
@@ -23,9 +23,12 @@ class _Response:
 class _Client:
     def __init__(self, event: dict[str, object]) -> None:
         self.event = event
+        self.get_event: dict[str, object] = {}
+        self.get_status_code = 404
         self.post_calls: list[dict[str, object]] = []
         self.patch_calls: list[dict[str, object]] = []
         self.delete_calls: list[dict[str, object]] = []
+        self.get_calls: list[dict[str, object]] = []
 
     async def __aenter__(self):
         return self
@@ -44,6 +47,12 @@ class _Client:
     async def delete(self, url: str, **kwargs) -> _Response:
         self.delete_calls.append({"url": url, **kwargs})
         return _Response({})
+
+    async def get(self, url: str, **kwargs) -> _Response:
+        self.get_calls.append({"url": url, **kwargs})
+        response = _Response(self.get_event)
+        response.status_code = self.get_status_code
+        return response
 
 
 def _google_event() -> dict[str, object]:
@@ -144,6 +153,45 @@ class GoogleMeetEventTests(unittest.IsolatedAsyncioTestCase):
         session.get.assert_awaited_once_with(CalendarConnection, connection_id)
         service._google_write_connection.assert_not_awaited()
         self.assertIn("/calendars/primary/events/event123", client.delete_calls[0]["url"])
+        self.assertEqual(
+            client.delete_calls[0]["params"],
+            {"sendUpdates": "all"},
+        )
+        self.assertEqual(client.get_calls[0]["url"], client.delete_calls[0]["url"])
+        service.repository.delete_cached_event_by_external_id.assert_awaited_once()
+
+    async def test_delete_fails_if_google_still_reports_event_as_active(self) -> None:
+        household_id = uuid4()
+        connection_id = uuid4()
+        connection = SimpleNamespace(
+            id=connection_id,
+            household_id=household_id,
+            provider=CalendarProvider.google,
+            scopes=["https://www.googleapis.com/auth/calendar.events"],
+        )
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = connection_id
+        session = AsyncMock()
+        session.execute.return_value = result
+        session.get.return_value = connection
+        client = _Client(_google_event())
+        client.get_status_code = 200
+        client.get_event = _google_event()
+        service = CalendarService(session)
+        service._google_access_token = AsyncMock(return_value="access-token")
+        service.repository.delete_cached_event_by_external_id = AsyncMock()
+
+        with (
+            patch("app.services.calendar_service.httpx.AsyncClient", return_value=client),
+            self.assertRaises(CalendarSyncError),
+        ):
+            await service.delete_google_event_by_id(
+                household_id=household_id,
+                calendar_id="primary",
+                event_id="event123",
+            )
+
+        service.repository.delete_cached_event_by_external_id.assert_not_awaited()
 
     async def test_existing_student_meet_is_copied_to_new_lesson(self) -> None:
         event = _google_event()

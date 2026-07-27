@@ -941,13 +941,26 @@ class CalendarService:
             access_token = await self._google_access_token(client=client, connection=connection)
             if not access_token:
                 raise CalendarNotConnectedError("Google Calendar is not connected.")
+            event_url = (
+                f"{self._google_events_url(target_calendar_id)}/{quote(event_id, safe='')}"
+            )
+            headers = {"Authorization": f"Bearer {access_token}"}
             response = await client.delete(
-                f"{self._google_events_url(target_calendar_id)}/{quote(event_id, safe='')}",
+                event_url,
                 params={"sendUpdates": "all"},
-                headers={"Authorization": f"Bearer {access_token}"},
+                headers=headers,
             )
             if response.status_code != 404:
                 self._raise_for_google_write(response)
+            verification = await client.get(event_url, headers=headers)
+            deleted = verification.status_code in {404, 410}
+            if verification.status_code == 200:
+                deleted = verification.json().get("status") == "cancelled"
+            if not deleted:
+                self._raise_for_google_write(verification)
+                raise CalendarSyncError(
+                    "Google still reports the lesson event as active after cancellation."
+                )
         await self.repository.delete_cached_event_by_external_id(
             source_id=connection.id,
             external_event_id=cached_external_id,
