@@ -72,6 +72,10 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('id="completed-count"', MANAGEMENT_HTML)
         self.assertIn('id="monthly-count"', MANAGEMENT_HTML)
         self.assertIn('id="earned-income"', MANAGEMENT_HTML)
+        self.assertIn(
+            "$('#earned-income').textContent=money(state.metrics.earned_cents)",
+            MANAGEMENT_HTML,
+        )
         self.assertIn('id="projected-income"', MANAGEMENT_HTML)
         self.assertNotIn("Paid lessons remaining", MANAGEMENT_HTML)
         self.assertIn('id="registered-payments"', MANAGEMENT_HTML)
