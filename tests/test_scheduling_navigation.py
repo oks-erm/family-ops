@@ -61,9 +61,11 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertLess(booking_position, availability_position)
         self.assertLess(availability_position, lesson_types_position)
-        self.assertIn("Commute time before a lesson (minutes)", MANAGEMENT_HTML)
+        self.assertIn("Buffer before and after non-lesson events (minutes)", MANAGEMENT_HTML)
+        self.assertNotIn("Commute time before a lesson", MANAGEMENT_HTML)
+        self.assertNotIn("Commute time after a lesson", MANAGEMENT_HTML)
         self.assertIn("Start-time increments (minutes)", MANAGEMENT_HTML)
-        self.assertIn("Lessons can be booked back-to-back.", MANAGEMENT_HTML)
+        self.assertIn("Lessons can still be booked back-to-back.", MANAGEMENT_HTML)
         self.assertIn('class="card availability-card"', MANAGEMENT_HTML)
         self.assertNotIn('class="card wide"', MANAGEMENT_HTML)
         self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", MANAGEMENT_HTML)

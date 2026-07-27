@@ -68,14 +68,10 @@ def generate_slots(
             if earliest_start <= cursor <= latest_start:
                 if not any(
                     periods_overlap(
-                        cursor - buffer_before if busy.requires_buffer else cursor,
-                        (
-                            cursor + duration + buffer_after
-                            if busy.requires_buffer
-                            else cursor + duration
-                        ),
-                        busy.starts_at,
-                        busy.ends_at,
+                        cursor,
+                        cursor + duration,
+                        busy.starts_at - buffer_before if busy.requires_buffer else busy.starts_at,
+                        busy.ends_at + buffer_after if busy.requires_buffer else busy.ends_at,
                     )
                     for busy in busy_periods
                 ):

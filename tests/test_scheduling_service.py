@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from app.db.models import CalendarConnection, CalendarProvider
+from app.db.models import CalendarConnection, CalendarProvider, SchedulingProfile
 from app.services.scheduling_rules import (
     BusyPeriod,
     SchedulingValidationError,
@@ -18,6 +18,10 @@ from app.utils.urls import UnsafeExternalURLError, validate_public_https_url
 
 
 class SchedulingRulesTests(unittest.TestCase):
+    def test_new_profiles_default_to_thirty_minute_commute_buffers(self) -> None:
+        self.assertEqual(SchedulingProfile.__table__.c.buffer_before_minutes.default.arg, 30)
+        self.assertEqual(SchedulingProfile.__table__.c.buffer_after_minutes.default.arg, 30)
+
     def test_periods_touching_at_boundary_do_not_overlap(self) -> None:
         first_start = datetime(2026, 7, 27, 9, tzinfo=UTC)
         first_end = datetime(2026, 7, 27, 10, tzinfo=UTC)
@@ -47,7 +51,7 @@ class SchedulingRulesTests(unittest.TestCase):
 
         self.assertEqual([slot.strftime("%H:%M") for slot in slots], ["09:00", "09:30", "10:00"])
 
-    def test_buffers_block_adjacent_slot(self) -> None:
+    def test_after_buffer_extends_non_lesson_event(self) -> None:
         slots = generate_slots(
             day=date(2026, 7, 27),
             timezone="UTC",
@@ -66,7 +70,28 @@ class SchedulingRulesTests(unittest.TestCase):
             ],
         )
 
-        self.assertEqual([slot.strftime("%H:%M") for slot in slots], ["11:00"])
+        self.assertEqual([slot.strftime("%H:%M") for slot in slots], ["09:00"])
+
+    def test_before_buffer_extends_non_lesson_event(self) -> None:
+        slots = generate_slots(
+            day=date(2026, 7, 27),
+            timezone="UTC",
+            rules=[(0, time(9), time(13))],
+            duration_minutes=60,
+            interval_minutes=60,
+            buffer_before_minutes=15,
+            buffer_after_minutes=0,
+            earliest_start=datetime(2026, 7, 27, 8, tzinfo=UTC),
+            latest_start=datetime(2026, 7, 27, 18, tzinfo=UTC),
+            busy_periods=[
+                BusyPeriod(
+                    datetime(2026, 7, 27, 11, tzinfo=UTC),
+                    datetime(2026, 7, 27, 12, tzinfo=UTC),
+                )
+            ],
+        )
+
+        self.assertEqual([slot.strftime("%H:%M") for slot in slots], ["09:00", "12:00"])
 
     def test_lessons_can_be_back_to_back_without_commute_buffer(self) -> None:
         slots = generate_slots(
