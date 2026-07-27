@@ -103,7 +103,10 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("width:min(1280px,100%)", PUBLIC_HTML)
         self.assertIn("width:min(1100px,100%)", PUBLIC_HTML)
         self.assertIn('grid-template-columns:260px minmax(0,1fr)', PUBLIC_HTML)
-        self.assertIn('grid-template-columns:repeat(7,minmax(36px,1fr))', PUBLIC_HTML)
+        self.assertIn(
+            'grid-template-columns:repeat(7,minmax(36px,52px))', PUBLIC_HTML
+        )
+        self.assertIn('justify-content:space-between;gap:8px 6px', PUBLIC_HTML)
         self.assertIn('<header class="page-header"><h1 id="title">', PUBLIC_HTML)
         self.assertIn('id="calendar"', PUBLIC_HTML)
         self.assertIn('id="previous-month"', PUBLIC_HTML)
@@ -126,7 +129,8 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         pricing_position = body.index("<h3>Pricing</h3>")
         self.assertLess(calendar_position, selected_position)
         self.assertLess(selected_position, pricing_position)
-        self.assertIn("remaining sessions, cancellations, and rescheduling", body)
+        self.assertIn("manage cancellations and rescheduling", body)
+        self.assertIn("Book one session as a guest", body)
         self.assertIn('id="selected-list"', SELECTED_SUMMARY_HTML)
         self.assertIn("Booking conditions", PUBLIC_INFO_HTML)
 
@@ -140,6 +144,10 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Signed in as", body)
         self.assertIn("student@example.com", body)
         self.assertIn("/auth/student/logout?slug=oksana-erm", body)
+        self.assertLess(body.index('id="account"'), body.index('<main class="shell">'))
+        page_header = body[body.index('<header class="page-header">') : body.index("</header>")]
+        self.assertNotIn('id="account"', page_header)
+        self.assertIn(".page-account{position:fixed;top:20px;right:24px", body)
         self.assertIn('id="account-email"', STUDENT_HTML)
         self.assertIn("Signed in as", STUDENT_HTML)
 
@@ -173,6 +181,16 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("x.is_past?' past'", STUDENT_HTML)
         self.assertIn("!x.is_past&&x.meeting_url", STUDENT_HTML)
 
+    def test_cancelled_lessons_are_distinct_and_sorted_after_active_lessons(self) -> None:
+        self.assertIn(".lesson.cancelled{opacity:.62", STUDENT_HTML)
+        self.assertIn("border-style:dashed", STUDENT_HTML)
+        self.assertIn("x.status==='cancelled'?' cancelled':''", STUDENT_HTML)
+        self.assertIn(
+            "Number(a.status==='cancelled')-Number(b.status==='cancelled')",
+            STUDENT_HTML,
+        )
+        self.assertIn("lessonOrder(d.lessons).map(lessonNode)", STUDENT_HTML)
+
     def test_public_confirmation_has_structured_lesson_summary(self) -> None:
         self.assertIn('class="success-sketch"', PUBLIC_HTML)
         self.assertIn('id="success-time"', PUBLIC_HTML)
@@ -181,13 +199,22 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Your permanent Google Meet link", PUBLIC_HTML)
         self.assertNotIn("$('#success').textContent=", PUBLIC_HTML)
 
-    def test_public_booking_requires_google_and_supports_ten_lessons(self) -> None:
+    def test_public_booking_offers_guest_session_and_google_benefits(self) -> None:
         self.assertIn("Continue with Google", PUBLIC_HTML)
+        self.assertIn("Book one session without signing in", PUBLIC_HTML)
         self.assertIn('class="signin-sketch"', PUBLIC_HTML)
-        self.assertIn("Sign in to choose your lessons.", PUBLIC_HTML)
+        self.assertIn(
+            "Sign in with Google to book multiple lessons, manage cancellations and "
+            "rescheduling, track lesson credits, and reuse your permanent Meet link.",
+            PUBLIC_HTML,
+        )
         self.assertIn("shell.signin-mode", PUBLIC_HTML)
         self.assertIn("Choose up to 10 times", PUBLIC_HTML)
-        self.assertIn("selectedStarts.length<10", PUBLIC_HTML)
+        self.assertIn("guestMode?1:10", PUBLIC_HTML)
+        self.assertIn('id="guest-details"', PUBLIC_HTML)
+        self.assertIn('name="student_name"', PUBLIC_HTML)
+        self.assertIn('name="student_email"', PUBLIC_HTML)
+        self.assertIn("Your one-time Google Meet link", PUBLIC_HTML)
         self.assertIn("starts_at:selectedStarts.map", PUBLIC_HTML)
 
     async def test_authenticated_lessons_root_opens_management(self) -> None:

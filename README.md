@@ -113,8 +113,10 @@ management interface protected by the existing dashboard login.
   CalDAV accounts, and private HTTPS iCal subscriptions (including recurring events and
   timezone-aware feeds).
 - Five-minute background synchronization plus a mandatory refresh immediately before booking.
-- New lessons are written to the configured writable Google calendar. The application does not
-  email the student automatically.
+- Signed-in students can book up to ten lessons at once, manage lessons and credits, and reuse a
+  permanent Meet conference. Guests provide a name and email and can book one lesson at a time.
+- New lessons are written to the configured writable Google calendar. Google Calendar sends the
+  attendee an invitation; guest bookings receive a fresh one-time Meet conference.
 
 Calendars stored only “On My Mac” have no server-accessible source and cannot be synchronized.
 Move them to Google/iCloud/Exchange or expose a private HTTPS iCal subscription first.

@@ -253,6 +253,7 @@ class SchedulingService:
         student_email: str,
         student_timezone: str,
         notes: str | None,
+        guest_booking: bool = False,
     ) -> LessonBooking:
         bookings = await self.book_many(
             profile=profile,
@@ -262,6 +263,7 @@ class SchedulingService:
             student_email=student_email,
             student_timezone=student_timezone,
             notes=notes,
+            guest_booking=guest_booking,
         )
         return bookings[0]
 
@@ -275,6 +277,7 @@ class SchedulingService:
         student_email: str,
         student_timezone: str,
         notes: str | None,
+        guest_booking: bool = False,
     ) -> list[LessonBooking]:
         validate_timezone(student_timezone)
         if not 1 <= len(starts_at) <= 10:
@@ -317,16 +320,19 @@ class SchedulingService:
                 )
         title = f"{lesson_type.name} — {student_name.strip()}"
         normalized_student_email = student_email.strip().casefold()
-        student_meeting = await self.repository.student_meeting(
-            profile_id=profile.id,
-            student_email=normalized_student_email,
-        )
+        student_meeting = None
+        if not guest_booking:
+            student_meeting = await self.repository.student_meeting(
+                profile_id=profile.id,
+                student_email=normalized_student_email,
+            )
         conference_data = student_meeting.conference_data if student_meeting else None
         created_events: list[tuple[str | None, str]] = []
         bookings: list[LessonBooking] = []
         try:
             for requested_start in starts_at:
                 ends_at = requested_start + duration
+                event_conference_data = None if guest_booking else conference_data
                 calendar_event = await calendar_service.create_google_event(
                     household_id=profile.household_id,
                     user_id=profile.user_id,
@@ -340,8 +346,8 @@ class SchedulingService:
                         f"Student: {student_name.strip()}\nEmail: {normalized_student_email}"
                     ),
                     attendee_email=normalized_student_email,
-                    conference_data=conference_data,
-                    create_google_meet=conference_data is None,
+                    conference_data=event_conference_data,
+                    create_google_meet=event_conference_data is None,
                 )
                 if calendar_event.meeting_url is None or calendar_event.conference_data is None:
                     raise CalendarEventMatchError(
@@ -352,8 +358,9 @@ class SchedulingService:
                 created_events.append(
                     (calendar_event.external_calendar_id, calendar_event.external_event_id)
                 )
-                conference_data = calendar_event.conference_data
-                if student_meeting is None:
+                if not guest_booking:
+                    conference_data = calendar_event.conference_data
+                if not guest_booking and student_meeting is None:
                     student_meeting = StudentMeeting(
                         profile_id=profile.id,
                         student_email=normalized_student_email,
@@ -377,11 +384,12 @@ class SchedulingService:
                 )
                 await self.repository.add_booking(booking)
                 bookings.append(booking)
-            await self._allocate_available_credits(
-                profile_id=profile.id,
-                student_email=normalized_student_email,
-                bookings=bookings,
-            )
+            if not guest_booking:
+                await self._allocate_available_credits(
+                    profile_id=profile.id,
+                    student_email=normalized_student_email,
+                    bookings=bookings,
+                )
             await self.session.commit()
             for booking in bookings:
                 await self.session.refresh(booking)
