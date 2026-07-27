@@ -7,7 +7,14 @@ from app.config import Settings
 from app.main import root, scheduling_host_allows_path
 from app.routes.auth import google_auth_start
 from app.routes.calendar import _calendar_result_redirect
-from app.routes.scheduling import MANAGEMENT_HTML, PUBLIC_HTML, scheduling_management_page
+from app.routes.scheduling import (
+    MANAGEMENT_HTML,
+    PUBLIC_HTML,
+    PUBLIC_INFO_HTML,
+    SELECTED_SUMMARY_HTML,
+    public_booking_page,
+    scheduling_management_page,
+)
 
 
 def _request(
@@ -87,6 +94,7 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('id="feeds"', MANAGEMENT_HTML)
 
     def test_public_booking_uses_calendar_layout_and_has_no_eyebrow(self) -> None:
+        self.assertIn("width:min(1280px,100%)", PUBLIC_HTML)
         self.assertIn("width:min(1100px,100%)", PUBLIC_HTML)
         self.assertIn('grid-template-columns:260px minmax(0,1fr)', PUBLIC_HTML)
         self.assertIn('grid-template-columns:repeat(7,minmax(36px,1fr))', PUBLIC_HTML)
@@ -102,6 +110,19 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("profile.booking_window_days", PUBLIC_HTML)
         self.assertNotIn("end.setDate(end.getDate()+13)", PUBLIC_HTML)
         self.assertNotIn('<p class="muted">Lesson scheduling</p>', PUBLIC_HTML)
+
+    async def test_public_booking_places_info_and_selected_times_below_calendar(self) -> None:
+        response = await public_booking_page(_request(), "oksana-erm")
+        body = response.body.decode()
+
+        calendar_position = body.index('class="calendar-layout"')
+        selected_position = body.index('id="selected-summary"')
+        pricing_position = body.index("<h3>Pricing</h3>")
+        self.assertLess(calendar_position, selected_position)
+        self.assertLess(selected_position, pricing_position)
+        self.assertIn("remaining sessions, cancellations, and rescheduling", body)
+        self.assertIn('id="selected-list"', SELECTED_SUMMARY_HTML)
+        self.assertIn("Booking conditions", PUBLIC_INFO_HTML)
 
     def test_public_confirmation_has_structured_lesson_summary(self) -> None:
         self.assertIn('class="success-sketch"', PUBLIC_HTML)
