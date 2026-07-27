@@ -10,11 +10,13 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     Time,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -422,7 +424,13 @@ class LessonType(Base, TimestampMixin):
 class LessonBooking(Base, TimestampMixin):
     __tablename__ = "lesson_bookings"
     __table_args__ = (
-        UniqueConstraint("profile_id", "starts_at", name="uq_lesson_booking_profile_start"),
+        Index(
+            "uq_lesson_booking_profile_confirmed_start",
+            "profile_id",
+            "starts_at",
+            unique=True,
+            postgresql_where=text("status = 'confirmed'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)

@@ -187,6 +187,7 @@ class GuestBookingServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(event_call["conference_data"])
         self.assertTrue(event_call["create_google_meet"])
         self.assertEqual(event_call["attendee_email"], "guest@example.com")
+        self.assertFalse(event_call["commit_cache"])
 
 
 if __name__ == "__main__":

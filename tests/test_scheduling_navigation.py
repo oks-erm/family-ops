@@ -177,9 +177,18 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("alert(", STUDENT_HTML)
 
     def test_past_student_lessons_are_dimmed_and_not_joinable(self) -> None:
-        self.assertIn(".lesson.past{opacity:.5", STUDENT_HTML)
-        self.assertIn("x.is_past?' past'", STUDENT_HTML)
-        self.assertIn("!x.is_past&&x.meeting_url", STUDENT_HTML)
+        self.assertIn(".lesson.past:not(.cancelled){opacity:.42", STUDENT_HTML)
+        self.assertIn("isPast=x.is_past||new Date(x.ends_at)<=new Date()", STUDENT_HTML)
+        self.assertIn("isPast?' past'", STUDENT_HTML)
+        self.assertIn("isPast?'Past'", STUDENT_HTML)
+        self.assertIn("!isPast&&x.meeting_url", STUDENT_HTML)
+
+    def test_student_account_is_fixed_to_the_page_corner(self) -> None:
+        self.assertIn(
+            ".account{position:fixed;top:20px;right:24px;width:auto;z-index:10",
+            STUDENT_HTML,
+        )
+        self.assertIn("body{padding-top:82px}.account{top:10px;right:10px", STUDENT_HTML)
 
     def test_cancelled_lessons_are_distinct_and_sorted_after_active_lessons(self) -> None:
         self.assertIn(".lesson.cancelled{opacity:.62", STUDENT_HTML)

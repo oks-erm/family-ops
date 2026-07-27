@@ -348,6 +348,7 @@ class SchedulingService:
                     attendee_email=normalized_student_email,
                     conference_data=event_conference_data,
                     create_google_meet=event_conference_data is None,
+                    commit_cache=False,
                 )
                 if calendar_event.meeting_url is None or calendar_event.conference_data is None:
                     raise CalendarEventMatchError(

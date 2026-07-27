@@ -673,6 +673,7 @@ class CalendarService:
         attendee_email: str | None = None,
         conference_data: dict[str, object] | None = None,
         create_google_meet: bool = False,
+        commit_cache: bool = True,
     ) -> CalendarEventInput:
         if conference_data is not None and create_google_meet:
             raise ValueError("Provide existing conference data or request a new Google Meet.")
@@ -756,6 +757,7 @@ class CalendarService:
             ends_at=parsed["ends_at"],
             location=parsed.get("location"),
             raw_event={**raw, "_calendar_id": calendar_id},
+            commit=commit_cache,
         )
         return CalendarEventInput(
             title=parsed["summary"],

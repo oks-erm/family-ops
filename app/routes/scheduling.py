@@ -1103,7 +1103,8 @@ const slug='__BOOKING_SLUG__',$=s=>document.querySelector(s);async function api(
 STUDENT_HTML = (
     STUDENT_HTML.replace(
         ".lesson.past{opacity:.5;background:#f8f8fc;box-shadow:none}",
-        ".lesson.past{opacity:.5;background:#f8f8fc;box-shadow:none}"
+        ".lesson.past:not(.cancelled){opacity:.42;background:#f1f1f7;"
+        "border-color:#e4e3ed;box-shadow:none;color:#767184}"
         ".lesson.cancelled{opacity:.62;background:linear-gradient(135deg,#faf9fd,#f5f3f9);"
         "border-style:dashed;box-shadow:none;color:#777187}"
         ".lesson.cancelled strong{text-decoration:line-through;text-decoration-thickness:1px}"
@@ -1111,9 +1112,21 @@ STUDENT_HTML = (
     )
     .replace(
         "n.className=`lesson${x.is_past?' past':''}`;",
-        "n.className=`lesson${x.is_past?' past':''}"
+        "n.className=`lesson${isPast?' past':''}"
         "${x.status==='cancelled'?' cancelled':''}`;",
     )
+    .replace(
+        "function lessonNode(x){const n=",
+        "function lessonNode(x){const isPast=x.is_past||"
+        "new Date(x.ends_at)<=new Date(),n=",
+    )
+    .replace(
+        "status.textContent=x.status==='cancelled'?'Cancelled':x.paid?'Paid':"
+        "'Payment not recorded';",
+        "status.textContent=x.status==='cancelled'?'Cancelled':isPast?'Past':"
+        "x.paid?'Paid':'Payment not recorded';",
+    )
+    .replace("!x.is_past&&x.meeting_url", "!isPast&&x.meeting_url")
     .replace(
         "n.append(copy,actions);return n}let pendingChange=null;",
         "n.append(copy,actions);return n}"
@@ -1124,6 +1137,15 @@ STUDENT_HTML = (
     .replace(
         "d.lessons.slice().reverse().map(lessonNode)",
         "lessonOrder(d.lessons).map(lessonNode)",
+    )
+    .replace(
+        "</style></head><body>",
+        ".account{position:fixed;top:20px;right:24px;width:auto;z-index:10;"
+        "background:rgba(255,255,255,.94);box-shadow:0 8px 24px rgba(75,73,145,.1);"
+        "backdrop-filter:blur(10px)}"
+        "@media(max-width:720px){body{padding-top:82px}.account{top:10px;right:10px;"
+        "width:auto;max-width:calc(100% - 20px)}}"
+        "</style></head><body>",
     )
 )
 

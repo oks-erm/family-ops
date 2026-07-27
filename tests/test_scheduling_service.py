@@ -188,6 +188,60 @@ class BookingCalendarRefreshTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class SchedulingServiceSlotTests(unittest.IsolatedAsyncioTestCase):
+    async def test_selected_non_lesson_event_blocks_adjacent_slot_with_commute_buffer(self) -> None:
+        connection_id = uuid4()
+        household_id = uuid4()
+        profile_id = uuid4()
+        service = SchedulingService(AsyncMock())
+        profile = SimpleNamespace(
+            id=profile_id,
+            household_id=household_id,
+            timezone="Europe/Lisbon",
+            minimum_notice_minutes=0,
+            booking_window_days=60,
+            buffer_before_minutes=30,
+            buffer_after_minutes=30,
+            slot_interval_minutes=60,
+        )
+        service.repository.list_calendars = AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    connection_id=connection_id,
+                    external_calendar_id="primary",
+                    include_in_conflicts=True,
+                )
+            ]
+        )
+        service.repository.busy_events = AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    source_type=CalendarProvider.google,
+                    source_id=connection_id,
+                    external_event_id="primary:commute-event",
+                    raw_event={"_calendar_id": "primary"},
+                    starts_at=datetime(2026, 7, 29, 10, tzinfo=UTC),
+                    ends_at=datetime(2026, 7, 29, 11, tzinfo=UTC),
+                )
+            ]
+        )
+        service.repository.bookings_between = AsyncMock(return_value=[])
+        service.repository.list_rules = AsyncMock(
+            return_value=[SimpleNamespace(weekday=2, starts_at=time(9), ends_at=time(14))]
+        )
+
+        slots = await service.slots(
+            profile=profile,
+            lesson_type=SimpleNamespace(duration_minutes=60),
+            start_day=date(2026, 7, 29),
+            end_day=date(2026, 7, 29),
+            now=datetime(2026, 7, 27, tzinfo=UTC),
+        )
+
+        local_times = [slot.strftime("%H:%M") for slot in slots]
+        self.assertNotIn("10:00", local_times)
+
+
 class BatchBookingValidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_batch_is_limited_to_ten_unique_non_overlapping_times(self) -> None:
         service = SchedulingService(AsyncMock())
