@@ -105,6 +105,8 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("new URLSearchParams(location.search).has('calendar')", MANAGEMENT_HTML)
         self.assertIn("<h2>Students and balances</h2>", MANAGEMENT_HTML)
         self.assertIn('id="student-search"', MANAGEMENT_HTML)
+        self.assertIn('id="student-count"', MANAGEMENT_HTML)
+        self.assertIn("$('#student-count').textContent=state.students.length", MANAGEMENT_HTML)
         self.assertIn("<h2>Register payment</h2>", MANAGEMENT_HTML)
         self.assertNotIn('id="upcoming-count"', MANAGEMENT_HTML)
         self.assertLess(
