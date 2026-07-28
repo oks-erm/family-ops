@@ -172,7 +172,8 @@ jobs:
             fi
 
             # Write production .env from secret, then pin the image tag
-            printf '%s' "$ENV_FILE" > .env
+            # Always terminate the secret payload before appending deploy-controlled values.
+            printf '%s\n' "$ENV_FILE" > .env
             # Remove deploy-controlled image values, then append the current build image.
             sed -i '/^GHCR_IMAGE=/d' .env
             sed -i '/^IMAGE_TAG=/d' .env
