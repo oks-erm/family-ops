@@ -161,10 +161,13 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("digital duct tape", MANAGEMENT_HTML)
         self.assertNotIn('id="welcome-panel"', MANAGEMENT_HTML)
 
-    def test_dashboard_footer_links_to_separate_feedback_page(self) -> None:
+    def test_dashboard_header_links_to_separate_feedback_page(self) -> None:
         self.assertIn('data-slug="okserm"', MANAGEMENT_HTML)
-        self.assertIn('class="dashboard-footer"', MANAGEMENT_HTML)
+        self.assertIn('class="dashboard-support"', MANAGEMENT_HTML)
+        self.assertNotIn('class="dashboard-footer"', MANAGEMENT_HTML)
         self.assertIn('href="/schedule/feedback"', MANAGEMENT_HTML)
+        self.assertIn('.dashboard-support .bug-link', MANAGEMENT_HTML)
+        self.assertNotIn('.bug-link{display:inline-flex', MANAGEMENT_HTML)
         self.assertNotIn('id="bug-report"', MANAGEMENT_HTML)
         self.assertIn('id="bug-report"', BUG_REPORT_HTML)
         self.assertIn('data-action="bug-report"', BUG_REPORT_HTML)
