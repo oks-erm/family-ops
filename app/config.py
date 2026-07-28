@@ -51,6 +51,20 @@ class Settings(BaseSettings):
         default=None,
         alias="SESSION_COOKIE_DOMAIN",
     )
+    scheduling_feedback_smtp_username: str | None = Field(
+        default=None,
+        alias="SCHEDULING_FEEDBACK_SMTP_USERNAME",
+    )
+    scheduling_feedback_smtp_app_password: str | None = Field(
+        default=None,
+        alias="SCHEDULING_FEEDBACK_SMTP_APP_PASSWORD",
+    )
+    scheduling_feedback_to_email: str | None = Field(
+        default=None,
+        alias="SCHEDULING_FEEDBACK_TO_EMAIL",
+    )
+    turnstile_site_key: str | None = Field(default=None, alias="TURNSTILE_SITE_KEY")
+    turnstile_secret_key: str | None = Field(default=None, alias="TURNSTILE_SECRET_KEY")
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

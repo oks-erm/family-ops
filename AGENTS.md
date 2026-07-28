@@ -51,6 +51,10 @@ settings include `DATABASE_URL`, Telegram/AI credentials, Google OAuth credentia
 `PUBLIC_BASE_URL`, `SCHEDULING_PUBLIC_BASE_URL`, `DASHBOARD_SESSION_SECRET`, and
 `DEFAULT_TIMEZONE`.
 
+Authenticated tutor bug reports use Gmail SMTP and Cloudflare Turnstile. Their credentials come
+from the `SCHEDULING_FEEDBACK_*` and `TURNSTILE_*` environment variables. Never expose the Gmail
+app password, feedback recipient, or Turnstile secret in HTML, logs, tests, or commits.
+
 Google OAuth tokens, iCloud app-specific passwords, Google Meet links, conference data, and private
 iCal URLs are sensitive. Never log or expose them outside the tutor and the matching student. Apple
 credentials must remain Fernet-encrypted at rest; changing `DASHBOARD_SESSION_SECRET` invalidates

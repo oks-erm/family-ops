@@ -1,13 +1,17 @@
 import html
+import logging
 import re
+from collections import defaultdict, deque
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Annotated
+from pathlib import Path
+from time import monotonic
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, SecretStr
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
@@ -42,6 +46,14 @@ from app.services.calendar_service import (
     ICloudAuthenticationError,
 )
 from app.services.credential_cipher import CredentialCipher
+from app.services.scheduling_feedback import (
+    FeedbackConfigurationError,
+    FeedbackDeliveryError,
+    SchedulingFeedbackService,
+    TurnstileValidationError,
+    normalize_feedback_text,
+    scheduling_hostname,
+)
 from app.services.scheduling_metrics import monthly_scheduling_metrics
 from app.services.scheduling_rules import (
     SchedulingValidationError,
@@ -55,6 +67,12 @@ from app.services.scheduling_service import (
 from app.utils.urls import UnsafeExternalURLError, validate_public_https_url
 
 router = APIRouter(tags=["scheduling"])
+logger = logging.getLogger(__name__)
+
+COFFEE_QR_PATH = Path(__file__).resolve().parents[1] / "coffee-qr.png"
+_FEEDBACK_RATE_LIMIT = 5
+_FEEDBACK_RATE_WINDOW_SECONDS = 15 * 60
+_feedback_attempts: dict[str, deque[float]] = defaultdict(deque)
 
 
 class ProfileRequest(BaseModel):
@@ -117,6 +135,27 @@ class StudentPaymentRequest(BaseModel):
     lessons_purchased: int = Field(ge=1, le=100)
     amount_cents: int | None = Field(default=None, ge=0, le=10_000_000)
     booking_ids: list[UUID] = Field(default_factory=list, max_length=100)
+
+
+class BugReportRequest(BaseModel):
+    section: Literal["welcome", "setup", "lessons", "other"]
+    message: str = Field(min_length=20, max_length=4000)
+    turnstile_token: str = Field(min_length=1, max_length=2048)
+    website: str | None = Field(default=None, max_length=200)
+
+
+def _enforce_feedback_rate_limit(key: str, *, now: float | None = None) -> None:
+    current = monotonic() if now is None else now
+    attempts = _feedback_attempts[key]
+    cutoff = current - _FEEDBACK_RATE_WINDOW_SECONDS
+    while attempts and attempts[0] <= cutoff:
+        attempts.popleft()
+    if len(attempts) >= _FEEDBACK_RATE_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many reports were submitted. Please try again in a few minutes.",
+        )
+    attempts.append(current)
 
 
 async def _dashboard_context(request: Request, session):
@@ -230,7 +269,75 @@ async def _remove_booking_calendar_event(
 async def scheduling_management_page(request: Request):
     if not request.session.get("google_email"):
         return RedirectResponse("/auth/google/start?next=scheduling", status_code=303)
-    return HTMLResponse(MANAGEMENT_HTML)
+    settings = get_settings()
+    feedback_service = SchedulingFeedbackService(settings)
+    page = MANAGEMENT_HTML.replace(
+        "__TURNSTILE_SITE_KEY__",
+        html.escape(settings.turnstile_site_key or "", quote=True),
+    ).replace(
+        "__FEEDBACK_CONFIGURED__",
+        "true" if feedback_service.configured else "false",
+    )
+    return HTMLResponse(page)
+
+
+@router.get("/api/scheduling/assets/coffee-qr.png", response_class=FileResponse)
+async def scheduling_coffee_qr(request: Request) -> FileResponse:
+    async with async_session_factory() as session:
+        await _management_profile(request, session)
+    return FileResponse(
+        COFFEE_QR_PATH,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+@router.post("/api/scheduling/bug-reports", status_code=202)
+async def submit_scheduling_bug_report(
+    request: Request,
+    payload: BugReportRequest,
+) -> dict[str, bool]:
+    _require_same_origin(request)
+    async with async_session_factory() as session:
+        user, _, _ = await _management_profile(request, session)
+
+    if payload.website:
+        return {"sent": True}
+    message = normalize_feedback_text(payload.message)
+    if len(message) < 20:
+        raise HTTPException(status_code=422, detail="Please add a little more detail.")
+
+    reporter_email = str(user.google_email or "").strip().casefold()
+    if not _email_is_valid(reporter_email):
+        raise HTTPException(status_code=401, detail="A verified Google email is required.")
+    _enforce_feedback_rate_limit(reporter_email)
+
+    settings = get_settings()
+    service = SchedulingFeedbackService(settings)
+    if not service.configured:
+        raise HTTPException(status_code=503, detail="Bug reporting is not configured yet.")
+    try:
+        await service.verify_turnstile(
+            token=payload.turnstile_token,
+            remote_ip=request.client.host if request.client else None,
+            expected_hostname=scheduling_hostname(settings),
+        )
+        await service.send_bug_report(
+            reporter_email=reporter_email,
+            section=payload.section,
+            message=message,
+        )
+    except TurnstileValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FeedbackConfigurationError as exc:
+        raise HTTPException(status_code=503, detail="Bug reporting is not configured yet.") from exc
+    except FeedbackDeliveryError as exc:
+        logger.exception("Tutor scheduling bug report delivery failed")
+        raise HTTPException(
+            status_code=503,
+            detail="The report could not be sent. Please try again shortly.",
+        ) from exc
+    return {"sent": True}
 
 
 @router.get("/api/scheduling/manage")
@@ -1157,22 +1264,28 @@ main{max-width:1440px;margin:auto;padding:36px 28px 88px}header{display:flex;jus
 h1{font-size:clamp(30px,4vw,46px);letter-spacing:-.035em;margin:0}h2{font-size:22px;letter-spacing:-.02em;margin:0 0 18px}.muted{color:var(--muted);line-height:1.45}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;align-items:start}.column{display:grid;gap:20px;align-content:start;min-width:0}
 .card{min-width:0;background:rgba(255,255,255,.94);border:1px solid rgba(221,212,235,.9);border-radius:22px;padding:24px;box-shadow:0 12px 34px rgba(67,47,98,.08);backdrop-filter:blur(12px)}
 .tabs{display:inline-flex;gap:5px;margin:0 0 24px;padding:5px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.78);box-shadow:0 8px 24px rgba(67,47,98,.06)}.tab{min-width:112px;background:transparent;color:var(--muted);box-shadow:none}.tab:hover{background:var(--purple-soft);color:var(--purple-dark);box-shadow:none;transform:none}.tab.active{background:linear-gradient(135deg,#6372d8,#8559cf);color:#fff;box-shadow:0 5px 14px rgba(96,66,179,.2)}.tab-panel[hidden]{display:none}
+.welcome-layout{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(300px,.55fr);gap:20px;align-items:start}.welcome-copy{font-size:16px;line-height:1.68}.welcome-copy p:first-of-type{font-size:18px;color:#4f435f}.welcome-media{display:grid;gap:18px}.welcome-gif{width:100%;max-height:250px;object-fit:cover;border-radius:17px;background:var(--purple-pale)}.coffee-card{text-align:center}.coffee-card .qr{display:block;width:min(220px,75%);height:auto;margin:0 auto 16px;border-radius:18px}.coffee-card p{margin:0 0 14px}.setup-steps{counter-reset:onboarding;display:grid;gap:10px;margin-top:18px}.setup-step{position:relative;padding:13px 14px 13px 52px;border:1px solid var(--line);border-radius:14px;background:#fefeff}.setup-step:before{counter-increment:onboarding;content:counter(onboarding);position:absolute;left:14px;top:12px;width:27px;height:27px;display:grid;place-items:center;border-radius:9px;background:var(--purple-soft);color:var(--purple-dark);font-weight:800}.setup-step strong,.setup-step span{display:block}.setup-step span{margin-top:3px;color:var(--muted);font-size:13px}.welcome-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
 .overview{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:20px}.metric{padding:20px 22px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(135deg,rgba(255,255,255,.97),rgba(247,244,255,.94));box-shadow:0 9px 25px rgba(67,47,98,.06)}.metric strong{display:block;font-size:30px;letter-spacing:-.03em}.metric span{color:var(--muted);font-size:13px}.lessons-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(420px,.9fr);gap:20px;align-items:start}.student-tools{display:flex;gap:10px;align-items:center}.student-tools input{flex:1}.student-list{max-height:510px;overflow:auto;padding-right:4px}.student-card{width:100%;min-height:0;padding:8px;border:1px solid var(--line);border-radius:15px;background:#fefeff;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}.student-card.active{background:linear-gradient(135deg,#f2f5ff,#f7f0ff);border-color:#cfc6e8}.student-select{min-width:0;min-height:0;padding:5px 6px;background:transparent;color:inherit;box-shadow:none;text-align:left;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center}.student-select:hover{background:transparent;color:inherit;box-shadow:none;transform:none}.student-card strong,.student-card span{display:block}.student-card small{display:block;margin-top:4px;color:var(--muted);font-weight:500;overflow:hidden;text-overflow:ellipsis}.icon-button{width:36px;min-width:36px;min-height:36px;padding:0}.icon-button svg{width:17px;height:17px;pointer-events:none}.student-remove{min-height:36px}.balance{min-width:58px;text-align:center;padding:7px 9px;border-radius:12px;background:var(--purple-soft);color:var(--purple-dark);font-size:12px;font-weight:800}.balance b{display:block;font-size:18px}.empty{padding:18px;border:1px dashed #d8d0e5;border-radius:15px;color:var(--muted);text-align:center}.payment-card{position:sticky;top:18px}.payment-card .list{max-height:260px;overflow:auto}.payment-card h3{margin:22px 0 0;font-size:16px}.payment-card .item{align-items:flex-start}
 form{display:grid;gap:14px}label{display:grid;gap:7px;font-size:13px;font-weight:650;margin:0}input,select,textarea,button{font:inherit}input,select,textarea{width:100%;min-height:44px;padding:10px 13px;border:1px solid #d9d1e4;border-radius:12px;background:#fff;color:inherit;outline:none;transition:border-color .16s,box-shadow .16s,background .16s}textarea{min-height:88px;resize:vertical}input:hover,select:hover,textarea:hover{border-color:#c4b6da}input:focus,select:focus,textarea:focus{border-color:var(--purple);box-shadow:0 0 0 3px rgba(115,87,199,.14);background:#fefeff}
 button,.button{min-height:42px;border:1px solid transparent;border-radius:999px;padding:10px 17px;background:var(--purple);color:#fff;font-weight:700;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 5px 14px rgba(96,66,179,.16);transition:transform .14s,box-shadow .14s,background .14s}button:hover,.button:hover{background:var(--purple-dark);box-shadow:0 7px 18px rgba(96,66,179,.23);transform:translateY(-1px)}button:focus-visible,.button:focus-visible{outline:3px solid rgba(115,87,199,.24);outline-offset:2px}.secondary{background:var(--purple-soft);border-color:#e2d9f7;color:#584396;box-shadow:none}.secondary:hover{background:#e4dcf8;color:#4d378d}.danger{background:var(--danger-soft);border-color:#f8dfe2;color:var(--danger);box-shadow:none}.danger:hover{background:#fbe3e6;color:#92353f}
 .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.row>button,.row>.button,form>button{margin-top:4px;justify-self:start}#profile>.row:not(label){display:grid;grid-template-columns:1fr}label.row{display:flex;align-items:center;min-height:34px}label.row input{min-height:auto;accent-color:var(--purple)}.list{display:grid;gap:10px;margin-top:16px}.item{display:flex;gap:14px;align-items:center;justify-content:space-between;border:1px solid var(--line);border-radius:15px;padding:12px 14px;background:#fefeff}.item p{margin:3px 0}.item button{min-height:36px;padding:7px 13px}.item button.icon-button{padding:0}.item-actions{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end}.lesson-filters{display:flex;gap:7px;flex-wrap:wrap;margin-top:14px}.lesson-filter{min-height:34px;padding:7px 13px;background:#fff;border-color:var(--line);color:var(--muted);box-shadow:none}.lesson-filter:hover,.lesson-filter.active{background:var(--purple-soft);border-color:#ddd3f2;color:var(--purple-dark);box-shadow:none;transform:none}.lesson-item.completed{opacity:.72}.lesson-item.cancelled{opacity:.58;border-style:dashed}.lesson-status{flex:0 0 auto;padding:5px 9px;border-radius:999px;background:var(--purple-soft);color:var(--purple-dark);font-size:12px;font-weight:750}.lesson-item.cancelled .lesson-status{background:#f1eef4;color:#777080}.lesson-item.completed .lesson-status{background:#f3f1f6;color:#6f6978}.help{font-size:12px;margin:0}.help a{color:var(--purple-dark)}#public-link{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:18px 0 0}#public-link span{min-width:0;overflow-wrap:anywhere}#copy-public-link{flex:0 0 auto}
 .availability-card .list{gap:10px}.days{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 42px;gap:8px;padding:10px;border:1px solid var(--line);border-radius:16px;background:var(--purple-pale);transition:opacity .16s,background .16s}.days select{grid-column:1/3}.days input{min-width:0}.days.disabled{background:#faf9fc;opacity:.68}.days.disabled select,.days.disabled input{color:#8c8595;background:#f4f1f7}.days .day-toggle{grid-column:3;grid-row:1/3;align-self:stretch;min-height:0;width:42px;padding:0;border:1px solid #e5deed;border-radius:13px;background:#fff;color:#796b8c;box-shadow:none}.days .day-toggle:hover{background:#f8edf1;border-color:#efd9df;color:#9f4450;box-shadow:none;transform:none}.days.disabled .day-toggle{background:var(--purple-soft);border-color:#ddd3f2;color:var(--purple)}.days.disabled .day-toggle:hover{background:#e5dcf8;color:var(--purple-dark)}.days .day-toggle svg{width:18px;height:18px;pointer-events:none}.availability-card>.row{margin-top:16px}.status{position:fixed;left:50%;bottom:22px;z-index:10;min-height:0;transform:translateX(-50%);padding:10px 16px;border-radius:999px;background:#302443;color:#fff;box-shadow:0 10px 30px rgba(48,36,67,.2)}.status:empty{display:none}.hidden{position:absolute;left:-9999px}
+.dashboard-footer{display:grid;grid-template-columns:minmax(260px,.7fr) minmax(360px,1.3fr);gap:20px;margin-top:26px}.support-card{background:linear-gradient(135deg,rgba(255,255,255,.97),rgba(250,244,255,.96))}.support-card h2,.feedback-card h2{margin-bottom:9px}.support-card p,.feedback-card>p{margin-top:0}.support-link{display:inline-flex;align-items:center;gap:8px;margin-top:4px;color:var(--purple-dark);font-weight:750}.feedback-card form{grid-template-columns:180px minmax(0,1fr)}.feedback-card label.message{grid-column:1/-1}.feedback-card textarea{min-height:120px}.feedback-card .turnstile-row{grid-column:1/-1;display:flex;align-items:center;gap:14px;flex-wrap:wrap}.feedback-card .feedback-note{font-size:12px}.feedback-card .hp{position:absolute;left:-9999px}.feedback-unavailable{padding:12px;border-radius:12px;background:#fff7e5;color:#725813;font-size:13px}
 @media(max-width:980px){main{padding:28px 20px 72px}.grid,.overview{grid-template-columns:repeat(2,minmax(0,1fr))}.lessons-grid{grid-template-columns:1fr}.payment-card{position:static}}
-@media(max-width:680px){main{padding:22px 14px 60px}header{align-items:flex-start}.grid{grid-template-columns:1fr;gap:14px}.card{padding:20px;border-radius:18px}.days{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto}.overview{grid-template-columns:1fr}.tabs{display:flex}.tab{flex:1;min-width:0}.student-tools{align-items:stretch;flex-direction:column}}
-</style></head><body><main><header><h1>Lesson scheduling</h1></header><nav class="tabs" aria-label="Dashboard sections"><button class="tab" type="button" data-tab="setup">Setup</button><button class="tab active" type="button" data-tab="lessons">Lessons</button></nav>
+@media(max-width:980px){.welcome-layout,.dashboard-footer{grid-template-columns:1fr}.welcome-media{grid-template-columns:1fr 1fr}.feedback-card form{grid-template-columns:1fr}}
+@media(max-width:680px){main{padding:22px 14px 60px}header{align-items:flex-start}.grid{grid-template-columns:1fr;gap:14px}.card{padding:20px;border-radius:18px}.days{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto}.overview{grid-template-columns:1fr}.tabs{display:flex}.tab{flex:1;min-width:0;padding-inline:10px}.student-tools{align-items:stretch;flex-direction:column}.welcome-media{grid-template-columns:1fr}.feedback-card .turnstile-row{align-items:flex-start;flex-direction:column}}
+</style></head><body><main><header><h1>Lesson scheduling</h1></header><nav class="tabs" aria-label="Dashboard sections"><button class="tab active" type="button" data-tab="welcome">Welcome</button><button class="tab" type="button" data-tab="setup">Setup</button><button class="tab" type="button" data-tab="lessons">Lessons</button></nav>
+<section class="tab-panel" id="welcome-panel"><div class="welcome-layout"><section class="card welcome-copy"><h2>Less scheduling admin. More actual teaching.</h2><p>I built this free scheduling service while tutoring because I know the pain: too much admin, conversations scattered across different apps, and several free-tier tools held together with digital duct tape.</p><p>It helps tutors manage bookings, keep track of payments and income, and let students schedule several lessons at once. Rescheduling and cancellations are simpler too—and your cancellation policy is shown clearly during booking, so nobody has to negotiate the rules after something changes.</p><p>There’s no subscription, and the service never processes your payments. Lessons stay in your calendar and your students’ calendars, while you remain in control of payments.</p><p>There’s no lock-in either. If the service disappears in a dramatic puff of experimental software, your calendar events remain where they are—you can simply return to arranging lessons the old-fashioned way.</p><p>This is an early version that I’m sharing for free while I test and improve it. If it saves you some admin, wonderful. If you find something confusing or broken, that is useful too—please tell me.</p><h2>Get ready to accept bookings</h2><div class="setup-steps"><div class="setup-step"><strong>Connect your calendars</strong><span>Add every calendar that should block unavailable times.</span></div><div class="setup-step"><strong>Choose where lessons are created</strong><span>Select a writable Google calendar for invitations and Meet links.</span></div><div class="setup-step"><strong>Add lesson types and availability</strong><span>Set lesson lengths, teaching hours, notice, and non-lesson travel buffers.</span></div><div class="setup-step"><strong>Share your booking page</strong><span>Copy your public link when the schedule looks right.</span></div></div><div class="welcome-actions"><button type="button" id="start-setup">Start with calendars</button></div></section><aside class="welcome-media"><img class="welcome-gif" src="https://media.giphy.com/media/hXMGQqJFlIQMOjpsKC/giphy.gif" alt="A light-hearted illustration for the experimental scheduler" loading="lazy" referrerpolicy="no-referrer"><section class="card coffee-card"><h2>Help shape what comes next</h2><img class="qr" src="/api/scheduling/assets/coffee-qr.png" alt="QR code for Buy Me a Coffee"><p class="muted">Have a feature idea? Send it with a coffee ☕</p><a class="button secondary" href="https://www.buymeacoffee.com/okserm" target="_blank" rel="noopener noreferrer">Open Buy Me a Coffee</a></section></aside></div></section>
 <section class="tab-panel" id="setup-panel" hidden><div class="grid"><div class="column"><section class="card"><h2>Booking page</h2><form id="profile"><label>Your public name<input name="display_name" required></label><label>Booking link<input name="slug" required></label><label>Timezone<input name="timezone" required></label><div class="row"><label>Minimum notice (minutes)<input name="minimum_notice_minutes" type="number" min="0"></label><label>Booking window (days)<input name="booking_window_days" type="number" min="1"></label></div><div class="row"><label>Buffer before and after non-lesson events (minutes)<input name="non_lesson_buffer_minutes" type="number" min="0" max="240" required></label><label>Start-time increments (minutes)<input name="slot_interval_minutes" type="number" min="5"><span class="muted">For example, 15 offers 09:00, 09:15, 09:30, and so on.</span></label></div><p class="muted">This protects travel or preparation time on both sides of anything in your calendar that is not a lesson. Lessons can still be booked back-to-back.</p><label>Calendar for new lessons<select name="booking_calendar_id"><option value="">Primary Google calendar</option></select></label><label class="row"><input name="is_active" type="checkbox" style="width:auto">Accept bookings</label><button>Save settings</button></form><div id="public-link"><span>Public page: <a id="public-url" target="_blank" rel="noopener"></a></span><button id="copy-public-link" class="secondary icon-button" type="button" aria-label="Copy booking link" title="Copy booking link"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button></div></section>
 <section class="card"><h2>Google calendars</h2><p class="muted">Selected calendars block lesson availability. Reconnect if calendar discovery asks for permission.</p><div class="list" id="google-accounts"></div><div class="row"><a class="button secondary" href="/calendar/google/start?next=scheduling">Connect another account</a><button id="discover" type="button">Refresh calendars</button></div><div class="list" id="calendars"></div></section></div>
 <div class="column"><section class="card availability-card"><h2>Weekly availability</h2><p class="muted">Set times for all seven days. Disable any day you do not teach. Times use your timezone.</p><div class="list" id="availability"></div><div class="row"><button id="add-window" class="secondary" type="button">Add another time</button><button id="save-availability" type="button">Save availability</button></div></section>
 <section class="card"><h2>iCloud calendars</h2><p class="muted">Connect privately with an Apple app-specific password. Access is read-only and your calendars remain private.</p><form id="icloud"><label>Apple Account email<input name="account_email" type="email" autocomplete="username" required></label><label>App-specific password<input name="app_specific_password" type="password" autocomplete="new-password" required></label><p class="muted help">Use a password created for this scheduler, never your main Apple password. <a href="https://account.apple.com/account/manage/section/security" target="_blank" rel="noopener">Create one in Apple Account security</a>.</p><button>Connect iCloud</button></form><div class="list" id="icloud-accounts"></div><div class="list" id="icloud-calendars"></div></section></div>
 <div class="column"><section class="card"><h2>Lesson types</h2><form id="lesson"><input name="id" type="hidden"><label>Name<input name="name" required placeholder="English lesson"></label><label>Length (minutes)<input name="duration_minutes" type="number" min="15" value="60" required></label><label>Location or call link<input name="location"></label><label>Description<textarea name="description"></textarea></label><label class="row"><input name="is_active" type="checkbox" style="width:auto" checked>Active</label><button>Save lesson type</button></form><div class="list" id="lessons"></div></section></div></div></section>
-<section class="tab-panel" id="lessons-panel"><div class="overview"><div class="metric"><strong id="completed-count">0</strong><span>Completed lessons this month</span></div><div class="metric"><strong id="monthly-count">0</strong><span>Total lessons this month</span></div><div class="metric"><strong id="student-count">0</strong><span>Students</span></div><div class="metric"><strong id="earned-income">€0</strong><span id="projected-income">€0 projected this month</span></div></div><div class="lessons-grid"><section class="card"><h2>All lessons</h2><p class="muted">Upcoming, completed, and cancelled lessons.</p><div class="lesson-filters" role="group" aria-label="Filter lessons"><button class="lesson-filter active" type="button" data-lesson-filter="all">All</button><button class="lesson-filter" type="button" data-lesson-filter="upcoming">Upcoming</button><button class="lesson-filter" type="button" data-lesson-filter="completed">Completed</button><button class="lesson-filter" type="button" data-lesson-filter="cancelled">Cancelled</button></div><div class="list" id="bookings"></div></section><div class="column"><section class="card"><h2>Students and balances</h2><div class="student-tools"><input id="student-search" type="search" placeholder="Search name or email" aria-label="Search students"></div><div class="list student-list" id="students"></div></section><section class="card payment-card"><h2>Register payment</h2><p class="muted">Choose a student, record their package, and optionally assign it to unpaid lessons.</p><form id="payment"><label>Student email<input name="student_email" type="email" list="student-emails" required></label><datalist id="student-emails"></datalist><div class="row"><label>Lessons purchased<input name="lessons_purchased" type="number" min="1" max="100" required></label><label>Amount paid (€)<input name="amount_euros" type="number" min="0" step="0.01"></label></div><div class="list" id="payment-lessons"></div><button>Record payment</button></form><h3>Registered payments</h3><div class="list" id="registered-payments"></div></section></div></div></section><p class="status" id="status"></p></main>
+<section class="tab-panel" id="lessons-panel" hidden><div class="overview"><div class="metric"><strong id="completed-count">0</strong><span>Completed lessons this month</span></div><div class="metric"><strong id="monthly-count">0</strong><span>Total lessons this month</span></div><div class="metric"><strong id="student-count">0</strong><span>Students</span></div><div class="metric"><strong id="earned-income">€0</strong><span id="projected-income">€0 projected this month</span></div></div><div class="lessons-grid"><section class="card"><h2>All lessons</h2><p class="muted">Upcoming, completed, and cancelled lessons.</p><div class="lesson-filters" role="group" aria-label="Filter lessons"><button class="lesson-filter active" type="button" data-lesson-filter="all">All</button><button class="lesson-filter" type="button" data-lesson-filter="upcoming">Upcoming</button><button class="lesson-filter" type="button" data-lesson-filter="completed">Completed</button><button class="lesson-filter" type="button" data-lesson-filter="cancelled">Cancelled</button></div><div class="list" id="bookings"></div></section><div class="column"><section class="card"><h2>Students and balances</h2><div class="student-tools"><input id="student-search" type="search" placeholder="Search name or email" aria-label="Search students"></div><div class="list student-list" id="students"></div></section><section class="card payment-card"><h2>Register payment</h2><p class="muted">Choose a student, record their package, and optionally assign it to unpaid lessons.</p><form id="payment"><label>Student email<input name="student_email" type="email" list="student-emails" required></label><datalist id="student-emails"></datalist><div class="row"><label>Lessons purchased<input name="lessons_purchased" type="number" min="1" max="100" required></label><label>Amount paid (€)<input name="amount_euros" type="number" min="0" step="0.01"></label></div><div class="list" id="payment-lessons"></div><button>Record payment</button></form><h3>Registered payments</h3><div class="list" id="registered-payments"></div></section></div></div></section>
+<footer class="dashboard-footer"><section class="card support-card"><h2>Ideas are welcome</h2><p class="muted">Have a feature request? Leave it with a coffee and help choose what I build next.</p><script type="text/javascript" src="https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js" data-name="bmc-button" data-slug="okserm" data-color="#FFDD00" data-emoji="☕" data-font="Cookie" data-text="Buy me a coffee" data-outline-color="#000000" data-font-color="#000000" data-coffee-color="#ffffff"></script></section><section class="card feedback-card"><h2>Found a bug?</h2><p class="muted">Tell me what happened. Your verified sign-in email is included privately so I can follow up; it is never displayed here.</p><form id="bug-report"><label>Where did it happen?<select name="section"><option value="welcome">Welcome</option><option value="setup">Setup</option><option value="lessons">Lessons</option><option value="other">Somewhere else</option></select></label><label class="hp">Website<input name="website" tabindex="-1" autocomplete="off"></label><label class="message">What happened?<textarea name="message" minlength="20" maxlength="4000" required placeholder="What were you trying to do, and what happened instead?"></textarea></label><div class="turnstile-row"><div class="cf-turnstile" data-sitekey="__TURNSTILE_SITE_KEY__" data-action="bug-report" data-theme="light"></div><button id="send-bug-report" type="submit">Send bug report</button><span class="muted feedback-note">Please do not include passwords, calendar links, or private student information.</span></div><p class="feedback-unavailable" id="feedback-unavailable" hidden>Bug reporting is temporarily unavailable.</p></form></section></footer><p class="status" id="status"></p></main>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 <script>
-const $=s=>document.querySelector(s), esc=s=>String(s??""); let state,googleDiscoveryFailures=new Map(),selectedStudentEmail='',lessonFilter='all';
+const $=s=>document.querySelector(s), esc=s=>String(s??""),feedbackConfigured=__FEEDBACK_CONFIGURED__; let state,googleDiscoveryFailures=new Map(),selectedStudentEmail='',lessonFilter='all';
 async function api(url,opt={}){const r=await fetch(url,{...opt,headers:{"Content-Type":"application/json",...(opt.headers||{})}});if(!r.ok){let m="Request failed";try{m=(await r.json()).detail||m}catch{}throw Error(m)}return r.status===204?null:r.json()}
 function field(form,n,v){const e=form.elements[n];if(e.type==="checkbox")e.checked=!!v;else e.value=v??""}
 async function load(){state=await api('/api/scheduling/manage');const f=$('#profile');for(const [k,v] of Object.entries(state.profile))if(f.elements[k])field(f,k,v);field(f,'non_lesson_buffer_minutes',Math.max(state.profile.buffer_before_minutes,state.profile.buffer_after_minutes));$('#public-url').href=state.profile.public_url;$('#public-url').textContent=state.profile.public_url;render();renderBookingActions();renderStudents();renderMetrics()}
@@ -1200,7 +1313,7 @@ function paymentNode(x){const amount=x.amount_cents===null?'Amount not recorded'
 function renderStudents(){const input=$('#payment').elements.student_email,query=$('#student-search').value.trim().toLowerCase();if(!selectedStudentEmail&&input.value)selectedStudentEmail=input.value;if(selectedStudentEmail&&!input.value)input.value=selectedStudentEmail;$('#student-emails').replaceChildren(...state.students.map(x=>new Option(x.email)));const visible=state.students.filter(x=>!query||x.name.toLowerCase().includes(query)||x.email.toLowerCase().includes(query));$('#students').replaceChildren(...(visible.length?visible.map(studentNode):[emptyNode(query?'No matching students.':'Students appear after their first booking or payment.') ]));const student=state.students.find(x=>x.email===input.value);const bookings=student?student.bookings.filter(x=>!x.paid&&x.status!=='cancelled'):[];$('#payment-lessons').replaceChildren(...(bookings.length?bookings.map(x=>{const label=document.createElement('label'),box=document.createElement('input');label.className='row';box.type='checkbox';box.name='booking_id';box.value=x.id;box.style.width='auto';label.append(box,document.createTextNode(`${new Date(x.starts_at).toLocaleString()} · ${x.status}`));return label}):[emptyNode(student?'No unpaid lessons to assign.':'Select a student to assign lessons.')]));$('#registered-payments').replaceChildren(...(state.payments.length?state.payments.map(paymentNode):[emptyNode('No payments registered.')]))}
 function money(cents){return new Intl.NumberFormat(undefined,{style:'currency',currency:'EUR'}).format(cents/100)}
 function renderMetrics(){$('#completed-count').textContent=state.metrics.completed_lessons;$('#monthly-count').textContent=state.metrics.total_lessons;$('#student-count').textContent=state.students.length;$('#earned-income').textContent=money(state.metrics.earned_cents);$('#projected-income').textContent=`${money(state.metrics.projected_cents)} projected from completed + scheduled lessons`}
-function selectTab(name){document.querySelectorAll('.tab').forEach(button=>button.classList.toggle('active',button.dataset.tab===name));$('#setup-panel').hidden=name!=='setup';$('#lessons-panel').hidden=name!=='lessons';history.replaceState({},'',`${location.pathname}${location.search}#${name}`)}
+function selectTab(name){document.querySelectorAll('.tab').forEach(button=>button.classList.toggle('active',button.dataset.tab===name));$('#welcome-panel').hidden=name!=='welcome';$('#setup-panel').hidden=name!=='setup';$('#lessons-panel').hidden=name!=='lessons';history.replaceState({},'',`${location.pathname}${location.search}#${name}`)}
 const trashIcon='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/></svg>',disableIcon=trashIcon,enableIcon='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v8m-4-4h8"/></svg>';
 function setWindowEnabled(d,enabled){d.classList.toggle('disabled',!enabled);d.querySelectorAll('select,input').forEach(control=>control.disabled=!enabled);const toggle=d.querySelector('.day-toggle'),day=d.querySelector('select').selectedOptions[0]?.text||'day';toggle.innerHTML=enabled?disableIcon:enableIcon;toggle.setAttribute('aria-label',enabled?`Disable ${day}`:`Enable ${day}`);toggle.title=enabled?`Disable ${day}`:`Enable ${day}`}
 function windowNode(day=0,start='09:00',end='17:00',names=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'],enabled=true){const d=document.createElement('div');d.className='days';const s=document.createElement('select');s.setAttribute('aria-label','Day');names.forEach((n,i)=>s.add(new Option(n,i)));s.value=day;const a=document.createElement('input');a.type='time';a.setAttribute('aria-label','Available from');a.value=start;const b=document.createElement('input');b.type='time';b.setAttribute('aria-label','Available until');b.value=end;const toggle=document.createElement('button');toggle.type='button';toggle.className='day-toggle';toggle.onclick=()=>setWindowEnabled(d,d.classList.contains('disabled'));s.onchange=()=>setWindowEnabled(d,!d.classList.contains('disabled'));d.append(s,a,b,toggle);setWindowEnabled(d,enabled);return d}
@@ -1215,9 +1328,12 @@ $('#payment').elements.student_email.onchange=e=>{selectedStudentEmail=e.current
 $('#payment').elements.student_email.oninput=renderStudents;
 $('#student-search').oninput=renderStudents;
 document.querySelectorAll('.lesson-filter').forEach(button=>button.onclick=()=>{lessonFilter=button.dataset.lessonFilter;document.querySelectorAll('.lesson-filter').forEach(item=>item.classList.toggle('active',item===button));renderBookingActions()});
-document.querySelectorAll('.tab').forEach(button=>button.onclick=()=>selectTab(button.dataset.tab));selectTab(location.hash==='#setup'||new URLSearchParams(location.search).has('calendar')?'setup':'lessons');
+document.querySelectorAll('.tab').forEach(button=>button.onclick=()=>selectTab(button.dataset.tab));
+$('#start-setup').onclick=()=>selectTab('setup');
 $('#payment').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget,data=new FormData(form),euros=data.get('amount_euros'),payload={student_email:data.get('student_email'),lessons_purchased:Number(data.get('lessons_purchased')),amount_cents:euros===''?null:Math.round(Number(euros)*100),booking_ids:data.getAll('booking_id')};await api('/api/scheduling/student-payments',{method:'POST',body:JSON.stringify(payload)});form.reset();await load();status('Payment recorded and selected lessons marked as paid.')};
-document.addEventListener('unhandledrejection',e=>{e.preventDefault();status(e.reason?.message||'Something went wrong.')});load().then(()=>{const result=new URLSearchParams(location.search).get('calendar');if(result==='connected')status('Google Calendar connected and calendars loaded.');else if(result)status('Google connected, but calendars could not be loaded. Please reconnect and grant calendar access.');if(result)history.replaceState({},'',location.pathname)}).catch(e=>status(e.message));
+if(!feedbackConfigured){$('#send-bug-report').disabled=true;$('#feedback-unavailable').hidden=false;document.querySelector('.cf-turnstile').hidden=true}
+$('#bug-report').onsubmit=async e=>{e.preventDefault();if(!feedbackConfigured)return;const form=e.currentTarget,data=new FormData(form),button=$('#send-bug-report'),token=String(data.get('cf-turnstile-response')||'');if(!token){status('Please complete the security check.');return}button.disabled=true;try{await api('/api/scheduling/bug-reports',{method:'POST',body:JSON.stringify({section:data.get('section'),message:data.get('message'),website:data.get('website'),turnstile_token:token})});form.reset();if(window.turnstile)turnstile.reset();status('Bug report sent. Thank you!')}catch(error){if(window.turnstile)turnstile.reset();status(error.message)}finally{button.disabled=false}};
+document.addEventListener('unhandledrejection',e=>{e.preventDefault();status(e.reason?.message||'Something went wrong.')});load().then(()=>{const params=new URLSearchParams(location.search),result=params.get('calendar'),hash=location.hash.slice(1),known=['welcome','setup','lessons'],isNew=!state.lesson_types.length&&!state.calendars.length&&!state.bookings.length&&!state.payments.length;selectTab(result?'setup':known.includes(hash)?hash:isNew?'welcome':'lessons');if(result==='connected')status('Google Calendar connected and calendars loaded.');else if(result)status('Google connected, but calendars could not be loaded. Please reconnect and grant calendar access.');if(result)history.replaceState({},'',`${location.pathname}#setup`)}).catch(e=>status(e.message));
 </script></body></html>"""
 
 SELECTED_SUMMARY_HTML = r"""<section id="selected-summary" class="selected-summary hidden" aria-live="polite"><div><h3>Selected lessons</h3><p class="muted">Review your dates before confirming.</p></div><div id="selected-list" class="selected-list"></div></section>"""

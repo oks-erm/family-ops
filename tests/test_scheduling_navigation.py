@@ -88,7 +88,7 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("removeButton.innerHTML=trashIcon", MANAGEMENT_HTML)
         self.assertIn("remove.innerHTML=trashIcon", MANAGEMENT_HTML)
         self.assertIn("`Delete payment for ${x.student_email}`", MANAGEMENT_HTML)
-        self.assertIn("?'setup':'lessons'", MANAGEMENT_HTML)
+        self.assertIn("isNew?'welcome':'lessons'", MANAGEMENT_HTML)
         self.assertIn('class="card availability-card"', MANAGEMENT_HTML)
         self.assertNotIn('class="card wide"', MANAGEMENT_HTML)
         self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", MANAGEMENT_HTML)
@@ -116,9 +116,11 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/api/scheduling/icloud-connections", MANAGEMENT_HTML)
         self.assertIn('data-tab="setup"', MANAGEMENT_HTML)
         self.assertIn('data-tab="lessons"', MANAGEMENT_HTML)
+        self.assertIn('data-tab="welcome"', MANAGEMENT_HTML)
+        self.assertIn('id="welcome-panel"', MANAGEMENT_HTML)
         self.assertIn('id="setup-panel" hidden', MANAGEMENT_HTML)
         self.assertIn('id="lessons-panel"', MANAGEMENT_HTML)
-        self.assertIn("new URLSearchParams(location.search).has('calendar')", MANAGEMENT_HTML)
+        self.assertIn("result?'setup'", MANAGEMENT_HTML)
         self.assertIn("<h2>Students and balances</h2>", MANAGEMENT_HTML)
         self.assertIn('id="student-search"', MANAGEMENT_HTML)
         self.assertIn('id="student-count"', MANAGEMENT_HTML)
@@ -137,6 +139,23 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("<h2>Other calendar feeds</h2>", MANAGEMENT_HTML)
         self.assertNotIn('id="ical"', MANAGEMENT_HTML)
         self.assertNotIn('id="feeds"', MANAGEMENT_HTML)
+
+    def test_tutor_intro_and_feedback_stay_on_management_page(self) -> None:
+        self.assertIn("digital duct tape", MANAGEMENT_HTML)
+        self.assertIn("dramatic puff of experimental software", MANAGEMENT_HTML)
+        self.assertNotIn(
+            "The app stores only the account, scheduling, booking, and payment-tracking",
+            MANAGEMENT_HTML,
+        )
+        self.assertIn("Connect your calendars", MANAGEMENT_HTML)
+        self.assertIn("https://media.giphy.com/media/hXMGQqJFlIQMOjpsKC/giphy.gif", MANAGEMENT_HTML)
+        self.assertIn('/api/scheduling/assets/coffee-qr.png', MANAGEMENT_HTML)
+        self.assertIn('data-slug="okserm"', MANAGEMENT_HTML)
+        self.assertIn('id="bug-report"', MANAGEMENT_HTML)
+        self.assertIn('data-action="bug-report"', MANAGEMENT_HTML)
+        self.assertIn("Please do not include passwords", MANAGEMENT_HTML)
+        self.assertNotIn("buymeacoffee", PUBLIC_HTML.casefold())
+        self.assertNotIn("bug-report", PUBLIC_HTML)
 
     def test_public_booking_uses_calendar_layout_and_has_no_eyebrow(self) -> None:
         self.assertIn("width:min(1280px,100%)", PUBLIC_HTML)

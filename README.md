@@ -179,6 +179,12 @@ Common required variables:
 - `DASHBOARD_SESSION_SECRET`
 - Google OAuth settings (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, redirect URIs)
 
+Tutor bug reports additionally require a Gmail account with an app-specific password and a
+Cloudflare Turnstile widget. Configure `SCHEDULING_FEEDBACK_SMTP_USERNAME`,
+`SCHEDULING_FEEDBACK_SMTP_APP_PASSWORD`, `SCHEDULING_FEEDBACK_TO_EMAIL`,
+`TURNSTILE_SITE_KEY`, and `TURNSTILE_SECRET_KEY`. Keep the SMTP password and Turnstile secret
+server-side; only the Turnstile site key is rendered in the tutor dashboard.
+
 Database hostname guidance:
 
 - Inside Docker Compose: use `postgres`.
