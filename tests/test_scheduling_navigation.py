@@ -111,6 +111,11 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('id="student-search"', MANAGEMENT_HTML)
         self.assertIn('id="student-count"', MANAGEMENT_HTML)
         self.assertIn("$('#student-count').textContent=state.students.length", MANAGEMENT_HTML)
+        self.assertIn("<h2>All lessons</h2>", MANAGEMENT_HTML)
+        for lesson_filter in ("all", "upcoming", "completed", "cancelled"):
+            self.assertIn(f'data-lesson-filter="{lesson_filter}"', MANAGEMENT_HTML)
+        self.assertIn("x.category===lessonFilter", MANAGEMENT_HTML)
+        self.assertIn("if(x.category==='upcoming')", MANAGEMENT_HTML)
         self.assertIn("<h2>Register payment</h2>", MANAGEMENT_HTML)
         self.assertNotIn('id="upcoming-count"', MANAGEMENT_HTML)
         self.assertLess(

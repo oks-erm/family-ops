@@ -1,5 +1,6 @@
 import unittest
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
@@ -7,7 +8,11 @@ from uuid import uuid4
 from starlette.requests import Request
 
 from app.db.models import HiddenSchedulingStudent
-from app.routes.scheduling import delete_student_payment, remove_scheduling_student
+from app.routes.scheduling import (
+    _management_booking_json,
+    delete_student_payment,
+    remove_scheduling_student,
+)
 
 
 def _request() -> Request:
@@ -105,6 +110,42 @@ class SchedulingManagementDeletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.execute.await_count, 2)
         session.add.assert_not_called()
         session.commit.assert_awaited_once()
+
+
+class SchedulingManagementLessonTests(unittest.TestCase):
+    def test_management_categories_all_lesson_states(self) -> None:
+        now = datetime(2026, 7, 28, 12, tzinfo=UTC)
+
+        def booking(*, status: str, ends_at: datetime) -> SimpleNamespace:
+            return SimpleNamespace(
+                id=uuid4(),
+                student_name="Student",
+                student_email="student@example.com",
+                starts_at=ends_at - timedelta(hours=1),
+                ends_at=ends_at,
+                status=status,
+            )
+
+        self.assertEqual(
+            _management_booking_json(
+                booking(status="confirmed", ends_at=now + timedelta(hours=1)),
+                now=now,
+            )["category"],
+            "upcoming",
+        )
+        self.assertEqual(
+            _management_booking_json(
+                booking(status="confirmed", ends_at=now), now=now
+            )["category"],
+            "completed",
+        )
+        self.assertEqual(
+            _management_booking_json(
+                booking(status="cancelled", ends_at=now + timedelta(hours=1)),
+                now=now,
+            )["category"],
+            "cancelled",
+        )
 
 
 if __name__ == "__main__":
