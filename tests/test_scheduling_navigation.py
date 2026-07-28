@@ -73,6 +73,8 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Booking link copied.", MANAGEMENT_HTML)
         self.assertIn('id="completed-count"', MANAGEMENT_HTML)
         self.assertIn('id="monthly-count"', MANAGEMENT_HTML)
+        self.assertIn("Total lessons this month", MANAGEMENT_HTML)
+        self.assertNotIn("Completed + scheduled this month", MANAGEMENT_HTML)
         self.assertIn('id="earned-income"', MANAGEMENT_HTML)
         self.assertIn(
             "$('#earned-income').textContent=money(state.metrics.earned_cents)",
