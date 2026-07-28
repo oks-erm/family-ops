@@ -158,6 +158,16 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("buymeacoffee", PUBLIC_HTML.casefold())
         self.assertNotIn("bug-report", PUBLIC_HTML)
 
+    def test_tutor_actions_use_an_in_page_confirmation_modal(self) -> None:
+        self.assertIn('id="confirm-dialog"', MANAGEMENT_HTML)
+        self.assertIn("requestConfirmation('Cancel this lesson?'", MANAGEMENT_HTML)
+        self.assertIn("requestConfirmation('Disconnect iCloud?'", MANAGEMENT_HTML)
+        self.assertIn("requestConfirmation('Remove this student?'", MANAGEMENT_HTML)
+        self.assertIn("requestConfirmation('Delete this payment?'", MANAGEMENT_HTML)
+        self.assertNotIn("confirm(", MANAGEMENT_HTML)
+        self.assertNotIn("alert(", MANAGEMENT_HTML)
+        self.assertNotIn("prompt(", MANAGEMENT_HTML)
+
     def test_public_booking_uses_calendar_layout_and_has_no_eyebrow(self) -> None:
         self.assertIn("width:min(1280px,100%)", PUBLIC_HTML)
         self.assertIn("width:min(1100px,100%)", PUBLIC_HTML)
