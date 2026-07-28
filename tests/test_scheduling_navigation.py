@@ -9,6 +9,7 @@ from app.routes.auth import google_auth_start, logout, student_logout
 from app.routes.calendar import _calendar_result_redirect
 from app.routes.scheduling import (
     ACCOUNT_CONTROL_CSS,
+    BUG_REPORT_HTML,
     MANAGEMENT_HTML,
     PUBLIC_HTML,
     PUBLIC_INFO_HTML,
@@ -17,6 +18,7 @@ from app.routes.scheduling import (
     STUDENT_HTML,
     TUTOR_LANDING_HTML,
     public_booking_page,
+    scheduling_feedback_page,
     scheduling_management_page,
     student_lessons_page,
     tutor_landing_page,
@@ -159,13 +161,33 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("digital duct tape", MANAGEMENT_HTML)
         self.assertNotIn('id="welcome-panel"', MANAGEMENT_HTML)
 
-    def test_feedback_stays_on_management_page(self) -> None:
+    def test_dashboard_footer_links_to_separate_feedback_page(self) -> None:
         self.assertIn('data-slug="okserm"', MANAGEMENT_HTML)
-        self.assertIn('id="bug-report"', MANAGEMENT_HTML)
-        self.assertIn('data-action="bug-report"', MANAGEMENT_HTML)
-        self.assertIn("Please do not include passwords", MANAGEMENT_HTML)
+        self.assertIn('class="dashboard-footer"', MANAGEMENT_HTML)
+        self.assertIn('href="/schedule/feedback"', MANAGEMENT_HTML)
+        self.assertNotIn('id="bug-report"', MANAGEMENT_HTML)
+        self.assertIn('id="bug-report"', BUG_REPORT_HTML)
+        self.assertIn('data-action="bug-report"', BUG_REPORT_HTML)
+        self.assertIn("Please do not include passwords", BUG_REPORT_HTML)
         self.assertNotIn("buymeacoffee", PUBLIC_HTML.casefold())
         self.assertNotIn("bug-report", PUBLIC_HTML)
+
+    async def test_feedback_page_requires_tutor_and_shows_account_control(self) -> None:
+        signed_out = await scheduling_feedback_page(_request())
+        self.assertEqual(signed_out.status_code, 303)
+        self.assertEqual(
+            signed_out.headers["location"], "/auth/google/start?next=scheduling"
+        )
+
+        with patch("app.routes.scheduling.get_settings", return_value=self.settings):
+            signed_in = await scheduling_feedback_page(
+                _request(session={"google_email": "tutor@example.com"})
+            )
+        body = signed_in.body.decode()
+        self.assertIn("Report a bug", body)
+        self.assertIn("Signed in as", body)
+        self.assertIn("tutor@example.com", body)
+        self.assertIn('href="/schedule/manage"', body)
 
     def test_tutor_actions_use_an_in_page_confirmation_modal(self) -> None:
         self.assertIn('id="confirm-dialog"', MANAGEMENT_HTML)
@@ -376,6 +398,7 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_lessons_host_exposes_only_scheduling_and_required_login_routes(self) -> None:
         self.assertTrue(scheduling_host_allows_path("/schedule"))
+        self.assertTrue(scheduling_host_allows_path("/schedule/feedback"))
         self.assertTrue(scheduling_host_allows_path("/schedule/manage"))
         self.assertTrue(scheduling_host_allows_path("/schedule/register"))
         self.assertTrue(scheduling_host_allows_path("/schedule/admin"))

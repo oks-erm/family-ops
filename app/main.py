@@ -60,6 +60,7 @@ _SCHEDULING_HOST_PATHS = (
     "/",
     "/health",
     "/schedule",
+    "/schedule/feedback",
     "/schedule/manage",
     "/auth/google/start",
     "/auth/google/callback",
