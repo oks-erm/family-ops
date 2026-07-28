@@ -12,6 +12,7 @@ from app.db.models import (
     LessonPaymentAllocation,
     LessonType,
     SchedulingCalendar,
+    SchedulingPackage,
     SchedulingProfile,
     StudentMeeting,
     StudentPayment,
@@ -45,6 +46,7 @@ class SchedulingRepository:
         slug: str,
         display_name: str,
         timezone: str,
+        commit: bool = True,
     ) -> SchedulingProfile:
         profile = SchedulingProfile(
             user_id=user_id,
@@ -54,7 +56,10 @@ class SchedulingRepository:
             timezone=timezone,
         )
         self.session.add(profile)
-        await self.session.commit()
+        if commit:
+            await self.session.commit()
+        else:
+            await self.session.flush()
         await self.session.refresh(profile)
         return profile
 
@@ -68,6 +73,37 @@ class SchedulingRepository:
             query.order_by(LessonType.duration_minutes, LessonType.name)
         )
         return list(result.scalars().all())
+
+    async def list_packages(
+        self, *, profile_id: UUID, active_only: bool = False
+    ) -> list[SchedulingPackage]:
+        query = select(SchedulingPackage).where(SchedulingPackage.profile_id == profile_id)
+        if active_only:
+            query = query.where(SchedulingPackage.is_active.is_(True))
+        result = await self.session.execute(
+            query.order_by(SchedulingPackage.sort_order, SchedulingPackage.lesson_count)
+        )
+        return list(result.scalars().all())
+
+    async def replace_packages(
+        self, *, profile_id: UUID, packages: list[tuple[int, int, bool]]
+    ) -> list[SchedulingPackage]:
+        await self.session.execute(
+            delete(SchedulingPackage).where(SchedulingPackage.profile_id == profile_id)
+        )
+        created = [
+            SchedulingPackage(
+                profile_id=profile_id,
+                lesson_count=lesson_count,
+                price_cents=price_cents,
+                is_active=is_active,
+                sort_order=index,
+            )
+            for index, (lesson_count, price_cents, is_active) in enumerate(packages, start=1)
+        ]
+        self.session.add_all(created)
+        await self.session.commit()
+        return created
 
     async def lesson_type(self, *, profile_id: UUID, lesson_type_id: UUID) -> LessonType | None:
         result = await self.session.execute(
@@ -87,7 +123,11 @@ class SchedulingRepository:
         return list(result.scalars().all())
 
     async def replace_rules(
-        self, *, profile_id: UUID, rules: list[tuple[int, time, time]]
+        self,
+        *,
+        profile_id: UUID,
+        rules: list[tuple[int, time, time]],
+        commit: bool = True,
     ) -> list[AvailabilityRule]:
         await self.session.execute(
             delete(AvailabilityRule).where(AvailabilityRule.profile_id == profile_id)
@@ -103,7 +143,10 @@ class SchedulingRepository:
             for weekday, starts_at, ends_at in rules
         ]
         self.session.add_all(created)
-        await self.session.commit()
+        if commit:
+            await self.session.commit()
+        else:
+            await self.session.flush()
         return created
 
     async def list_calendars(self, *, profile_id: UUID) -> list[SchedulingCalendar]:

@@ -1,12 +1,12 @@
-from datetime import UTC, datetime, timedelta
 import secrets
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import User
-from uuid import UUID
 
 
 class UserRepository:
@@ -60,6 +60,32 @@ class UserRepository:
             select(User).where(User.google_email == google_email.strip().casefold())
         )
         return result.scalar_one_or_none()
+
+    async def create_scheduling_user(
+        self,
+        *,
+        google_email: str,
+        display_name: str,
+        timezone: str,
+        commit: bool = True,
+    ) -> User:
+        user = User(
+            telegram_user_id=None,
+            telegram_chat_id=None,
+            first_name=display_name.strip()[:255] or "Tutor",
+            last_name=None,
+            username=None,
+            timezone=timezone,
+            google_email=google_email.strip().casefold(),
+            family_dashboard_enabled=False,
+        )
+        self.session.add(user)
+        if commit:
+            await self.session.commit()
+        else:
+            await self.session.flush()
+        await self.session.refresh(user)
+        return user
 
     async def create_dashboard_link_token(self, *, user_id: UUID) -> str:
         token = secrets.token_urlsafe(32)

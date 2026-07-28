@@ -187,7 +187,7 @@ async def _dashboard_context(request: Request, session):
     if not email:
         return None, None
     dashboard_user = await UserRepository(session).get_by_google_email(google_email=str(email))
-    if dashboard_user is None:
+    if dashboard_user is None or not dashboard_user.family_dashboard_enabled:
         request.session.clear()
         return None, None
     household = await HouseholdRepository(session).ensure_household_for_user(user=dashboard_user)

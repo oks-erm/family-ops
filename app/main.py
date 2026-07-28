@@ -73,6 +73,7 @@ _SCHEDULING_HOST_PATHS = (
 )
 _SCHEDULING_HOST_PREFIXES = (
     "/book/",
+    "/schedule/",
     "/api/scheduling/",
     "/api/public/scheduling/",
 )

@@ -12,6 +12,7 @@ from app.routes.scheduling import (
     MANAGEMENT_HTML,
     PUBLIC_HTML,
     PUBLIC_INFO_HTML,
+    REGISTRATION_HTML,
     SELECTED_SUMMARY_HTML,
     STUDENT_HTML,
     public_booking_page,
@@ -315,6 +316,8 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_lessons_host_exposes_only_scheduling_and_required_login_routes(self) -> None:
         self.assertTrue(scheduling_host_allows_path("/schedule/manage"))
+        self.assertTrue(scheduling_host_allows_path("/schedule/register"))
+        self.assertTrue(scheduling_host_allows_path("/schedule/admin"))
         self.assertTrue(scheduling_host_allows_path("/book/oksana-erm"))
         self.assertTrue(scheduling_host_allows_path("/api/scheduling/manage"))
         self.assertTrue(scheduling_host_allows_path("/calendar/google/start"))
@@ -340,6 +343,12 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
             await google_auth_start(request, next="book:oksana-erm")
 
         self.assertEqual(request.session["oauth_next"], "book:oksana-erm")
+
+    def test_registration_collects_country_subjects_and_browser_timezone(self) -> None:
+        self.assertIn('name="country"', REGISTRATION_HTML)
+        self.assertIn('name="tutoring_subjects"', REGISTRATION_HTML)
+        self.assertIn('name="timezone"', REGISTRATION_HTML)
+        self.assertIn("Intl.DateTimeFormat().resolvedOptions().timeZone", REGISTRATION_HTML)
 
     async def test_calendar_result_returns_to_lessons_for_success_and_failure(self) -> None:
         for status in ("connected", "auth-failed"):

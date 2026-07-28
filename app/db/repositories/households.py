@@ -5,10 +5,10 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
+    DailyPlan,
     Household,
     HouseholdMember,
     HouseholdRole,
-    DailyPlan,
     PendingReceipt,
     Receipt,
     ShoppingItem,
@@ -29,7 +29,9 @@ class HouseholdRepository:
         )
         return result.scalar_one_or_none()
 
-    async def ensure_household_for_user(self, *, user: User) -> Household:
+    async def ensure_household_for_user(
+        self, *, user: User, commit: bool = True
+    ) -> Household:
         household = await self.get_household_for_user(user_id=user.id)
         if household is not None:
             return household
@@ -47,7 +49,10 @@ class HouseholdRepository:
                 role=HouseholdRole.owner,
             )
         )
-        await self.session.commit()
+        if commit:
+            await self.session.commit()
+        else:
+            await self.session.flush()
         await self.session.refresh(household)
         return household
 

@@ -1,5 +1,6 @@
 import unittest
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -116,6 +117,62 @@ class BookingCalendarCancellationTests(unittest.IsolatedAsyncioTestCase):
             booking=booking,
         )
         session.commit.assert_awaited_once()
+
+    async def test_tutor_policy_controls_late_credit_consumption(self) -> None:
+        for consumes_credit, expected_restored in ((True, False), (False, True)):
+            with self.subTest(consumes_credit=consumes_credit):
+                profile_id = uuid4()
+                booking_id = uuid4()
+                profile = SimpleNamespace(
+                    id=profile_id,
+                    household_id=uuid4(),
+                    cancellation_notice_hours=12,
+                    late_cancellation_consumes_credit=consumes_credit,
+                )
+                booking = SimpleNamespace(
+                    id=booking_id,
+                    profile_id=profile_id,
+                    student_email="student@example.com",
+                    status="confirmed",
+                    starts_at=datetime.now(UTC) + timedelta(hours=6),
+                    external_calendar_id="tutor@example.com",
+                    external_event_id="event-123",
+                    cancelled_at=None,
+                    cancellation_consumes_credit=False,
+                )
+                allocation = SimpleNamespace(id=uuid4())
+                session = AsyncMock()
+                session.get.return_value = booking
+
+                @asynccontextmanager
+                async def session_factory(current_session=session):
+                    yield current_session
+
+                with (
+                    patch("app.routes.scheduling.async_session_factory", session_factory),
+                    patch("app.routes.scheduling.SchedulingRepository") as repository_type,
+                    patch(
+                        "app.routes.scheduling._remove_booking_calendar_event",
+                        new=AsyncMock(),
+                    ),
+                ):
+                    repository = repository_type.return_value
+                    repository.profile_by_slug = AsyncMock(return_value=profile)
+                    repository.allocation_for_booking = AsyncMock(return_value=allocation)
+                    result = await student_cancel_lesson(
+                        _student_request(), "oksana-erm", booking_id
+                    )
+
+                self.assertEqual(result["credit_restored"], expected_restored)
+                self.assertEqual(result["late"], consumes_credit)
+                self.assertEqual(
+                    booking.cancellation_consumes_credit,
+                    consumes_credit,
+                )
+                if expected_restored:
+                    session.delete.assert_awaited_once_with(allocation)
+                else:
+                    session.delete.assert_not_awaited()
 
 
 if __name__ == "__main__":

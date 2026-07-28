@@ -15,6 +15,11 @@ Lesson scheduling uses:
 - `app/services/calendar_service.py` for Google, private iCloud CalDAV, and iCal synchronization.
 - `app/services/credential_cipher.py` for encrypted storage of iCloud app-specific passwords.
 - PostgreSQL advisory locks to serialize bookings for one tutor.
+- New tutors may register with a verified Google identity. Scheduling-only users have nullable
+  Telegram identifiers and `family_dashboard_enabled = false`; never let those accounts enter the
+  private Family Copilot dashboard. Registration collects country, tutoring subjects, and timezone.
+- Tutor pricing is stored per profile as a currency, hourly fee, and editable package totals.
+  Cancellation notice and late-credit behavior are structured fields with optional custom text.
 - Google identity is recommended but not mandatory for student bookings. Signed-in students use the
   verified Google email as the stable key for bookings, credits, management, and their permanent Meet
   conference. Guests must provide a name and email, may book one lesson per request, receive a fresh
@@ -54,6 +59,9 @@ settings include `DATABASE_URL`, Telegram/AI credentials, Google OAuth credentia
 Authenticated tutor bug reports use Gmail SMTP and Cloudflare Turnstile. Their credentials come
 from the `SCHEDULING_FEEDBACK_*` and `TURNSTILE_*` environment variables. Never expose the Gmail
 app password, feedback recipient, or Turnstile secret in HTML, logs, tests, or commits.
+The feedback-recipient email is also the initial scheduling super-admin. Optional additional
+super-admins may be configured with `SCHEDULING_SUPERADMIN_EMAILS`; admin pages must remain
+aggregate-only unless a future privacy review explicitly approves tutor-level data.
 
 Google OAuth tokens, iCloud app-specific passwords, Google Meet links, conference data, and private
 iCal URLs are sensitive. Never log or expose them outside the tutor and the matching student. Apple

@@ -14,6 +14,7 @@ from app.db.models import (
     LessonPaymentAllocation,
     LessonType,
     SchedulingCalendar,
+    SchedulingPackage,
     SchedulingProfile,
     StudentMeeting,
 )
@@ -41,7 +42,13 @@ class SchedulingService:
         self.repository = SchedulingRepository(session)
 
     async def ensure_profile(
-        self, *, user_id: UUID, household_id: UUID, display_name: str, timezone: str
+        self,
+        *,
+        user_id: UUID,
+        household_id: UUID,
+        display_name: str,
+        timezone: str,
+        commit: bool = True,
     ) -> SchedulingProfile:
         profile = await self.repository.profile_for_user(user_id=user_id)
         if profile is not None:
@@ -61,10 +68,12 @@ class SchedulingService:
             slug=slug,
             display_name=display_name or "Tutor",
             timezone=validate_timezone(timezone),
+            commit=False,
         )
         await self.repository.replace_rules(
             profile_id=profile.id,
             rules=[(weekday, time(9), time(17)) for weekday in range(5)],
+            commit=False,
         )
         lesson_type = LessonType(
             profile_id=profile.id,
@@ -72,8 +81,33 @@ class SchedulingService:
             duration_minutes=60,
             is_active=True,
         )
-        self.session.add(lesson_type)
-        await self.session.commit()
+        self.session.add_all(
+            [
+                lesson_type,
+                SchedulingPackage(
+                    profile_id=profile.id,
+                    lesson_count=8,
+                    price_cents=22400,
+                    sort_order=1,
+                ),
+                SchedulingPackage(
+                    profile_id=profile.id,
+                    lesson_count=12,
+                    price_cents=32400,
+                    sort_order=2,
+                ),
+                SchedulingPackage(
+                    profile_id=profile.id,
+                    lesson_count=20,
+                    price_cents=50000,
+                    sort_order=3,
+                ),
+            ]
+        )
+        if commit:
+            await self.session.commit()
+        else:
+            await self.session.flush()
         return profile
 
     async def discover_google_calendars(

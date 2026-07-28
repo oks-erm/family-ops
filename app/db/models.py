@@ -92,8 +92,8 @@ class User(Base, TimestampMixin):
     __tablename__ = "users"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    telegram_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
-    telegram_chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, index=True)
+    telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     first_name: Mapped[str | None] = mapped_column(String(255))
     last_name: Mapped[str | None] = mapped_column(String(255))
     username: Mapped[str | None] = mapped_column(String(255))
@@ -101,6 +101,7 @@ class User(Base, TimestampMixin):
     google_email: Mapped[str | None] = mapped_column(String(320), unique=True, index=True)
     dashboard_link_token: Mapped[str | None] = mapped_column(String(128), unique=True, index=True)
     dashboard_link_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    family_dashboard_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
     tasks: Mapped[list["Task"]] = relationship(back_populates="user")
     shopping_items: Mapped[list["ShoppingItem"]] = relationship(back_populates="user")
@@ -359,7 +360,14 @@ class SchedulingProfile(Base, TimestampMixin):
     )
     slug: Mapped[str] = mapped_column(String(100), index=True)
     display_name: Mapped[str] = mapped_column(String(255))
+    country: Mapped[str | None] = mapped_column(String(100))
+    tutoring_subjects: Mapped[str | None] = mapped_column(Text)
     timezone: Mapped[str] = mapped_column(String(64), default="Europe/Lisbon")
+    currency: Mapped[str] = mapped_column(String(3), default="EUR")
+    hourly_rate_cents: Mapped[int] = mapped_column(Integer, default=3000)
+    cancellation_notice_hours: Mapped[int] = mapped_column(Integer, default=12)
+    late_cancellation_consumes_credit: Mapped[bool] = mapped_column(Boolean, default=True)
+    cancellation_policy_text: Mapped[str | None] = mapped_column(Text)
     minimum_notice_minutes: Mapped[int] = mapped_column(Integer, default=720)
     booking_window_days: Mapped[int] = mapped_column(Integer, default=60)
     buffer_before_minutes: Mapped[int] = mapped_column(Integer, default=30)
@@ -367,6 +375,26 @@ class SchedulingProfile(Base, TimestampMixin):
     slot_interval_minutes: Mapped[int] = mapped_column(Integer, default=15)
     booking_calendar_id: Mapped[str | None] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class SchedulingPackage(Base, TimestampMixin):
+    __tablename__ = "scheduling_packages"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "lesson_count",
+            name="uq_scheduling_package_profile_lessons",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_profiles.id", ondelete="CASCADE"), index=True
+    )
+    lesson_count: Mapped[int] = mapped_column(Integer)
+    price_cents: Mapped[int] = mapped_column(Integer)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class SchedulingCalendar(Base, TimestampMixin):
@@ -500,6 +528,7 @@ class StudentPayment(Base, TimestampMixin):
     student_email: Mapped[str] = mapped_column(String(320), index=True)
     lessons_purchased: Mapped[int] = mapped_column(Integer)
     amount_cents: Mapped[int | None] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3), default="EUR")
     paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

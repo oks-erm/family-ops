@@ -184,6 +184,14 @@ Cloudflare Turnstile widget. Configure `SCHEDULING_FEEDBACK_SMTP_USERNAME`,
 `SCHEDULING_FEEDBACK_SMTP_APP_PASSWORD`, `SCHEDULING_FEEDBACK_TO_EMAIL`,
 `TURNSTILE_SITE_KEY`, and `TURNSTILE_SECRET_KEY`. Keep the SMTP password and Turnstile secret
 server-side; only the Turnstile site key is rendered in the tutor dashboard.
+The feedback-recipient Google account can open `/schedule/admin` for aggregate tutor-registration
+statistics. Add comma-separated additional administrators with `SCHEDULING_SUPERADMIN_EMAILS`.
+
+Tutors can register from the scheduling sign-in flow with Google. Registration asks for country,
+tutoring subjects, and timezone, then creates a scheduling-only account that cannot access the
+private Family Copilot household dashboard. Each tutor can configure currency, hourly pricing,
+editable packages, and a structured cancellation policy. Existing profiles are migrated to EUR,
+€30/hour, and the previous 8/12/20-lesson package totals.
 
 Database hostname guidance:
 

@@ -63,6 +63,10 @@ class Settings(BaseSettings):
         default=None,
         alias="SCHEDULING_FEEDBACK_TO_EMAIL",
     )
+    scheduling_superadmin_emails: str | None = Field(
+        default=None,
+        alias="SCHEDULING_SUPERADMIN_EMAILS",
+    )
     turnstile_site_key: str | None = Field(default=None, alias="TURNSTILE_SITE_KEY")
     turnstile_secret_key: str | None = Field(default=None, alias="TURNSTILE_SECRET_KEY")
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")

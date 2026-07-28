@@ -99,6 +99,21 @@ async def google_auth_callback(request: Request, code: str, state: str) -> Redir
             status_code=303,
         )
 
+    if oauth_next == "scheduling":
+        async with async_session_factory() as session:
+            existing_user = await UserRepository(session).get_by_google_email(
+                google_email=email
+            )
+        if existing_user is None:
+            request.session.clear()
+            request.session["pending_tutor_email"] = email
+            request.session["pending_tutor_name"] = str(profile.get("name") or "").strip()
+            scheduling_base = settings.scheduling_public_base_url or settings.public_base_url
+            return RedirectResponse(
+                f"{scheduling_base.rstrip('/')}/schedule/register",
+                status_code=303,
+            )
+
     async with async_session_factory() as session:
         repository = UserRepository(session)
         link_token = request.session.pop("dashboard_link_token", None)
@@ -117,6 +132,12 @@ async def google_auth_callback(request: Request, code: str, state: str) -> Redir
 
     request.session["google_email"] = email
     if oauth_next == "scheduling":
+        scheduling_base = settings.scheduling_public_base_url or settings.public_base_url
+        return RedirectResponse(
+            f"{scheduling_base.rstrip('/')}/schedule/manage",
+            status_code=303,
+        )
+    if not user.family_dashboard_enabled:
         scheduling_base = settings.scheduling_public_base_url or settings.public_base_url
         return RedirectResponse(
             f"{scheduling_base.rstrip('/')}/schedule/manage",
