@@ -101,6 +101,10 @@ class TutorRegistrationTests(unittest.IsolatedAsyncioTestCase):
         body = response.body.decode()
         self.assertIn("Create my tutor page", body)
         self.assertIn("/api/scheduling/register", body)
+        self.assertIn("Signed in as", body)
+        self.assertIn("new@example.com", body)
+        self.assertIn('/auth/logout?next=scheduling', body)
+        self.assertIn("/schedule/manage#settings", body)
 
     async def test_scheduling_only_user_is_rejected_by_family_dashboard(self) -> None:
         request = _request(session={"google_email": "tutor@example.com"})
@@ -170,6 +174,8 @@ class SchedulingAdminTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Active booking pages", body)
         self.assertIn("New this month", body)
         self.assertNotIn("Search", body)
+        self.assertIn("Signed in as", body)
+        self.assertIn('/auth/logout?next=scheduling', body)
 
     async def test_admin_statistics_are_aggregate_only(self) -> None:
         profiles = [

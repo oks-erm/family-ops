@@ -5,7 +5,7 @@ from starlette.requests import Request
 
 from app.config import Settings
 from app.main import root, scheduling_host_allows_path
-from app.routes.auth import google_auth_start, student_logout
+from app.routes.auth import google_auth_start, logout, student_logout
 from app.routes.calendar import _calendar_result_redirect
 from app.routes.scheduling import (
     ACCOUNT_CONTROL_CSS,
@@ -15,9 +15,11 @@ from app.routes.scheduling import (
     REGISTRATION_HTML,
     SELECTED_SUMMARY_HTML,
     STUDENT_HTML,
+    TUTOR_LANDING_HTML,
     public_booking_page,
     scheduling_management_page,
     student_lessons_page,
+    tutor_landing_page,
 )
 
 
@@ -89,7 +91,7 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("removeButton.innerHTML=trashIcon", MANAGEMENT_HTML)
         self.assertIn("remove.innerHTML=trashIcon", MANAGEMENT_HTML)
         self.assertIn("`Delete payment for ${x.student_email}`", MANAGEMENT_HTML)
-        self.assertIn("isNew?'welcome':'lessons'", MANAGEMENT_HTML)
+        self.assertIn("known=['settings','lessons']", MANAGEMENT_HTML)
         self.assertIn('class="card availability-card"', MANAGEMENT_HTML)
         self.assertNotIn('class="card wide"', MANAGEMENT_HTML)
         self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", MANAGEMENT_HTML)
@@ -115,13 +117,13 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('name="app_specific_password"', MANAGEMENT_HTML)
         self.assertIn("never your main Apple password", MANAGEMENT_HTML)
         self.assertIn("/api/scheduling/icloud-connections", MANAGEMENT_HTML)
-        self.assertIn('data-tab="setup"', MANAGEMENT_HTML)
         self.assertIn('data-tab="lessons"', MANAGEMENT_HTML)
-        self.assertIn('data-tab="welcome"', MANAGEMENT_HTML)
-        self.assertIn('id="welcome-panel"', MANAGEMENT_HTML)
-        self.assertIn('id="setup-panel" hidden', MANAGEMENT_HTML)
+        self.assertIn('data-tab="settings"', MANAGEMENT_HTML)
+        self.assertNotIn('data-tab="welcome"', MANAGEMENT_HTML)
+        self.assertNotIn('id="welcome-panel"', MANAGEMENT_HTML)
+        self.assertIn('id="settings-panel" hidden', MANAGEMENT_HTML)
         self.assertIn('id="lessons-panel"', MANAGEMENT_HTML)
-        self.assertIn("result?'setup'", MANAGEMENT_HTML)
+        self.assertIn("result?'settings'", MANAGEMENT_HTML)
         self.assertIn("<h2>Students and balances</h2>", MANAGEMENT_HTML)
         self.assertIn('id="student-search"', MANAGEMENT_HTML)
         self.assertIn('id="student-count"', MANAGEMENT_HTML)
@@ -134,23 +136,30 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<h2>Register payment</h2>", MANAGEMENT_HTML)
         self.assertNotIn('id="upcoming-count"', MANAGEMENT_HTML)
         self.assertLess(
-            MANAGEMENT_HTML.index('id="setup-panel"'),
+            MANAGEMENT_HTML.index('data-tab="lessons"'),
+            MANAGEMENT_HTML.index('data-tab="settings"'),
+        )
+        self.assertLess(
             MANAGEMENT_HTML.index('id="lessons-panel"'),
+            MANAGEMENT_HTML.index('id="settings-panel"'),
         )
         self.assertNotIn("<h2>Other calendar feeds</h2>", MANAGEMENT_HTML)
         self.assertNotIn('id="ical"', MANAGEMENT_HTML)
         self.assertNotIn('id="feeds"', MANAGEMENT_HTML)
 
-    def test_tutor_intro_and_feedback_stay_on_management_page(self) -> None:
-        self.assertIn("digital duct tape", MANAGEMENT_HTML)
-        self.assertIn("dramatic puff of experimental software", MANAGEMENT_HTML)
+    def test_tutor_intro_is_a_separate_landing_page(self) -> None:
+        self.assertIn("digital duct tape", TUTOR_LANDING_HTML)
+        self.assertIn("dramatic puff of experimental software", TUTOR_LANDING_HTML)
         self.assertNotIn(
             "The app stores only the account, scheduling, booking, and payment-tracking",
-            MANAGEMENT_HTML,
+            TUTOR_LANDING_HTML,
         )
-        self.assertIn("Connect your calendars", MANAGEMENT_HTML)
-        self.assertNotIn("welcome-gif", MANAGEMENT_HTML)
-        self.assertIn('/api/scheduling/assets/coffee-qr.png', MANAGEMENT_HTML)
+        self.assertIn("Connect your calendars", TUTOR_LANDING_HTML)
+        self.assertIn('/api/scheduling/assets/coffee-qr.png', TUTOR_LANDING_HTML)
+        self.assertNotIn("digital duct tape", MANAGEMENT_HTML)
+        self.assertNotIn('id="welcome-panel"', MANAGEMENT_HTML)
+
+    def test_feedback_stays_on_management_page(self) -> None:
         self.assertIn('data-slug="okserm"', MANAGEMENT_HTML)
         self.assertIn('id="bug-report"', MANAGEMENT_HTML)
         self.assertIn('data-action="bug-report"', MANAGEMENT_HTML)
@@ -315,6 +324,47 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 303)
         self.assertEqual(response.headers["location"], "/schedule/manage")
 
+    async def test_signed_out_lessons_root_opens_tutor_landing(self) -> None:
+        with patch("app.main.get_settings", return_value=self.settings):
+            response = await root(_request())
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/schedule")
+
+    async def test_tutor_landing_and_dashboard_show_account_controls(self) -> None:
+        signed_out = await tutor_landing_page(_request())
+        signed_out_body = signed_out.body.decode()
+        self.assertIn('id="tutor-account"', signed_out_body)
+        self.assertIn("Sign in</a>", signed_out_body)
+        self.assertIn("Create your free tutor page with Google", signed_out_body)
+
+        signed_in = await tutor_landing_page(
+            _request(session={"google_email": "tutor@example.com"})
+        )
+        self.assertIn("Signed in as", signed_in.body.decode())
+        self.assertIn("Open tutor dashboard", signed_in.body.decode())
+
+        dashboard = await scheduling_management_page(
+            _request(session={"google_email": "tutor@example.com"})
+        )
+        dashboard_body = dashboard.body.decode()
+        self.assertIn('id="tutor-account"', dashboard_body)
+        self.assertIn("tutor@example.com", dashboard_body)
+        self.assertIn('/auth/logout?next=scheduling', dashboard_body)
+
+    async def test_tutor_logout_returns_to_landing(self) -> None:
+        request = _request(session={"google_email": "tutor@example.com"})
+        response = await logout(request, next="scheduling")
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/schedule")
+        self.assertEqual(request.session, {})
+
+        family_response = await logout(
+            _request(session={"google_email": "family@example.com"})
+        )
+        self.assertEqual(family_response.headers["location"], "/dashboard")
+
     async def test_management_page_has_no_family_dashboard_link(self) -> None:
         response = await scheduling_management_page(
             _request(session={"google_email": "tutor@example.com"})
@@ -325,6 +375,7 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(">Dashboard<", body)
 
     def test_lessons_host_exposes_only_scheduling_and_required_login_routes(self) -> None:
+        self.assertTrue(scheduling_host_allows_path("/schedule"))
         self.assertTrue(scheduling_host_allows_path("/schedule/manage"))
         self.assertTrue(scheduling_host_allows_path("/schedule/register"))
         self.assertTrue(scheduling_host_allows_path("/schedule/admin"))

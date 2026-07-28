@@ -173,8 +173,10 @@ async def not_invited() -> str:
 
 
 @router.post("/auth/logout")
-async def logout(request: Request) -> RedirectResponse:
+async def logout(request: Request, next: str = "") -> RedirectResponse:
     request.session.clear()
+    if next == "scheduling":
+        return RedirectResponse("/schedule", status_code=303)
     return RedirectResponse("/dashboard", status_code=303)
 
 

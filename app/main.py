@@ -5,13 +5,10 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
-from sqlalchemy import select
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.bot.main import create_bot, start_polling_in_background
 from app.config import get_settings
-from app.db.models import SchedulingProfile
-from app.db.session import async_session_factory
 from app.routes.auth import router as auth_router
 from app.routes.calendar import router as calendar_router
 from app.routes.dashboard import router as dashboard_router
@@ -62,6 +59,7 @@ app.include_router(scheduling_router)
 _SCHEDULING_HOST_PATHS = (
     "/",
     "/health",
+    "/schedule",
     "/schedule/manage",
     "/auth/google/start",
     "/auth/google/callback",
@@ -104,17 +102,7 @@ async def root(request: Request) -> dict[str, str] | RedirectResponse:
     if scheduling_host and request.url.hostname == scheduling_host:
         if request.session.get("google_email"):
             return RedirectResponse("/schedule/manage", status_code=303)
-        async with async_session_factory() as session:
-            result = await session.execute(
-                select(SchedulingProfile)
-                .where(SchedulingProfile.is_active.is_(True))
-                .order_by(SchedulingProfile.created_at)
-                .limit(1)
-            )
-            profile = result.scalar_one_or_none()
-        if profile is not None:
-            return RedirectResponse(f"/book/{profile.slug}", status_code=303)
-        return RedirectResponse("/schedule/manage", status_code=303)
+        return RedirectResponse("/schedule", status_code=303)
     return {
         "name": "Family Copilot",
         "status": "running",
