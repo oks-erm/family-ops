@@ -149,7 +149,7 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
             MANAGEMENT_HTML,
         )
         self.assertIn("Connect your calendars", MANAGEMENT_HTML)
-        self.assertIn("https://media.giphy.com/media/hXMGQqJFlIQMOjpsKC/giphy.gif", MANAGEMENT_HTML)
+        self.assertNotIn("welcome-gif", MANAGEMENT_HTML)
         self.assertIn('/api/scheduling/assets/coffee-qr.png', MANAGEMENT_HTML)
         self.assertIn('data-slug="okserm"', MANAGEMENT_HTML)
         self.assertIn('id="bug-report"', MANAGEMENT_HTML)
