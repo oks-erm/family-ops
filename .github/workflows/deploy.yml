@@ -110,53 +110,10 @@ jobs:
           cache-from: type=gha,scope=family-copilot
           cache-to: type=gha,mode=max,scope=family-copilot
 
-  build-push-scheduling:
-    name: Build & push tutor-scheduling image
-    needs: [verify, build-push]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      image_name: ${{ steps.lower.outputs.name }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Lowercase scheduling image name
-        id: lower
-        run: echo "name=$(echo 'ghcr.io/${{ github.repository }}-scheduling' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || github.token }}
-
-      - name: Set up QEMU (for cross-platform builds)
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: ./tutor-scheduling
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ${{ steps.lower.outputs.name }}:sha-${{ needs.build-push.outputs.image_tag }}
-            ${{ steps.lower.outputs.name }}:latest
-          cache-from: type=gha,scope=tutor-scheduling
-          cache-to: type=gha,mode=max,scope=tutor-scheduling
-
   # ── Deploy to Hetzner ─────────────────────────────────────────────────────────
   deploy:
     name: Deploy to production
-    needs: [build-push, build-push-scheduling]
+    needs: build-push
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -192,19 +149,17 @@ jobs:
         uses: appleboy/ssh-action@v1
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
-          SCHEDULING_ENV_FILE: ${{ secrets.SCHEDULING_ENV_FILE }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
           GITHUB_ACTOR: ${{ github.actor }}
           IMAGE_NAME: ${{ needs.build-push.outputs.image_name }}
           IMAGE_TAG: "sha-${{ needs.build-push.outputs.image_tag }}"
-          GHCR_SCHEDULING_IMAGE: ${{ needs.build-push-scheduling.outputs.image_name }}
           RESTART_TRAEFIK: ${{ github.event_name == 'workflow_dispatch' && inputs.restart_traefik || false }}
         with:
           host: ${{ secrets.HETZNER_HOST }}
           username: ${{ secrets.HETZNER_SSH_USER }}
           key: ${{ secrets.HETZNER_SSH_KEY }}
           passphrase: ${{ secrets.HETZNER_SSH_PASSPHRASE }}
-          envs: ENV_FILE,SCHEDULING_ENV_FILE,GHCR_TOKEN,GITHUB_ACTOR,IMAGE_NAME,IMAGE_TAG,GHCR_SCHEDULING_IMAGE,RESTART_TRAEFIK
+          envs: ENV_FILE,GHCR_TOKEN,GITHUB_ACTOR,IMAGE_NAME,IMAGE_TAG,RESTART_TRAEFIK
           script: |
             set -e
             cd /opt/family-copilot
@@ -216,30 +171,22 @@ jobs:
               exit 1
             fi
 
-            # Write production .env from secret, then pin the image tags
+            # Write production .env from secret, then pin the image tag
             printf '%s\n' "$ENV_FILE" > .env
             sed -i '/^GHCR_IMAGE=/d' .env
             sed -i '/^IMAGE_TAG=/d' .env
             echo "GHCR_IMAGE=$IMAGE_NAME" >> .env
             echo "IMAGE_TAG=$IMAGE_TAG" >> .env
 
-            # Write scheduling .env.scheduling if the secret is set
-            if [ -n "$SCHEDULING_ENV_FILE" ]; then
-              printf '%s\n' "$SCHEDULING_ENV_FILE" > .env.scheduling
-            fi
-            # Pin scheduling image into the shared .env (docker-compose.prod.yml reads it from .env)
-            sed -i '/^GHCR_SCHEDULING_IMAGE=/d' .env
-            echo "GHCR_SCHEDULING_IMAGE=$GHCR_SCHEDULING_IMAGE" >> .env
-
             # Authenticate to GHCR
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
-            # Pull new images and restart (migrations run inside each entrypoint).
-            $compose_cmd pull app tutor-scheduling
-            if ! $compose_cmd up -d --remove-orphans; then
+            # Pull and restart only the family-copilot app service
+            $compose_cmd pull app
+            if ! $compose_cmd up -d app; then
               echo "First compose up failed, retrying once in 5s..."
               sleep 5
-              $compose_cmd up -d --remove-orphans
+              $compose_cmd up -d app
             fi
 
             if [ "$RESTART_TRAEFIK" = "true" ]; then

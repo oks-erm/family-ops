@@ -37,7 +37,7 @@ services:
     restart: unless-stopped
 
   tutor-scheduling:
-    image: ${GHCR_SCHEDULING_IMAGE}:${IMAGE_TAG:-latest}
+    image: ${GHCR_SCHEDULING_IMAGE}:${SCHEDULING_IMAGE_TAG:-latest}
     env_file:
       - .env.scheduling
     environment:
