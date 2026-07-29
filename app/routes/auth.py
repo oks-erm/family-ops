@@ -25,7 +25,6 @@ def _redirect_uri() -> str:
 async def google_auth_start(
     request: Request,
     link_token: str | None = None,
-    next: str | None = None,
 ) -> RedirectResponse:
     settings = get_settings()
     if not settings.google_client_id:
@@ -35,12 +34,6 @@ async def google_auth_start(
     request.session["oauth_state"] = state
     if link_token:
         request.session["dashboard_link_token"] = link_token
-    if next == "scheduling":
-        request.session["oauth_next"] = "scheduling"
-    elif next and re.fullmatch(r"book:[a-z0-9-]{3,100}", next):
-        request.session["oauth_next"] = next
-    else:
-        request.session.pop("oauth_next", None)
 
     params = {
         "client_id": settings.google_client_id,
@@ -87,33 +80,6 @@ async def google_auth_callback(request: Request, code: str, state: str) -> Redir
     if not email:
         raise HTTPException(status_code=400, detail="Google did not return an email address.")
 
-    oauth_next = request.session.pop("oauth_next", None)
-    if isinstance(oauth_next, str) and oauth_next.startswith("book:"):
-        request.session.pop("dashboard_link_token", None)
-        slug = oauth_next.removeprefix("book:")
-        request.session["student_google_email"] = email
-        request.session["student_google_name"] = str(profile.get("name") or "").strip()
-        scheduling_base = settings.scheduling_public_base_url or settings.public_base_url
-        return RedirectResponse(
-            f"{scheduling_base.rstrip('/')}/book/{slug}",
-            status_code=303,
-        )
-
-    if oauth_next == "scheduling":
-        async with async_session_factory() as session:
-            existing_user = await UserRepository(session).get_by_google_email(
-                google_email=email
-            )
-        if existing_user is None:
-            request.session.clear()
-            request.session["pending_tutor_email"] = email
-            request.session["pending_tutor_name"] = str(profile.get("name") or "").strip()
-            scheduling_base = settings.scheduling_public_base_url or settings.public_base_url
-            return RedirectResponse(
-                f"{scheduling_base.rstrip('/')}/schedule/register",
-                status_code=303,
-            )
-
     async with async_session_factory() as session:
         repository = UserRepository(session)
         link_token = request.session.pop("dashboard_link_token", None)
@@ -131,18 +97,6 @@ async def google_auth_callback(request: Request, code: str, state: str) -> Redir
                 return RedirectResponse("/auth/not-invited", status_code=303)
 
     request.session["google_email"] = email
-    if oauth_next == "scheduling":
-        scheduling_base = settings.scheduling_public_base_url or settings.public_base_url
-        return RedirectResponse(
-            f"{scheduling_base.rstrip('/')}/schedule/manage",
-            status_code=303,
-        )
-    if not user.family_dashboard_enabled:
-        scheduling_base = settings.scheduling_public_base_url or settings.public_base_url
-        return RedirectResponse(
-            f"{scheduling_base.rstrip('/')}/schedule/manage",
-            status_code=303,
-        )
     return RedirectResponse("/dashboard", status_code=303)
 
 
@@ -173,16 +127,6 @@ async def not_invited() -> str:
 
 
 @router.post("/auth/logout")
-async def logout(request: Request, next: str = "") -> RedirectResponse:
+async def logout(request: Request) -> RedirectResponse:
     request.session.clear()
-    if next == "scheduling":
-        return RedirectResponse("/schedule", status_code=303)
     return RedirectResponse("/dashboard", status_code=303)
-
-
-@router.post("/auth/student/logout")
-async def student_logout(request: Request, slug: str = "") -> RedirectResponse:
-    request.session.pop("student_google_email", None)
-    request.session.pop("student_google_name", None)
-    destination = f"/book/{slug}" if re.fullmatch(r"[a-z0-9-]{3,100}", slug) else "/"
-    return RedirectResponse(destination, status_code=303)

@@ -14,7 +14,6 @@ from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.users import UserRepository
 from app.db.session import async_session_factory
 from app.services.calendar_service import CalendarService, CalendarSyncError
-from app.services.scheduling_service import SchedulingService
 from app.utils.urls import UnsafeExternalURLError, validate_public_https_url
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
@@ -34,13 +33,6 @@ def _calendar_redirect_uri() -> str:
 
 
 def _calendar_result_redirect(request: Request, status: str) -> RedirectResponse:
-    if request.session.pop("calendar_oauth_next", None) == "scheduling":
-        settings = get_settings()
-        scheduling_base = settings.scheduling_public_base_url or settings.public_base_url
-        return RedirectResponse(
-            f"{scheduling_base.rstrip('/')}/schedule/manage?calendar={status}",
-            status_code=303,
-        )
     return RedirectResponse(f"/dashboard?calendar={status}", status_code=303)
 
 
@@ -59,7 +51,7 @@ async def _dashboard_context(request: Request, session):
 
 
 @router.get("/google/start")
-async def google_calendar_start(request: Request, next: str | None = None) -> RedirectResponse:
+async def google_calendar_start(request: Request) -> RedirectResponse:
     settings = get_settings()
     if not settings.google_client_id:
         raise HTTPException(status_code=400, detail="GOOGLE_CLIENT_ID is not configured.")
@@ -78,10 +70,6 @@ async def google_calendar_start(request: Request, next: str | None = None) -> Re
     state = secrets.token_urlsafe(24)
     request.session["calendar_oauth_state"] = state
     request.session["calendar_oauth_user_id"] = str(user.id)
-    if next == "scheduling":
-        request.session["calendar_oauth_next"] = "scheduling"
-    else:
-        request.session.pop("calendar_oauth_next", None)
     query = urlencode(
         {
             "client_id": settings.google_client_id,
@@ -184,37 +172,15 @@ async def google_calendar_callback(
             scopes=GOOGLE_SCOPES,
         )
         try:
-            display_name = (
-                " ".join(part for part in [user.first_name, user.last_name] if part) or "Tutor"
-            )
-            scheduling_service = SchedulingService(session)
-            profile = await scheduling_service.ensure_profile(
-                user_id=user.id,
-                household_id=household.id,
-                display_name=display_name,
-                timezone=user.timezone,
-            )
-            await scheduling_service.discover_google_calendars(
-                profile=profile,
-                connection_id=connection.id,
-            )
             await CalendarService(session).sync_google_connections(
                 household_id=household.id,
                 connection_id=connection.id,
             )
         except CalendarSyncError:
-            logger.warning(
-                "Google Calendar OAuth succeeded but initial calendar sync was rejected."
-            )
-            return _calendar_result_redirect(request, "connected-sync-failed")
-        except httpx.HTTPStatusError as exc:
-            logger.warning(
-                "Google Calendar OAuth succeeded but initial calendar sync was rejected.",
-                extra={"status_code": exc.response.status_code},
-            )
+            logger.warning("Google Calendar OAuth succeeded but initial sync was rejected.")
             return _calendar_result_redirect(request, "connected-sync-failed")
         except httpx.HTTPError:
-            logger.exception("Google Calendar OAuth succeeded but initial calendar sync failed.")
+            logger.exception("Google Calendar OAuth succeeded but initial sync failed.")
             return _calendar_result_redirect(request, "connected-sync-failed")
         return _calendar_result_redirect(request, "connected")
 

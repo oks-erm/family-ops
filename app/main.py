@@ -1,10 +1,9 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.bot.main import create_bot, start_polling_in_background
@@ -12,7 +11,6 @@ from app.config import get_settings
 from app.routes.auth import router as auth_router
 from app.routes.calendar import router as calendar_router
 from app.routes.dashboard import router as dashboard_router
-from app.routes.scheduling import router as scheduling_router
 from app.services.scheduler_service import SchedulerService
 
 logging.basicConfig(level=logging.INFO)
@@ -53,57 +51,10 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(calendar_router)
-app.include_router(scheduling_router)
-
-
-_SCHEDULING_HOST_PATHS = (
-    "/",
-    "/health",
-    "/schedule",
-    "/schedule/feedback",
-    "/schedule/manage",
-    "/auth/google/start",
-    "/auth/google/callback",
-    "/auth/not-invited",
-    "/auth/logout",
-    "/auth/student/logout",
-    "/calendar/google/start",
-    "/calendar/google/callback",
-)
-_SCHEDULING_HOST_PREFIXES = (
-    "/book/",
-    "/schedule/",
-    "/api/scheduling/",
-    "/api/public/scheduling/",
-)
-
-
-def scheduling_host_allows_path(path: str) -> bool:
-    return path in _SCHEDULING_HOST_PATHS or path.startswith(_SCHEDULING_HOST_PREFIXES)
-
-
-@app.middleware("http")
-async def isolate_scheduling_host(request: Request, call_next):
-    scheduling_host = urlsplit(get_settings().scheduling_public_base_url or "").hostname
-    if (
-        scheduling_host
-        and (request.url.hostname or "").casefold() == scheduling_host.casefold()
-        and not scheduling_host_allows_path(request.url.path)
-    ):
-        if request.url.path.startswith("/api/"):
-            return JSONResponse({"detail": "Not found."}, status_code=404)
-        return RedirectResponse("/schedule/manage", status_code=303)
-    return await call_next(request)
 
 
 @app.get("/", response_model=None)
 async def root(request: Request) -> dict[str, str] | RedirectResponse:
-    settings = get_settings()
-    scheduling_host = urlsplit(settings.scheduling_public_base_url or "").hostname
-    if scheduling_host and request.url.hostname == scheduling_host:
-        if request.session.get("google_email"):
-            return RedirectResponse("/schedule/manage", status_code=303)
-        return RedirectResponse("/schedule", status_code=303)
     return {
         "name": "Family Copilot",
         "status": "running",

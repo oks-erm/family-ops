@@ -24,7 +24,6 @@ services:
     env_file:
       - .env
     environment:
-      SCHEDULING_PUBLIC_BASE_URL: https://${SCHEDULING_DOMAIN:-lessons.sdfgh.space}
       SESSION_COOKIE_DOMAIN: ${SESSION_COOKIE_DOMAIN:-.sdfgh.space}
     labels:
       - "traefik.enable=true"
@@ -32,10 +31,25 @@ services:
       - "traefik.http.routers.app.entrypoints=websecure"
       - "traefik.http.routers.app.tls.certresolver=letsencrypt"
       - "traefik.http.services.app.loadbalancer.server.port=8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  tutor-scheduling:
+    image: ${GHCR_SCHEDULING_IMAGE}:${IMAGE_TAG:-latest}
+    env_file:
+      - .env.scheduling
+    environment:
+      PUBLIC_BASE_URL: https://${SCHEDULING_DOMAIN:-lessons.sdfgh.space}
+      SESSION_COOKIE_DOMAIN: ${SESSION_COOKIE_DOMAIN:-.sdfgh.space}
+    labels:
+      - "traefik.enable=true"
       - "traefik.http.routers.scheduling.rule=Host(`${SCHEDULING_DOMAIN:-lessons.sdfgh.space}`)"
       - "traefik.http.routers.scheduling.entrypoints=websecure"
       - "traefik.http.routers.scheduling.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.scheduling.service=app"
+      - "traefik.http.services.tutor-scheduling.loadbalancer.server.port=8001"
+      - "traefik.http.routers.scheduling.service=tutor-scheduling"
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,6 +63,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-family}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
