@@ -1,0 +1,17 @@
+{
+  "synthetic": true,
+  "households": 100,
+  "messages": 300,
+  "pool_connections": 2,
+  "worker_loops": 12,
+  "global_limit": 8,
+  "peak_active": 8,
+  "elapsed_seconds": 4.189,
+  "messages_per_second": 71.61,
+  "claim_work_finish_p50_ms": 112.4,
+  "claim_work_finish_p95_ms": 222.4,
+  "per_channel_order": "passed",
+  "model_calls": 0,
+  "messages_sent": 0,
+  "limitations": "Local queue throughput, not production capacity or model latency."
+}

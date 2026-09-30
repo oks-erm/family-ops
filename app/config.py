@@ -5,6 +5,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    assistant_worker_concurrency: int = Field(
+        default=4, ge=1, le=16, alias="ASSISTANT_WORKER_CONCURRENCY"
+    )
+    assistant_global_concurrency: int = Field(
+        default=12, ge=1, le=64, alias="ASSISTANT_GLOBAL_CONCURRENCY"
+    )
+    assistant_turn_deadline_seconds: int = Field(
+        default=180, ge=30, le=600, alias="ASSISTANT_TURN_DEADLINE_SECONDS"
+    )
+    database_pool_size: int = Field(default=5, ge=2, le=50, alias="DATABASE_POOL_SIZE")
+    database_max_overflow: int = Field(default=5, ge=0, le=50, alias="DATABASE_MAX_OVERFLOW")
     app_env: str = Field(default="local", alias="APP_ENV")
     database_url: str = Field(
         default="postgresql+asyncpg://family:family@localhost:5432/family_copilot",
@@ -22,9 +33,7 @@ class Settings(BaseSettings):
     ai_request_timeout_seconds: float = Field(default=8.0, alias="AI_REQUEST_TIMEOUT_SECONDS")
     assistant_v2_enabled: bool = Field(default=False, alias="ASSISTANT_V2_ENABLED")
     assistant_model: str = Field(default="gpt-6-luna", alias="ASSISTANT_MODEL")
-    assistant_reasoning_model: str = Field(
-        default="gpt-6.1-sol", alias="ASSISTANT_REASONING_MODEL"
-    )
+    assistant_reasoning_model: str = Field(default="gpt-6.1-sol", alias="ASSISTANT_REASONING_MODEL")
     assistant_timeout_seconds: float = Field(
         default=30, ge=1, le=120, alias="ASSISTANT_TIMEOUT_SECONDS"
     )
@@ -34,9 +43,7 @@ class Settings(BaseSettings):
     assistant_monthly_token_limit: int = Field(
         default=250000, ge=0, le=100000000, alias="ASSISTANT_MONTHLY_TOKEN_LIMIT"
     )
-    assistant_history_days: int = Field(
-        default=7, ge=1, le=30, alias="ASSISTANT_HISTORY_DAYS"
-    )
+    assistant_history_days: int = Field(default=7, ge=1, le=30, alias="ASSISTANT_HISTORY_DAYS")
     monthly_summary_time: str = Field(default="20:00", alias="MONTHLY_SUMMARY_TIME")
     planning_evening_time: str = Field(default="21:00", alias="PLANNING_EVENING_TIME")
     morning_plan_time: str = Field(default="07:30", alias="MORNING_PLAN_TIME")

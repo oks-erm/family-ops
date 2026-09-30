@@ -14,6 +14,29 @@ class Arguments(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
+class WriteArguments(Arguments):
+    request_complete: bool = Field(
+        default=False,
+        description="True only if this tool fulfills the ENTIRE user request and needs no further "
+        "reads, actions or explanation. The app returns its receipt without another model call.",
+    )
+
+
+class ConversationAnswer(Arguments):
+    reply: str = Field(min_length=1, max_length=8000)
+    topic: Literal["shopping", "tasks", "finance", "planning", "calendar", "general"]
+    needs_clarification: bool
+
+
+def answer_format():
+    return {
+        "type": "json_schema",
+        "name": "household_answer",
+        "strict": True,
+        "schema": ConversationAnswer.model_json_schema(),
+    }
+
+
 class ListRecords(Arguments):
     kind: Literal["shopping", "tasks"]
     query: str | None = Field(default=None, max_length=100)
@@ -35,11 +58,11 @@ class NewRecord(Arguments):
         return self
 
 
-class CreateRecords(Arguments):
+class CreateRecords(WriteArguments):
     items: list[NewRecord] = Field(min_length=1, max_length=20)
 
 
-class ChangeRecord(Arguments):
+class ChangeRecord(WriteArguments):
     kind: Literal["shopping", "task"]
     record_id: UUID
     action: Literal["rename", "set_store", "reschedule", "complete", "remove"]
@@ -78,18 +101,20 @@ class FinanceQuery(Arguments):
         return self
 
 
-class RecordTransaction(Arguments):
+class RecordTransaction(WriteArguments):
     description: ShortText
     amount: Annotated[
         Decimal,
         Field(gt=0, le=100000000, max_digits=12, decimal_places=2),
         # Pydantic's generated Decimal regex uses lookaround, which the provider rejects.
         # Send exact decimal strings; the independent runtime bounds still apply.
-        WithJsonSchema({
-            "type": "string",
-            "pattern": r"^[0-9]{1,9}(\.[0-9]{1,2})?$",
-            "description": "Positive decimal amount, at most 100000000, with up to two decimals.",
-        }),
+        WithJsonSchema(
+            {
+                "type": "string",
+                "pattern": r"^[0-9]{1,9}(\.[0-9]{1,2})?$",
+                "description": "Positive decimal, at most 100000000, up to two decimals.",
+            }
+        ),
     ]
     currency: str = Field(pattern=r"^[A-Z]{3}$")
     kind: Literal["expense", "income"]
@@ -101,7 +126,7 @@ class DayPlan(Arguments):
     day: date
 
 
-class SavePlanning(Arguments):
+class SavePlanning(WriteArguments):
     day: date
     work_start: time | None = None
     work_end: time | None = None

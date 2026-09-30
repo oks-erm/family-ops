@@ -23,10 +23,19 @@ async def verify():
     assert settings.telegram_bot_token, "Missing Telegram configuration"
     async with async_session_factory() as session:
         revision = await session.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "202609300001", "Unexpected database revision"
+        assert revision == "202609300002", "Unexpected database revision"
         for name in (
-            "assistant_conversations", "assistant_turns", "assistant_actions",
-            "assistant_budgets", "assistant_model_calls", "household_calendar_selections",
+            "assistant_conversations",
+            "assistant_turns",
+            "assistant_actions",
+            "assistant_budgets",
+            "assistant_model_calls",
+            "household_calendar_selections",
+            "assistant_inbox",
+            "assistant_outbox",
+            "assistant_household_policies",
+            "runtime_leases",
+            "transport_cursors",
         ):
             assert await session.scalar(text("SELECT to_regclass(:name)"), {"name": name}), name
     async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
@@ -38,12 +47,19 @@ async def verify():
             assert response.status_code == 404, "Lesson route exposed by household app"
         response = await client.get("http://127.0.0.1:8000/api/dashboard")
         assert response.status_code == 401, "Dashboard authentication smoke failed"
-    print(json.dumps({
-        "release_checks": "passed", "migration": revision, "engine_enabled": True,
-        "models": [settings.assistant_model, settings.assistant_reasoning_model],
-        "internal_and_public_health": "passed", "household_lesson_routes": "absent",
-        "dashboard_authentication": "passed",
-    }))
+    print(
+        json.dumps(
+            {
+                "release_checks": "passed",
+                "migration": revision,
+                "engine_enabled": True,
+                "models": [settings.assistant_model, settings.assistant_reasoning_model],
+                "internal_and_public_health": "passed",
+                "household_lesson_routes": "absent",
+                "dashboard_authentication": "passed",
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

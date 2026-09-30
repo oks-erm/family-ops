@@ -3,10 +3,11 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.db.models import ActivityAction
+from app.db.models import ActivityAction, HouseholdMember, PendingReceipt, User
 from app.db.repositories.activity import ActivityRepository
 from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.receipts import ReceiptRepository
@@ -54,10 +55,24 @@ class ReceiptService:
         )
         return self._preview_text(data), str(pending_receipt.id)
 
-    async def confirm_pending_receipt(self, *, pending_receipt_id: UUID) -> str:
-        pending_receipt = await self.receipt_repository.get_pending_receipt(
-            pending_receipt_id=pending_receipt_id
+    async def _owned_pending(self, pending_receipt_id, telegram_user_id):
+        return await self.household_repository.session.scalar(
+            select(PendingReceipt)
+            .join(User, User.id == PendingReceipt.user_id)
+            .join(HouseholdMember, HouseholdMember.user_id == User.id)
+            .where(
+                PendingReceipt.id == pending_receipt_id,
+                User.telegram_user_id == telegram_user_id,
+                User.family_dashboard_enabled.is_(True),
+                HouseholdMember.household_id == PendingReceipt.household_id,
+            )
+            .with_for_update(of=PendingReceipt)
         )
+
+    async def confirm_pending_receipt(
+        self, *, pending_receipt_id: UUID, telegram_user_id: int
+    ) -> str:
+        pending_receipt = await self._owned_pending(pending_receipt_id, telegram_user_id)
         if pending_receipt is None:
             return "This receipt confirmation is no longer available."
 
@@ -102,10 +117,10 @@ class ReceiptService:
             cleared_names=cleared_names,
         )
 
-    async def discard_pending_receipt(self, *, pending_receipt_id: UUID) -> str:
-        pending_receipt = await self.receipt_repository.get_pending_receipt(
-            pending_receipt_id=pending_receipt_id
-        )
+    async def discard_pending_receipt(
+        self, *, pending_receipt_id: UUID, telegram_user_id: int
+    ) -> str:
+        pending_receipt = await self._owned_pending(pending_receipt_id, telegram_user_id)
         if pending_receipt is None:
             return "This receipt confirmation is no longer available."
 

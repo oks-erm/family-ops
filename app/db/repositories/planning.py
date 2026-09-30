@@ -5,7 +5,17 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import DailyPlan, DailyPlanStatus, PlanningConversation, PlanningConversationState
+from app.db.models import (
+    DailyPlan,
+    DailyPlanStatus,
+    HouseholdMember,
+    PlanningConversation,
+    PlanningConversationState,
+)
+
+
+def _current_household(user_id):
+    return select(HouseholdMember.household_id).where(HouseholdMember.user_id == user_id)
 
 
 class PlanningRepository:
@@ -50,6 +60,7 @@ class PlanningRepository:
             select(PlanningConversation)
             .where(
                 PlanningConversation.user_id == user_id,
+                PlanningConversation.household_id.in_(_current_household(user_id)),
                 PlanningConversation.state != PlanningConversationState.complete,
             )
             .order_by(PlanningConversation.created_at.desc())
@@ -65,6 +76,7 @@ class PlanningRepository:
         result = await self.session.execute(
             select(PlanningConversation).where(
                 PlanningConversation.user_id == user_id,
+                PlanningConversation.household_id.in_(_current_household(user_id)),
                 PlanningConversation.plan_date == plan_date,
             )
         )
@@ -137,6 +149,10 @@ class PlanningRepository:
 
     async def get_daily_plan(self, *, user_id: UUID, plan_date: date) -> DailyPlan | None:
         result = await self.session.execute(
-            select(DailyPlan).where(DailyPlan.user_id == user_id, DailyPlan.plan_date == plan_date)
+            select(DailyPlan).where(
+                DailyPlan.user_id == user_id,
+                DailyPlan.plan_date == plan_date,
+                DailyPlan.household_id.in_(_current_household(user_id)),
+            )
         )
         return result.scalar_one_or_none()

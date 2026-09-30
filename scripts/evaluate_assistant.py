@@ -12,9 +12,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.clients.conversation_model import ModelUnavailable, OpenAIConversationModel
+from app.clients.conversation_model import (
+    InvalidModelResponse,
+    ModelUnavailable,
+    OpenAIConversationModel,
+)
 from app.config import Settings
-from app.schemas.conversation import TOOL_MODELS, tool_definitions
+from app.schemas.conversation import TOOL_MODELS, answer_format, tool_definitions
 from app.services.conversation.service import INSTRUCTIONS
 
 # Standard short-context USD per million tokens, verified 2026-09-30.
@@ -85,8 +89,40 @@ CASES = [
 ]
 
 
+# Keep expected semantics fixed while exercising spelling, short follow-ups and topic changes.
+VARIATIONS = [
+    [
+        "can you put oat milk + eggs on our grocery list",
+        "we're out of eggs and oat milk; add both",
+        "shopping needs oat milk, eggs please",
+    ],
+    [
+        "forget the work question, what groceries do we need?",
+        "new topic: show me groceries",
+        "hold that thought — what's left to buy?",
+    ],
+    ["what about August?", "same category but the month before", "and for Aug 2026?"],
+    ["delete the other one", "change that thing to next week", "mark it done"],
+    [
+        "remind me to phone the dentist tomorrow",
+        "add a task to ring dentist tomorrow",
+        "tomorrow I must call the dentist, save that task",
+    ],
+    [
+        "log 1200 EUR salary received today",
+        "I received salary of 1200 euros today, record it",
+        "add today's income: salary, EUR 1200",
+    ],
+]
+for original, variations in zip(list(CASES), VARIATIONS, strict=True):
+    for number, wording in enumerate(variations, 1):
+        CASES.append(
+            {**original, "name": original["name"] + f"_variation_{number}", "text": wording}
+        )
+
+
 async def run(args):
-    if not args.live:
+    if not args.live or not 0 < args.max_usd <= 0.50:
         raise SystemExit("Use --live to authorize the bounded synthetic API evaluation.")
     if args.model not in RATES:
         raise SystemExit("Add verified pricing for the requested model before a live evaluation.")
@@ -104,28 +140,35 @@ async def run(args):
                 + case["text"],
             },
         ]
-        upper_input = len(json.dumps([INSTRUCTIONS, tools, inputs]).encode()) + 1024
+        upper_input = (
+            len(json.dumps([INSTRUCTIONS, tools, inputs, answer_format()]).encode()) + 1024
+        )
         reserve = (upper_input * rate * 1.25 + 1000 * output_rate) / 1_000_000
         if total + reserve > args.max_usd:
             results.append({"case": case["name"], "status": "budget_stop"})
             break
         started = time.monotonic()
+        total += reserve  # Unknown outcomes retain the conservative reservation.
         try:
             response = await client.respond(
                 model=args.model, instructions=INSTRUCTIONS, inputs=inputs, tools=tools
             )
-        except ModelUnavailable as exc:
+        except (ModelUnavailable, InvalidModelResponse) as exc:
             results.append(
                 {"case": case["name"], "status": "provider_unavailable", "error": str(exc)}
             )
             break
         usage = response.usage
         cost = usage_cost(args.model, usage)
-        total += cost
+        total += cost - reserve
         calls = response.calls
         passed = response.status == "completed"
         if case.get("clarify"):
-            passed &= not calls and bool(response.text)
+            passed &= (
+                not calls
+                and bool(response.text)
+                and bool(response.answer and response.answer.needs_clarification)
+            )
         else:
             passed &= len(calls) == 1 and calls[0].get("name") == case["tool"]
             if passed:

@@ -94,4 +94,6 @@ async def handle_join(message: Message) -> None:
         await message.answer("I could not find a household with that invite code.")
         return
 
-    await message.answer(f"Joined household: {household.name}.")
+    await message.answer(
+        f"Joined household: {household.name}. Existing records remain in their original household."
+    )

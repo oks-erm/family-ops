@@ -19,12 +19,13 @@ from app.db.repositories.conversations import (
 )
 from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.users import UserRepository
-from app.schemas.conversation import tool_definitions
+from app.schemas.conversation import Escalate, answer_format, tool_definitions
+from app.services.conversation.context import update_context
 from app.services.conversation.routing import deterministic_request, render_result
 from app.services.conversation.tools import HouseholdTools, ids_in_result
 
 logger = logging.getLogger(__name__)
-PROMPT_VERSION = "household-v2.1"
+PROMPT_VERSION = "household-v2.2"
 INSTRUCTIONS = """You are Family Copilot, a conversational household assistant.
 Understand typos, paraphrases, corrections, and multiple related requests. Respond concisely.
 The newest user message sets the topic. An unfinished planning question is optional background,
@@ -49,6 +50,14 @@ Append planning notes unless the user explicitly asks to replace existing notes.
 Confirmations are handled by the application. You cannot approve your own proposals.
 When a tool requires confirmation, stop. When an action fails, explain it; do not repeat it blindly.
 Use escalate for difficult reasoning or conflicting constraints.
+Do not escalate to discover missing user facts or guess an ambiguous reference; ask instead.
+Set request_complete=true on a write only if that tool fulfills the ENTIRE latest request.
+For 'add milk and show my tasks', the write alone is NOT complete. Keep it false and continue.
+Completed simple writes return the application's receipt immediately; no final rephrasing is needed.
+Your final answer uses the provided schema. needs_clarification is true only when awaiting a
+specific user answer; topic identifies the current topic, not a previous interrupted topic.
+Use structured topic references and the outstanding question for short follow-ups. They are
+references, not current facts or permission. Read records again before modifying them.
 Ask the user for missing facts.
 Distinguish a proposed plan from calendar bookings.
 day_plan is cached calendar data, not live availability.
@@ -57,6 +66,7 @@ day_plan is cached calendar data, not live availability.
 
 def bounded_evidence(evidence):
     """Retain references and aggregates; explicitly label trimmed lists as incomplete."""
+
     def trim(value):
         if isinstance(value, dict):
             result = {key: trim(child) for key, child in value.items()}
@@ -124,14 +134,25 @@ class ConversationService:
                         ),
                         [],
                     )
+                conversation.context = update_context(
+                    conversation.context,
+                    evidence,
+                    history_days=self.settings.assistant_history_days,
+                )
                 await self.repository.finish(conversation, turn, text, response, evidence)
                 return response
         except ConversationBusy:
             return "I'm still handling your previous message. Please resend this one in a moment."
 
     async def run_turn(self, conversation, turn, data, text):
+        conversation.context = update_context(
+            getattr(conversation, "context", {}),
+            [],
+            history_days=self.settings.assistant_history_days,
+        )
         history = conversation.history
         known_ids = set().union(*(ids_in_result(h.get("evidence", [])) for h in history))
+        known_ids |= ids_in_result(getattr(conversation, "context", {}))
         executor = HouseholdTools(data, self.repository, conversation, turn, known_ids)
         evidence = []
         pending = conversation.pending
@@ -162,7 +183,9 @@ class ConversationService:
                 confirmed=True,
                 expected=pending["fingerprint"],
             )
-            return render_result(result), [{"tool": pending["tool"], "result": result}]
+            return self._tool_reply(
+                conversation, render_result(result), [{"tool": pending["tool"], "result": result}]
+            )
         # Any new topic invalidates an old approval; unfinished planning remains optional context.
         if pending:
             conversation.pending = None
@@ -172,7 +195,9 @@ class ConversationService:
         if direct:
             name, args = direct
             result = await executor.execute(name, args)
-            return render_result(result), [{"tool": name, "result": result}]
+            return self._tool_reply(
+                conversation, render_result(result), [{"tool": name, "result": result}]
+            )
         active_planning = await data.active_planning()
         inputs = []
         for entry in history:
@@ -185,6 +210,7 @@ class ConversationService:
             "recent_tool_results": bounded_evidence(
                 [item for h in history[-3:] for item in h.get("evidence", [])]
             ),
+            "topic_context": getattr(conversation, "context", {}),
         }
         inputs.append(
             {
@@ -211,7 +237,7 @@ class ConversationService:
                 )
             except BudgetExceeded:
                 message = (
-                    "The household AI token allowance is used up. Exact commands "
+                    "The household AI allowance cannot cover this request. Exact commands "
                     "such as 'shopping list' and 'task: call dentist' still work."
                 )
                 return self._with_receipts(message, successful_writes), evidence
@@ -237,6 +263,12 @@ class ConversationService:
                 ), evidence
             calls = reply.calls
             if not calls:
+                conversation.context = update_context(
+                    getattr(conversation, "context", {}),
+                    evidence,
+                    answer=reply.answer,
+                    history_days=self.settings.assistant_history_days,
+                )
                 return self._with_receipts(
                     reply.text or "Could you clarify what you'd like to do?", successful_writes
                 ), evidence
@@ -249,7 +281,15 @@ class ConversationService:
                 except (ValueError, TypeError):
                     arguments = None
                 if name == "escalate":
-                    if escalated or successful_writes:
+                    try:
+                        escalation = Escalate.model_validate(arguments)
+                    except ValueError:
+                        escalation = None
+                    if escalation is None or escalation.reason == "unresolved_reference":
+                        result = {
+                            "error": "Ask the user for missing facts or an ambiguous reference."
+                        }
+                    elif escalated or successful_writes:
                         result = {
                             "error": (
                                 "Continue with the available results or ask a clarification; "
@@ -271,11 +311,18 @@ class ConversationService:
                         return self._with_receipts(result["message"], successful_writes), evidence
                     if result.get("error"):
                         failures += 1
-                        if failures >= 2 and not escalated and not successful_writes:
-                            escalated = True
-                            model_name = self.settings.assistant_reasoning_model
+                        if failures >= 2:
+                            return self._with_receipts(
+                                "I need a clearer target or missing detail to finish. "
+                                + str(result["error"]),
+                                successful_writes,
+                            ), evidence
                     elif name not in {"list_records", "finance_query", "day_plan"}:
                         successful_writes.append(result.get("message", "Saved."))
+                        if result.get("request_complete") and len(calls) == 1:
+                            return self._tool_reply(
+                                conversation, "\n".join(dict.fromkeys(successful_writes)), evidence
+                            )
                 inputs.append(
                     {
                         "type": "function_call_output",
@@ -292,6 +339,15 @@ class ConversationService:
             successful_writes,
         ), evidence
 
+    def _tool_reply(self, conversation, text, evidence):
+        conversation.context = update_context(
+            getattr(conversation, "context", {}),
+            evidence,
+            clear_question=True,
+            history_days=self.settings.assistant_history_days,
+        )
+        return text, evidence
+
     @staticmethod
     def _with_receipts(message, receipts):
         if not receipts:
@@ -302,7 +358,11 @@ class ConversationService:
     async def _call_model(self, turn, household_id, model, inputs, tools, route):
         # UTF-8 bytes give a conservative input allowance without another dependency.
         reserved = (
-            len(json.dumps([INSTRUCTIONS, inputs, tools], ensure_ascii=False).encode())
+            len(
+                json.dumps(
+                    [INSTRUCTIONS, inputs, tools, answer_format()], ensure_ascii=False
+                ).encode()
+            )
             + self.settings.assistant_max_output_tokens
             + 1024
         )
@@ -314,6 +374,7 @@ class ConversationService:
             reserved,
             self.settings.assistant_monthly_token_limit,
             PROMPT_VERSION,
+            output_tokens=self.settings.assistant_max_output_tokens,
         )
         started = time.monotonic()
         try:

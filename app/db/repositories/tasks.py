@@ -4,7 +4,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Task, TaskCompletion, TaskStatus
+from app.db.models import HouseholdMember, Task, TaskCompletion, TaskStatus
+
+
+def _current_household(user_id):
+    return select(HouseholdMember.household_id).where(HouseholdMember.user_id == user_id)
 
 
 class TaskRepository:
@@ -45,7 +49,9 @@ class TaskRepository:
         )
         if through_date is not None:
             query = query.where((Task.due_date.is_(None)) | (Task.due_date <= through_date))
-        result = await self.session.execute(query.order_by(Task.due_date.nulls_last(), Task.created_at))
+        result = await self.session.execute(
+            query.order_by(Task.due_date.nulls_last(), Task.created_at)
+        )
         return list(result.scalars().all())
 
     async def list_pending_for_user(
@@ -56,11 +62,14 @@ class TaskRepository:
     ) -> list[Task]:
         query = select(Task).where(
             Task.user_id == user_id,
+            Task.household_id.in_(_current_household(user_id)),
             Task.status == TaskStatus.pending,
         )
         if through_date is not None:
             query = query.where((Task.due_date.is_(None)) | (Task.due_date <= through_date))
-        result = await self.session.execute(query.order_by(Task.due_date.nulls_last(), Task.created_at))
+        result = await self.session.execute(
+            query.order_by(Task.due_date.nulls_last(), Task.created_at)
+        )
         return list(result.scalars().all())
 
     async def get_household_task(self, *, task_id: UUID, household_id: UUID) -> Task | None:
@@ -70,7 +79,13 @@ class TaskRepository:
         return result.scalar_one_or_none()
 
     async def get_user_task(self, *, task_id: UUID, user_id: UUID) -> Task | None:
-        result = await self.session.execute(select(Task).where(Task.id == task_id, Task.user_id == user_id))
+        result = await self.session.execute(
+            select(Task).where(
+                Task.id == task_id,
+                Task.user_id == user_id,
+                Task.household_id.in_(_current_household(user_id)),
+            )
+        )
         return result.scalar_one_or_none()
 
     async def find_all_pending_fuzzy(
@@ -85,6 +100,7 @@ class TaskRepository:
         canonical = self._canonical_title(title)
         query = select(Task).where(
             Task.user_id == user_id,
+            Task.household_id.in_(_current_household(user_id)),
             Task.status == TaskStatus.pending,
         )
         if due_date is not None:
@@ -114,6 +130,7 @@ class TaskRepository:
             select(Task)
             .where(
                 Task.user_id == user_id,
+                Task.household_id.in_(_current_household(user_id)),
                 Task.status == TaskStatus.pending,
             )
             .order_by(Task.due_date.nulls_last(), Task.created_at.desc())
@@ -151,6 +168,7 @@ class TaskRepository:
             select(Task)
             .where(
                 Task.user_id == user_id,
+                Task.household_id.in_(_current_household(user_id)),
                 Task.status == TaskStatus.done,
                 Task.due_date == day,
             )

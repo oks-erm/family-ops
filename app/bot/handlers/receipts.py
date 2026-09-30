@@ -100,9 +100,13 @@ async def handle_receipt_confirmation(callback: CallbackQuery) -> None:
     async with async_session_factory() as session:
         service = ReceiptService(session, settings)
         if action == "confirm":
-            text = await service.confirm_pending_receipt(pending_receipt_id=pending_receipt_id)
+            text = await service.confirm_pending_receipt(
+                pending_receipt_id=pending_receipt_id, telegram_user_id=callback.from_user.id
+            )
         elif action == "discard":
-            text = await service.discard_pending_receipt(pending_receipt_id=pending_receipt_id)
+            text = await service.discard_pending_receipt(
+                pending_receipt_id=pending_receipt_id, telegram_user_id=callback.from_user.id
+            )
         else:
             await callback.answer("Unknown receipt action.")
             return

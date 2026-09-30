@@ -1,5 +1,6 @@
 import enum
 from datetime import date, datetime, time
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -12,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     Time,
@@ -192,7 +194,9 @@ class ShoppingItem(Base, TimestampMixin):
 
 class DailyPlan(Base, TimestampMixin):
     __tablename__ = "daily_plans"
-    __table_args__ = (UniqueConstraint("user_id", "plan_date", name="uq_daily_plans_user_date"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "household_id", "plan_date", name="uq_daily_plans_user_date"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -211,7 +215,9 @@ class DailyPlan(Base, TimestampMixin):
 
 class PlanningConversation(Base, TimestampMixin):
     __tablename__ = "planning_conversations"
-    __table_args__ = (UniqueConstraint("user_id", "plan_date", name="uq_planning_conversations_user_date"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "household_id", "plan_date", name="uq_planning_conversations_user_date"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -653,6 +659,7 @@ class AssistantConversation(Base, TimestampMixin):
     channel_key: Mapped[str] = mapped_column(String(150))
     history: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     pending: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    context: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
 
 
 class AssistantTurn(Base, TimestampMixin):
@@ -685,6 +692,7 @@ class AssistantBudget(Base, TimestampMixin):
     household_id: Mapped[UUID] = mapped_column(ForeignKey("households.id", ondelete="CASCADE"))
     month: Mapped[date] = mapped_column(Date)
     tokens: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_usd: Mapped[Decimal] = mapped_column(Numeric(16, 8), default=0, server_default="0")
 
 
 class AssistantModelCall(Base, TimestampMixin):
@@ -703,3 +711,80 @@ class AssistantModelCall(Base, TimestampMixin):
     reserved_tokens: Mapped[int] = mapped_column(Integer)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default="reserved")
+    estimated_usd: Mapped[Decimal | None] = mapped_column(Numeric(16, 8))
+    cache_write_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class RuntimeLease(Base):
+    __tablename__ = "runtime_leases"
+    name: Mapped[str] = mapped_column(String(180), primary_key=True)
+    owner: Mapped[UUID] = mapped_column()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class AssistantHouseholdPolicy(Base):
+    __tablename__ = "assistant_household_policies"
+    household_id: Mapped[UUID] = mapped_column(
+        ForeignKey("households.id", ondelete="CASCADE"), primary_key=True
+    )
+    monthly_token_limit: Mapped[int | None] = mapped_column(Integer)
+    monthly_usd_limit: Mapped[Decimal | None] = mapped_column(Numeric(16, 8))
+    max_concurrent: Mapped[int] = mapped_column(Integer, default=2, server_default="2")
+    requests_per_minute: Mapped[int] = mapped_column(Integer, default=30, server_default="30")
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AssistantInbox(Base, TimestampMixin):
+    __tablename__ = "assistant_inbox"
+    __table_args__ = (
+        Index("ix_assistant_inbox_channel_order", "channel_key", "id"),
+        Index("ix_assistant_inbox_household_status", "household_id", "status", "started_at"),
+        Index("ix_assistant_inbox_household_started", "household_id", "started_at"),
+        Index("ix_assistant_inbox_ready", "status", "available_at", "id"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    update_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    channel_key: Mapped[str] = mapped_column(String(150))
+    chat_id: Mapped[int | None] = mapped_column(BigInteger)
+    household_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("households.id", ondelete="SET NULL")
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    replay_safe: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(24), default="queued")
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    owner: Mapped[UUID | None] = mapped_column()
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+
+
+class AssistantOutbox(Base, TimestampMixin):
+    __tablename__ = "assistant_outbox"
+    __table_args__ = (
+        UniqueConstraint("inbox_id", "part", name="uq_assistant_delivery_part"),
+        Index("ix_assistant_outbox_ready", "status", "available_at", "id"),
+        Index("ix_assistant_outbox_chat_order", "chat_id", "id"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    inbox_id: Mapped[int] = mapped_column(ForeignKey("assistant_inbox.id", ondelete="CASCADE"))
+    part: Mapped[int] = mapped_column(Integer)
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    owner: Mapped[UUID | None] = mapped_column()
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    message_id: Mapped[int | None] = mapped_column(BigInteger)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+
+
+class TransportCursor(Base):
+    __tablename__ = "transport_cursors"
+    name: Mapped[str] = mapped_column(String(80), primary_key=True)
+    offset: Mapped[int] = mapped_column(BigInteger, default=0)

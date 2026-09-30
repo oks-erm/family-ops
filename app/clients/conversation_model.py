@@ -5,6 +5,8 @@ from typing import Protocol
 
 import httpx
 
+from app.schemas.conversation import ConversationAnswer, answer_format
+
 
 class ModelUnavailable(RuntimeError):
     pass
@@ -19,9 +21,12 @@ class ModelReply:
     output: list[dict]
     usage: dict
     status: str
+    answer: ConversationAnswer | None = None
 
     @property
     def text(self):
+        if self.answer is not None:
+            return self.answer.reply
         return "\n".join(
             part["text"]
             for item in self.output
@@ -65,6 +70,7 @@ class OpenAIConversationModel:
                         "store": False,
                         "parallel_tool_calls": False,
                         "max_output_tokens": self.settings.assistant_max_output_tokens,
+                        "text": {"format": answer_format()},
                     },
                 )
                 response.raise_for_status()
@@ -81,10 +87,25 @@ class OpenAIConversationModel:
             for key in ("input_tokens", "output_tokens"):
                 if type(usage.get(key)) is not int or usage[key] < 0:
                     raise ValueError("Invalid usage accounting")
+            details = usage.get("input_tokens_details", {})
+            if not isinstance(details, dict):
+                raise ValueError("Invalid input usage details")
+            for key in ("cached_tokens", "cache_write_tokens"):
+                value = details.get(key, 0)
+                if type(value) is not int or not 0 <= value <= usage["input_tokens"]:
+                    raise ValueError("Invalid cache usage accounting")
+            if (
+                sum(details.get(key, 0) for key in ("cached_tokens", "cache_write_tokens"))
+                > usage["input_tokens"]
+            ):
+                raise ValueError("Cache usage exceeds total input")
             if not all(isinstance(item, dict) for item in data["output"]):
                 raise ValueError("Invalid output items")
-            return ModelReply(
+            reply = ModelReply(
                 output=data["output"], usage=data["usage"], status=data.get("status", "incomplete")
             )
+            if reply.status == "completed" and not reply.calls and reply.text:
+                reply.answer = ConversationAnswer.model_validate_json(reply.text)
+            return reply
         except (ValueError, TypeError, KeyError) as exc:
             raise InvalidModelResponse("The model returned an invalid response") from exc

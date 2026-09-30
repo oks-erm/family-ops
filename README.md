@@ -18,10 +18,10 @@ It combines deterministic command routing with optional AI-assisted understandin
 Core components:
 
 - API and web layer: FastAPI app with dashboard/auth/calendar routes.
-- Bot runtime: aiogram-based Telegram bot running in the same service lifecycle.
+- Bot runtime: separate aiogram ingress, conversation workers and reply delivery, backed by a durable PostgreSQL queue.
 - Data layer: async SQLAlchemy repositories on PostgreSQL.
 - Schema management: Alembic migrations.
-- Scheduling layer: APScheduler jobs for daily/weekly/monthly automation.
+- Scheduling layer: an independent singleton APScheduler process for daily/weekly/monthly automation.
 - AI routing layer: deterministic-first intent handling with pluggable providers for light/heavy tasks.
 
 ## Tech Stack
@@ -76,7 +76,8 @@ curl http://localhost:8000/health
 ## Authentication and Access Model
 
 - Telegram identity is created/updated via `/start`.
-- Household membership is invite-based using `/invite` and `/join CODE`.
+- Household membership is invite-based using `/invite` and `/join CODE`. Joining preserves records in the original household; it does not transfer them.
+- `/last_reply` retrieves the latest saved assistant reply if delivery was interrupted.
 - Dashboard access is tied to Telegram identity through `/dashboard_link` and Google login.
 - The dashboard only authorizes Google accounts linked through the Telegram flow.
 

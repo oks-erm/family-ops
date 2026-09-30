@@ -1,7 +1,7 @@
 {
   "synthetic_only": true,
   "authorized_estimated_limit_usd": 0.5,
-  "estimated_successful_calls_usd": 0.05869083,
+  "estimated_successful_calls_usd": 0.06287823,
   "pricing_date": "2026-09-30",
   "pricing_source": "https://developers.openai.com/api/docs/pricing",
   "includes_cache_write_premium": true,
@@ -29,6 +29,14 @@
     {
       "artifact": "artifacts/assistant-sol-evaluation.json",
       "estimated_usd": 0.007551
+    },
+    {
+      "artifact": "artifacts/assistant-luna-routing-v22.json",
+      "estimated_usd": 0.002204
+    },
+    {
+      "artifact": "artifacts/assistant-flow-v22.json",
+      "estimated_usd": 0.0019834
     }
   ],
   "diagnostic": {

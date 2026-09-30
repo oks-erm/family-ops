@@ -4,8 +4,9 @@
 
 Family Copilot is a Telegram-first household assistant for shopping, tasks, planning,
 calendar access and financial records, with a private FastAPI dashboard. PostgreSQL is
-its source of truth. Python 3.12 is required; production uses one Uvicorn worker so the
-in-process scheduled jobs run once.
+its source of truth. Python 3.12 is required. Web, Telegram ingress, conversation workers,
+reply delivery and scheduled jobs run as separate processes. Only the web entrypoint migrates.
+Runtime roles wait for schema 202609300002. Web replicas must never start polling or timers.
 
 **Lesson scheduling is a separate application.** `tutor-scheduling/` is an existing,
 untracked local application: do not move, edit, delete or include it in household builds.
@@ -36,8 +37,13 @@ up the split. `docs/legacy-scheduling.md` is historical reference only.
 `assistant_turns` deduplicates transport messages; `assistant_actions` records mutation
 outcomes. DB mutations, activity entries and action receipts commit together. External
 calendar mutations record intent before sending; uncertain outcomes must not be replayed.
-Dedicated PostgreSQL advisory locks serialize turns across commits. Token reservations
-use row locks, so concurrent users cannot exceed the household allowance.
+Renewable leases serialize turns without pinning connections during model calls. Mutations
+check lease ownership; stale owners cannot finish jobs. Short transaction locks serialize queue
+claims. Token and optional dollar reservations use row locks per household/month.
+`assistant_inbox` persists Telegram updates before acknowledging them; per-chat ordering and
+per-household fairness/concurrency/rate limits apply. `assistant_outbox` persists v2 replies.
+Unknown delivery outcomes are not blindly resent; `/last_reply` retrieves the saved response.
+Legacy commands/images and periodic notifications still use their existing direct send paths.
 
 `assistant_model_calls` contains metadata only: model, route, prompt version, usage, latency,
 status and conservative reservations. Unknown provider outcomes retain their reservation.
@@ -71,7 +77,15 @@ V2 settings: ASSISTANT_V2_ENABLED (default false), ASSISTANT_MODEL (gpt-6-luna),
 ASSISTANT_REASONING_MODEL (gpt-6.1-sol), ASSISTANT_TIMEOUT_SECONDS (30),
 ASSISTANT_MAX_OUTPUT_TOKENS (1500), ASSISTANT_MONTHLY_TOKEN_LIMIT (250000 per household),
 ASSISTANT_HISTORY_DAYS (7). Zero token allowance disables model calls, not exact commands.
-A token limit is not a dollar spending cap. Models/account access must pass live evaluation
+A token limit is not a dollar spending cap. Optional household dollar limits default to null;
+`python scripts/assistant_limits.py --household-id UUID --monthly-usd 5` previews a change;
+`--apply` commits it. Limits cover v2 conversation calls, not legacy image providers.
+ASSISTANT_WORKER_CONCURRENCY (4 per process), ASSISTANT_GLOBAL_CONCURRENCY (12),
+ASSISTANT_TURN_DEADLINE_SECONDS (180), DATABASE_POOL_SIZE (5), DATABASE_MAX_OVERFLOW (5),
+and WEB_WORKERS (1) control capacity. Per-household defaults are 2 active jobs / 30 starts per
+minute; each chat remains sequential. Budget connections across all processes before scaling.
+Joining another household changes membership only: records remain in the original household.
+Never infer a transfer from /join; any future transfer requires explicit scope and authorization. Models/account access must pass live evaluation
 before activation. Existing Gemini receipt/bank-image extraction remains unchanged.
 
 ## Setup and validation
@@ -104,7 +118,7 @@ Usage reporting: `python scripts/assistant_usage.py --month YYYY-MM` (aggregate-
 ## Deployment
 
 Pushes to `main` verify tests and migrations, build the family image and deploy only
-`app` with `--no-deps`. Main compose files contain no scheduling service. The legacy
+`app`, `ingress`, `worker`, `delivery`, and `scheduler` with `--no-deps`. Main compose files contain no scheduling service. The legacy
 service definition is preserved separately in `docker-compose.scheduling.yml`; do not
 load it in Family Copilot CI. Shared PostgreSQL/Traefik infrastructure still exists;
 full infrastructure isolation requires a separately approved operations migration.
@@ -127,7 +141,14 @@ migration/startup logs and relevant household smoke tests.
 Production Compose explicitly enables the v2 engine and pins Luna/Sol. Release verification
 runs `python scripts/verify_release.py` inside the deployed container without reading household
 records or sending messages. Roll back by setting the Compose engine flag to false and
-recreating only app; do not roll back additive tables containing conversation data.
+recreating ingress and worker with that flag; do not roll back additive tables containing data.
+For an image rollback to the old monolith, first stop all four runtime roles, then restore the
+old app image. Otherwise the old polling/timers would run alongside the new processes.
 The household release owns `/opt/family-copilot/household-release`; use Compose project
 `family-copilot` there. Never overwrite the parent directory's Compose or environment files,
 which the independent scheduling deployment still uses.
+
+Daily-plan and planning-conversation uniqueness now includes household identity. Read paths
+must check current membership, including legacy handlers. A downgrade to user/date uniqueness
+fails if same-day plans exist in multiple households; never resolve that by deleting data.
+After such records exist, prefer a forward fix over the old monolithic image rollback.

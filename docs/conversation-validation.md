@@ -95,3 +95,36 @@ model selection, configured credentials (presence only), database tables, intern
 unauthenticated dashboard rejection, and absent household lesson routes. It checks startup
 logs for errors without publishing private payloads, and verifies pre-existing non-app containers
 retain their IDs and remain running. It does not prune images or restart shared infrastructure.
+
+## Multi-household release v2.2 — 2026-09-30
+
+- **161 automated tests passed**, including 32 PostgreSQL integration tests. New coverage
+  includes durable ingestion, per-chat ordering, household fairness, global concurrency,
+  stale ownership, crash recovery, uncertain delivery, safe rate-limit retries and membership
+  changes. A pool of two connections supported twenty simultaneous conversation leases.
+- Luna passed **24/24** first-response routing/wording cases and **14/14** complete-flow
+  steps. The flow used 16 Luna calls; simple shopping/task/income writes each needed one.
+  Confirmation, exact reads and duplicate receipts needed zero. No Sol escalation was needed
+  in this flow; that does not establish comparative model quality.
+- Additional live evaluation estimates: **$0.002204 + $0.00198340 = $0.00418740**.
+  Cumulative successful-call estimate across both releases: **$0.06287823**, below the
+  approved **$0.50** total. Synthetic prompts only; no live messages or calendar mutations.
+- Local queue benchmark: **100 households, 300 messages, 12 worker loops, 2 DB connections**;
+  peak active work **8**, matching the configured global cap. All channels remained ordered.
+  It took **4.189 seconds** (71.61 messages/second); claim/work/finish p50 **112.4ms**,
+  p95 **222.4ms**, with simulated 20ms work. This is queue throughput, not production
+  capacity, end-to-end model latency, or a scale guarantee.
+- Migration 202609300002 passed fresh upgrade, downgrade/re-upgrade, seeded planning
+  preservation and conservative historical cost backfill. Token totals remained unchanged.
+  Plans are now unique per user/household/date, preventing transfers by same-day upserts.
+- Targeted lint passed; full app/tests lint retains **515 historical findings** (previous
+  release: 523). Compilation, dashboard request tests, configuration parsing and diff checks
+  passed. Web lifespan starts neither Telegram nor scheduled jobs.
+- Artifacts: `assistant-luna-routing-v22.json`, `assistant-flow-v22.json`,
+  `assistant-queue-benchmark.json`, and the cumulative validation summary.
+
+Dollar caps cover v2 conversation calls, not legacy image extraction. Legacy commands/images
+and periodic notifications retain direct sends; uncertain legacy jobs are not blindly replayed.
+Queue backlog and retained metadata require monitoring. Physical infrastructure and credentials
+remain shared with the separate scheduling deployment. This release does not claim universal
+exactly-once delivery or unlimited household capacity.

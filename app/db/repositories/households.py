@@ -1,18 +1,13 @@
 import secrets
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
-    DailyPlan,
     Household,
     HouseholdMember,
     HouseholdRole,
-    PendingReceipt,
-    Receipt,
-    ShoppingItem,
-    Task,
     User,
 )
 
@@ -80,7 +75,8 @@ class HouseholdRepository:
             membership.household_id = household.id
             membership.role = HouseholdRole.member
 
-        await self._move_user_owned_data_to_household(user_id=user.id, household_id=household.id)
+        # Joining changes membership only. Existing records retain their original household.
+        # Transfers require a separate, explicitly reviewed operation; never infer one from /join.
         await self.session.commit()
         await self.session.refresh(household)
         return household
@@ -90,23 +86,6 @@ class HouseholdRepository:
         await self.session.commit()
         await self.session.refresh(household)
         return household
-
-    async def _move_user_owned_data_to_household(self, *, user_id: UUID, household_id: UUID) -> None:
-        await self.session.execute(
-            update(ShoppingItem).where(ShoppingItem.user_id == user_id).values(household_id=household_id)
-        )
-        await self.session.execute(
-            update(Receipt).where(Receipt.user_id == user_id).values(household_id=household_id)
-        )
-        await self.session.execute(
-            update(PendingReceipt).where(PendingReceipt.user_id == user_id).values(household_id=household_id)
-        )
-        await self.session.execute(
-            update(Task).where(Task.user_id == user_id).values(household_id=household_id)
-        )
-        await self.session.execute(
-            update(DailyPlan).where(DailyPlan.user_id == user_id).values(household_id=household_id)
-        )
 
     async def _new_invite_code(self) -> str:
         while True:

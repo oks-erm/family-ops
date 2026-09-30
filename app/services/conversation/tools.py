@@ -41,6 +41,7 @@ class HouseholdTools:
         self.known_ids = known_ids
 
     async def execute(self, name, raw, *, confirmed=False, expected=None):
+        await self.repository.fence()
         if name not in TOOL_MODELS or name == "escalate":
             return {"error": "Unsupported household tool."}
         try:
@@ -125,7 +126,12 @@ class HouseholdTools:
                         f"or cancel. This expires in 10 minutes."
                     ),
                 }
-            action_key = fingerprint({"tool": name, "arguments": args.model_dump(mode="json")})
+            action_key = fingerprint(
+                {
+                    "tool": name,
+                    "arguments": args.model_dump(mode="json", exclude={"request_complete"}),
+                }
+            )
             prior = await self.repository.action(self.turn.id, action_key)
             if prior:
                 return (
@@ -148,6 +154,8 @@ class HouseholdTools:
                 result = await self._calendar_change(args)
             else:
                 result = await getattr(self.data, name)(args)
+            if getattr(args, "request_complete", False):
+                result = {**result, "request_complete": True}
             action.result = result
             action.status = "complete"
             self.conversation.pending = None

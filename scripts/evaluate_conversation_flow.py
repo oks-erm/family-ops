@@ -29,6 +29,7 @@ from app.db.models import (
     Task,
     User,
 )
+from app.schemas.conversation import answer_format
 from app.services.conversation.service import ConversationService
 from scripts.evaluate_assistant import RATES, usage_cost
 
@@ -45,12 +46,13 @@ class BoundedModel:
         model = request["model"]
         if model not in RATES:
             raise ModelUnavailable("Evaluation has no verified pricing for this model")
-        size = len(json.dumps(request).encode()) + 1024
+        size = len(json.dumps([request, answer_format()]).encode()) + 1024
         if size > 272000:
             raise ModelUnavailable("Evaluation is limited to short-context pricing")
         rate, _, output_rate = RATES[model]
-        reserve = (size * rate * 1.25
-                   + self.settings.assistant_max_output_tokens * output_rate) / 1_000_000
+        reserve = (
+            size * rate * 1.25 + self.settings.assistant_max_output_tokens * output_rate
+        ) / 1_000_000
         if self.total + reserve > self.limit:
             raise ModelUnavailable("Synthetic evaluation dollar allowance exhausted")
         self.total += reserve  # Retain the reservation if the provider fails without usage.
@@ -87,89 +89,156 @@ async def run(args):
         # New session/service per message verifies history survives process-local state loss.
         async with factory() as session:
             response = await ConversationService(session, settings, model=model).handle(
-                user_id=user_id, text=text, channel_key="synthetic-eval",
+                user_id=user_id,
+                text=text,
+                channel_key="synthetic-eval",
                 message_key=message_key or name,
             )
-            items = (await session.scalars(select(ShoppingItem).where(
-                ShoppingItem.household_id == household_id,
-                ShoppingItem.status == ShoppingItemStatus.pending,
-            ))).all()
+            items = (
+                await session.scalars(
+                    select(ShoppingItem).where(
+                        ShoppingItem.household_id == household_id,
+                        ShoppingItem.status == ShoppingItemStatus.pending,
+                    )
+                )
+            ).all()
             tasks = (await session.scalars(select(Task).where(Task.user_id == user_id))).all()
-            transactions = (await session.scalars(select(FinancialTransaction).where(
-                FinancialTransaction.household_id == household_id,
-            ))).all()
-            conversation = await session.scalar(select(AssistantConversation).where(
-                AssistantConversation.user_id == user_id,
-            ))
+            transactions = (
+                await session.scalars(
+                    select(FinancialTransaction).where(
+                        FinancialTransaction.household_id == household_id,
+                    )
+                )
+            ).all()
+            conversation = await session.scalar(
+                select(AssistantConversation).where(
+                    AssistantConversation.user_id == user_id,
+                )
+            )
             passed = check(response, items, tasks, transactions, conversation)
             calls = len(model.calls) - before
             if zero_calls:
                 passed = passed and calls == 0
-            results.append({
-                "case": name, "status": "pass" if passed else "fail", "model_calls": calls,
-                "latency_ms": round((time.monotonic() - started) * 1000), "response": response,
-            })
+            results.append(
+                {
+                    "case": name,
+                    "status": "pass" if passed else "fail",
+                    "model_calls": calls,
+                    "latency_ms": round((time.monotonic() - started) * 1000),
+                    "response": response,
+                }
+            )
             print(json.dumps({"case": name, "status": results[-1]["status"]}), flush=True)
             return response, conversation.pending
 
     try:
         first, _ = await turn(
-            "shopping_typo", "pls add oat mlk and eggs to shopping",
+            "shopping_typo",
+            "pls add oat mlk and eggs to shopping",
             lambda r, items, *_: len(items) == 2,
         )
         await turn(
-            "correction", "actually make the milk lactose-free milk",
+            "correction",
+            "actually make the milk lactose-free milk",
             lambda r, items, *_: len(items) == 2 and any("lactose" in i.name for i in items),
         )
         tomorrow = datetime.now(ZoneInfo("Europe/Lisbon")).date() + timedelta(days=1)
         await turn(
-            "task_topic", "I need to call the dentist tomorrow",
+            "task_topic",
+            "I need to call the dentist tomorrow",
             lambda r, items, tasks, *_: len(tasks) == 1 and tasks[0].due_date == tomorrow,
         )
         await turn(
-            "shopping_topic_return", "what's on the shopping list?",
-            lambda r, items, tasks, *_: "lactose" in r.lower() and "egg" in r.lower()
-            and len(items) == 2 and len(tasks) == 1,
+            "shopping_topic_return",
+            "what's on the shopping list?",
+            lambda r, items, tasks, *_: (
+                "lactose" in r.lower()
+                and "egg" in r.lower()
+                and len(items) == 2
+                and len(tasks) == 1
+            ),
         )
         _, pending = await turn(
-            "removal_proposal", "remove the eggs",
+            "removal_proposal",
+            "remove the eggs",
             lambda r, items, tasks, tx, c: len(items) == 2 and bool(c.pending),
         )
         await turn(
-            "confirmed_removal", "confirm " + (pending or {}).get("token", "missing"),
+            "confirmed_removal",
+            "confirm " + (pending or {}).get("token", "missing"),
             lambda r, items, *_: len(items) == 1 and "lactose" in items[0].name,
             zero_calls=True,
         )
         await turn(
-            "exact_read", "shopping list",
-            lambda r, items, *_: len(items) == 1 and "lactose" in r.lower(), zero_calls=True,
+            "exact_read",
+            "shopping list",
+            lambda r, items, *_: len(items) == 1 and "lactose" in r.lower(),
+            zero_calls=True,
         )
         await turn(
-            "duplicate_after_restart", "pls add oat mlk and eggs to shopping",
+            "duplicate_after_restart",
+            "pls add oat mlk and eggs to shopping",
             lambda r, items, *_: r == first and len(items) == 1,
-            message_key="shopping_typo", zero_calls=True,
+            message_key="shopping_typo",
+            zero_calls=True,
         )
         await turn(
-            "income_capture", "Record salary income of 1200 EUR today",
+            "income_capture",
+            "Record salary income of 1200 EUR today",
             lambda r, items, tasks, tx, c: len(tx) == 1 and tx[0].amount == "1200",
         )
         await turn(
-            "income_query", "how much income have I recorded this month?",
-            lambda r, items, tasks, tx, c: len(tx) == 1 and "1200" in r.replace(",", "")
-            and ("EUR" in r or "€" in r),
+            "income_query",
+            "how much income have I recorded this month?",
+            lambda r, items, tasks, tx, c: (
+                len(tx) == 1 and "1200" in r.replace(",", "") and ("EUR" in r or "€" in r)
+            ),
+        )
+        await turn(
+            "compound_two_domains",
+            "Add bananas to shopping and create a task to call the plumber",
+            lambda r, items, tasks, tx, c: (
+                any("banana" in i.name.lower() for i in items)
+                and any("plumber" in t.title.lower() for t in tasks)
+            ),
+        )
+        await turn(
+            "resume_finance_after_topics",
+            "Back to income — how much was recorded this month?",
+            lambda r, items, tasks, tx, c: "1200" in r.replace(",", ""),
+        )
+        await turn(
+            "missing_target",
+            "Delete something",
+            lambda r, items, tasks, tx, c: len(items) == 2 and len(tasks) == 2 and not c.pending,
+        )
+        await turn(
+            "read_during_clarification",
+            "what do I need to buy?",
+            lambda r, items, tasks, tx, c: "banana" in r.lower() and "lactose" in r.lower(),
         )
     finally:
         report = {
-            "synthetic": True, "estimated_usd": round(model.total, 8),
-            "pricing_date": "2026-09-30", "includes_cache_write_premium": True,
-            "results": results, "calls": model.calls,
+            "synthetic": True,
+            "estimated_usd": round(model.total, 8),
+            "pricing_date": "2026-09-30",
+            "includes_cache_write_premium": True,
+            "results": results,
+            "calls": model.calls,
         }
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         Path(args.output).write_text(json.dumps(report, indent=2) + "\n")
         await engine.dispose()
-    print(json.dumps({"passed": sum(r["status"] == "pass" for r in results),
-                      "attempted": len(results), "estimated_usd": report["estimated_usd"]}))
-    return len(results) == 10 and all(r["status"] == "pass" for r in results)
+    print(
+        json.dumps(
+            {
+                "passed": sum(r["status"] == "pass" for r in results),
+                "attempted": len(results),
+                "estimated_usd": report["estimated_usd"],
+            }
+        )
+    )
+    return len(results) == 14 and all(r["status"] == "pass" for r in results)
 
 
 if __name__ == "__main__":

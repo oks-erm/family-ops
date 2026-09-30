@@ -1,20 +1,22 @@
 """Durable turns, deduplicated actions and atomic household token reservations."""
 
-import hashlib
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select, text, update
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.db.models import (
     AssistantAction,
     AssistantBudget,
     AssistantConversation,
+    AssistantHouseholdPolicy,
     AssistantModelCall,
     AssistantTurn,
 )
+from app.db.repositories.leases import LeaseBusy, LeaseRepository
+from app.services.conversation.pricing import estimate
 
 
 class ConversationBusy(RuntimeError):
@@ -31,24 +33,25 @@ class ConversationRepository:
 
     @asynccontextmanager
     async def lock(self, user_id: UUID, channel_key: str):
-        key = int.from_bytes(
-            hashlib.sha256(f"{user_id}:{channel_key}".encode()).digest()[:8], "big", signed=True
-        )
-        # Dedicated connection: domain commits must not release the turn lock.
-        async with self.session.bind.connect() as connection:
-            acquired = await connection.scalar(
-                text("SELECT pg_try_advisory_lock(:key)"), {"key": key}
-            )
-            await connection.commit()
-            if not acquired:
-                raise ConversationBusy
-            try:
-                yield
-            finally:
-                await connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
-                await connection.commit()
+        name = f"conversation:{user_id}:{channel_key}"
+        try:
+            async with LeaseRepository(self.session.bind).held(name) as owner:
+                self.session.info["conversation_lease"] = (name, owner)
+                try:
+                    yield
+                finally:
+                    await self.session.rollback()
+                    self.session.info.pop("conversation_lease", None)
+        except LeaseBusy as exc:
+            raise ConversationBusy from exc
+
+    async def fence(self):
+        lease = self.session.info.get("conversation_lease")
+        if lease:
+            await LeaseRepository.fence(self.session, *lease)
 
     async def conversation(self, user_id, household_id, channel_key, history_days):
+        await self.fence()
         await self.session.execute(
             insert(AssistantConversation)
             .values(
@@ -71,6 +74,7 @@ class ConversationRepository:
         if conversation.household_id != household_id or conversation.updated_at < cutoff:
             conversation.history = []
             conversation.pending = None
+            conversation.context = {}
             conversation.household_id = household_id
         conversation.history = [
             entry for entry in conversation.history if datetime.fromisoformat(entry["at"]) >= cutoff
@@ -99,6 +103,7 @@ class ConversationRepository:
         return conversation
 
     async def start_turn(self, conversation_id, message_key):
+        await self.fence()
         existing = await self.session.scalar(
             select(AssistantTurn).where(
                 AssistantTurn.conversation_id == conversation_id,
@@ -113,6 +118,7 @@ class ConversationRepository:
         return turn, True
 
     async def finish(self, conversation, turn, user_text, response, evidence):
+        await self.fence()
         conversation.history = [
             *conversation.history,
             {
@@ -134,7 +140,14 @@ class ConversationRepository:
             )
         )
 
-    async def reserve(self, household_id, turn_id, model, route, tokens, limit, prompt_version):
+    async def reserve(
+        self, household_id, turn_id, model, route, tokens, limit, prompt_version, *, output_tokens=0
+    ):
+        await self.fence()
+        policy = await self.session.get(AssistantHouseholdPolicy, household_id)
+        if policy and policy.monthly_token_limit is not None:
+            limit = policy.monthly_token_limit
+        dollars = estimate(model, tokens, output_tokens, reserve=True)
         month = datetime.now(UTC).date().replace(day=1)
         await self.session.execute(
             insert(AssistantBudget)
@@ -156,7 +169,16 @@ class ConversationRepository:
         if budget.tokens + tokens > limit:
             await self.session.commit()
             raise BudgetExceeded
+        if (
+            policy
+            and policy.monthly_usd_limit is not None
+            and (dollars is None or budget.estimated_usd + dollars > policy.monthly_usd_limit)
+        ):
+            await self.session.commit()
+            raise BudgetExceeded
         budget.tokens += tokens
+        if dollars is not None:
+            budget.estimated_usd += dollars
         call = AssistantModelCall(
             household_id=household_id,
             turn_id=turn_id,
@@ -164,18 +186,23 @@ class ConversationRepository:
             route=route,
             reserved_tokens=tokens,
             prompt_version=prompt_version,
+            estimated_usd=dollars,
         )
         self.session.add(call)
         await self.session.commit()
         return call, month
 
     async def settle(self, call, month, usage, duration_ms, status):
+        await self.fence()
         call.duration_ms = duration_ms
         call.status = status
         if usage is not None:
             call.input_tokens = usage.get("input_tokens", 0)
             call.output_tokens = usage.get("output_tokens", 0)
             call.cached_tokens = usage.get("input_tokens_details", {}).get("cached_tokens", 0)
+            call.cache_write_tokens = usage.get("input_tokens_details", {}).get(
+                "cache_write_tokens", 0
+            )
             actual = call.input_tokens + call.output_tokens
             budget = await self.session.scalar(
                 select(AssistantBudget)
@@ -186,5 +213,15 @@ class ConversationRepository:
                 .with_for_update()
             )
             budget.tokens += actual - call.reserved_tokens
+            dollars = estimate(
+                call.model,
+                call.input_tokens,
+                call.output_tokens,
+                cached=call.cached_tokens,
+                writes=call.cache_write_tokens,
+            )
+            if dollars is not None and call.estimated_usd is not None:
+                budget.estimated_usd += dollars - call.estimated_usd
+                call.estimated_usd = dollars
         # Unknown provider outcome retains the reservation; retries are never free/unbounded.
         await self.session.commit()

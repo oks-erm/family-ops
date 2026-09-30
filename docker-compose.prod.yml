@@ -1,3 +1,16 @@
+x-household-runtime: &household-runtime
+  image: ${GHCR_IMAGE}:${IMAGE_TAG:-latest}
+  env_file: [.env]
+  environment: &household-settings
+    ASSISTANT_V2_ENABLED: "true"
+    ASSISTANT_MODEL: "gpt-6-luna"
+    ASSISTANT_REASONING_MODEL: "gpt-6.1-sol"
+  depends_on:
+    app:
+      condition: service_healthy
+  restart: unless-stopped
+  stop_grace_period: 30s
+
 services:
   traefik:
     image: traefik:v3
@@ -24,11 +37,8 @@ services:
     env_file:
       - .env
     environment:
+      <<: *household-settings
       SESSION_COOKIE_DOMAIN: ${SESSION_COOKIE_DOMAIN:-.sdfgh.space}
-      # Release configuration; rollback by setting this flag to "false" and recreating app only.
-      ASSISTANT_V2_ENABLED: "true"
-      ASSISTANT_MODEL: "gpt-6-luna"
-      ASSISTANT_REASONING_MODEL: "gpt-6.1-sol"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.app.rule=Host(`${DOMAIN}`)"
@@ -40,6 +50,52 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  ingress:
+    <<: *household-runtime
+    command: ["python", "-m", "app.runtime", "ingress"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.runtime", "ingress", "--health"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  worker:
+    <<: *household-runtime
+    command: ["python", "-m", "app.runtime", "worker"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.runtime", "worker", "--health"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  delivery:
+    <<: *household-runtime
+    command: ["python", "-m", "app.runtime", "delivery"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.runtime", "delivery", "--health"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  scheduler:
+    <<: *household-runtime
+    command: ["python", "-m", "app.runtime", "scheduler"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.runtime", "scheduler", "--health"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
 
   postgres:
     image: postgres:16-alpine

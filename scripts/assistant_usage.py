@@ -8,23 +8,14 @@ import asyncio
 import json
 import sys
 from datetime import date
-from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import func, select
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.db.models import AssistantModelCall
+from app.db.models import AssistantInbox, AssistantModelCall, AssistantOutbox
 from app.db.session import async_session_factory
-
-# Verified standard short-context USD / million tokens, 2026-09-30.
-# Rates are estimates; provider invoices and current pricing remain authoritative.
-RATES = {
-    "gpt-6-luna": (Decimal("0.10"), Decimal("0.01"), Decimal("0.50")),
-    "gpt-6.1-sol": (Decimal("2"), Decimal("0.10"), Decimal("10")),
-    "gpt-6-astra": (Decimal("10"), Decimal("1"), Decimal("50")),
-}
 
 
 async def report(month):
@@ -43,6 +34,8 @@ async def report(month):
                     func.sum(AssistantModelCall.output_tokens),
                     func.avg(AssistantModelCall.duration_ms),
                     func.sum(AssistantModelCall.reserved_tokens),
+                    func.sum(AssistantModelCall.estimated_usd),
+                    func.sum(AssistantModelCall.cache_write_tokens),
                 )
                 .where(AssistantModelCall.created_at >= start, AssistantModelCall.created_at < end)
                 .group_by(
@@ -50,20 +43,27 @@ async def report(month):
                 )
             )
         ).all()
+        queues = {}
+        for table, name in ((AssistantInbox, "inbox"), (AssistantOutbox, "outbox")):
+            queues[name] = dict(
+                (
+                    await session.execute(select(table.status, func.count()).group_by(table.status))
+                ).all()
+            )
     result = []
-    for model, route, status, calls, inputs, cached, outputs, latency, reserved in rows:
-        rates = RATES.get(model)
-        estimate = None
-        upper_estimate = None
-        if rates and status in {"completed", "incomplete"}:
-            estimate = str(
-                ((inputs - cached) * rates[0] + cached * rates[1] + outputs * rates[2]) / 1_000_000
-            )
-            # Historical usage rows do not separate cache writes from other uncached input.
-            upper_estimate = str(
-                ((inputs - cached) * rates[0] * Decimal("1.25")
-                 + cached * rates[1] + outputs * rates[2]) / 1_000_000
-            )
+    for (
+        model,
+        route,
+        status,
+        calls,
+        inputs,
+        cached,
+        outputs,
+        latency,
+        reserved,
+        dollars,
+        writes,
+    ) in rows:
         result.append(
             {
                 "model": model,
@@ -75,14 +75,25 @@ async def report(month):
                 "output_tokens": outputs,
                 "mean_latency_ms": round(float(latency)),
                 "reserved_tokens": reserved,
-                "estimated_usd_min": estimate,
-                "estimated_usd_max": upper_estimate,
+                "estimated_usd": str(dollars) if dollars is not None else None,
+                "cache_write_tokens": writes,
             }
         )
-    print(json.dumps({
-        "month": month, "pricing_date": "2026-09-30", "groups": result,
-        "pricing_basis": "Standard short context; range includes possible cache-write premium.",
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "month": month,
+                "pricing_date": "2026-09-30",
+                "groups": result,
+                "pricing_basis": (
+                    "Recorded estimates; old calls conservatively backfilled. "
+                    "Unknown outcomes retain reservations."
+                ),
+                "queue_states": queues,
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -165,6 +165,7 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
             commit=AsyncMock(), rollback=AsyncMock(), refresh=AsyncMock()
         )
         self.repo = SimpleNamespace(
+            fence=AsyncMock(),
             reserve=AsyncMock(return_value=(SimpleNamespace(), date.today())),
             settle=AsyncMock(),
             action=AsyncMock(return_value=None),

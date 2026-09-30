@@ -80,6 +80,7 @@ class AssistantDataRepository:
             )
         ).all()
         return {
+            "kind": args.kind,
             "records": [self.record(item) for item in items],
             "total": total,
             "next_offset": args.offset + 30 if total > args.offset + 30 else None,
@@ -290,6 +291,7 @@ class AssistantDataRepository:
             select(PlanningConversation)
             .where(
                 PlanningConversation.user_id == self.user_id,
+                PlanningConversation.household_id == self.household_id,
                 PlanningConversation.plan_date == args.day,
             )
             .with_for_update()

@@ -51,8 +51,10 @@ jobs:
           app/db/repositories/assistant_data.py app/db/repositories/conversations.py
           tests/test_conversation*.py tests/test_assistant*.py
           scripts/evaluate_assistant.py scripts/evaluate_conversation_flow.py scripts/assistant_usage.py
-          scripts/verify_release.py
-          alembic/versions/202609300001_household_conversations.py
+          scripts/verify_release.py scripts/assistant_limits.py scripts/benchmark_assistant_queue.py
+          app/runtime.py app/db/repositories/planning.py
+          app/db/repositories/assistant_queue.py app/db/repositories/leases.py
+          alembic/versions/20260930000*.py
 
       - name: Run database migrations
         run: alembic upgrade head
@@ -188,10 +190,10 @@ jobs:
             # Authenticate to GHCR
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
-            # Pull and restart only the family-copilot app service
-            previous_app="$($compose_cmd ps -q app)"
-            untouched_containers="$(docker ps -q --no-trunc | grep -v "^${previous_app:-none}$" || true)"
-            $compose_cmd pull app
+            # Snapshot unrelated services; only these five household roles belong to this release.
+            previous_household="$($compose_cmd ps -q app ingress worker delivery scheduler)"
+            untouched_containers="$(docker ps -q --no-trunc | grep -Fvx "$previous_household" || true)"
+            $compose_cmd pull app ingress worker delivery scheduler
             if ! $compose_cmd up -d --no-deps app; then
               echo "First compose up failed, retrying once in 5s..."
               sleep 5
@@ -225,6 +227,29 @@ jobs:
               exit 1
             fi
 
+            # The web container migrates first. Runtime roles verify the schema before starting.
+            $compose_cmd up -d --no-deps ingress worker delivery scheduler
+            for role in ingress worker delivery scheduler; do
+              role_id="$($compose_cmd ps -q "$role")"
+              test -n "$role_id"
+              test "$(docker inspect "$role_id" --format '{{.Config.Image}}')" = "$expected_image"
+              role_ok=false
+              for attempt in $(seq 1 30); do
+                if [ "$(docker inspect "$role_id" --format '{{.State.Health.Status}}')" = healthy ]; then
+                  role_ok=true
+                  break
+                fi
+                sleep 2
+              done
+              test "$role_ok" = true
+              role_started="$(docker inspect "$role_id" --format '{{.State.StartedAt}}')"
+              if $compose_cmd logs --since "$role_started" "$role" 2>&1 | grep -Eq 'ERROR|CRITICAL|Traceback'; then
+                echo "Runtime startup errors; inspect privately on the host."
+                exit 1
+              fi
+              echo "$role: expected image, healthy, no startup errors."
+            done
+
             $compose_cmd exec -T app alembic current
             $compose_cmd exec -T app python scripts/verify_release.py
 
@@ -241,4 +266,4 @@ jobs:
             for other_id in $untouched_containers; do
               test "$(docker inspect "$other_id" --format '{{.State.Running}}')" = true
             done
-            echo "Existing non-app containers are still running with unchanged IDs."
+            echo "Existing non-household containers are still running with unchanged IDs."
