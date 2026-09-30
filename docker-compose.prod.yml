@@ -61,7 +61,7 @@ services:
     <<: *household-runtime
     command: ["python", "-m", "app.runtime", "ingress"]
     healthcheck:
-      test: ["CMD", "python", "-m", "app.runtime", "ingress", "--health"]
+      test: ["CMD", "python", "-c", "import json,sys,time; from pathlib import Path; at=json.loads(Path('/tmp/family-'+sys.argv[1]+'-health.json').read_text())['at']; sys.exit(0 if 0 <= time.time()-at < 60 else 1)", "ingress"]
       interval: 15s
       timeout: 5s
       retries: 4
@@ -71,7 +71,7 @@ services:
     <<: *household-runtime
     command: ["python", "-m", "app.runtime", "worker"]
     healthcheck:
-      test: ["CMD", "python", "-m", "app.runtime", "worker", "--health"]
+      test: ["CMD", "python", "-c", "import json,sys,time; from pathlib import Path; at=json.loads(Path('/tmp/family-'+sys.argv[1]+'-health.json').read_text())['at']; sys.exit(0 if 0 <= time.time()-at < 60 else 1)", "worker"]
       interval: 15s
       timeout: 5s
       retries: 4
@@ -81,7 +81,7 @@ services:
     <<: *household-runtime
     command: ["python", "-m", "app.runtime", "delivery"]
     healthcheck:
-      test: ["CMD", "python", "-m", "app.runtime", "delivery", "--health"]
+      test: ["CMD", "python", "-c", "import json,sys,time; from pathlib import Path; at=json.loads(Path('/tmp/family-'+sys.argv[1]+'-health.json').read_text())['at']; sys.exit(0 if 0 <= time.time()-at < 60 else 1)", "delivery"]
       interval: 15s
       timeout: 5s
       retries: 4
@@ -91,7 +91,7 @@ services:
     <<: *household-runtime
     command: ["python", "-m", "app.runtime", "scheduler"]
     healthcheck:
-      test: ["CMD", "python", "-m", "app.runtime", "scheduler", "--health"]
+      test: ["CMD", "python", "-c", "import json,sys,time; from pathlib import Path; at=json.loads(Path('/tmp/family-'+sys.argv[1]+'-health.json').read_text())['at']; sys.exit(0 if 0 <= time.time()-at < 60 else 1)", "scheduler"]
       interval: 15s
       timeout: 5s
       retries: 4
