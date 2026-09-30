@@ -105,6 +105,11 @@ still share a host with scheduling; separate credentials/roles, infrastructure a
 ownership require a reviewed production operations change. Never use `down` or
 `--remove-orphans` as part of the household release.
 
+Household deployments write Compose and environment files under
+`/opt/family-copilot/household-release`, retaining the `family-copilot` Compose project
+for its existing network and app service. The parent directory's scheduling Compose file,
+environment and pinned scheduling image are left intact for its independent release workflow.
+
 ## Dashboard
 
 The current UI is retained. Dashboard/activity loads now discard stale responses, handle

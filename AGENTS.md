@@ -128,3 +128,6 @@ Production Compose explicitly enables the v2 engine and pins Luna/Sol. Release v
 runs `python scripts/verify_release.py` inside the deployed container without reading household
 records or sending messages. Roll back by setting the Compose engine flag to false and
 recreating only app; do not roll back additive tables containing conversation data.
+The household release owns `/opt/family-copilot/household-release`; use Compose project
+`family-copilot` there. Never overwrite the parent directory's Compose or environment files,
+which the independent scheduling deployment still uses.

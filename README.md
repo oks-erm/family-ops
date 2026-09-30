@@ -201,6 +201,9 @@ Production Compose enables the conversation engine with Luna and the Sol fallbac
 To roll back the engine, set `ASSISTANT_V2_ENABLED` to `"false"` in the app's Compose
 environment and recreate only `app`. Lesson scheduling has its own deployment;
 the household release does not restart its service, PostgreSQL, or Traefik.
+Household Compose/environment files live in `/opt/family-copilot/household-release` on
+the server, with the existing `family-copilot` project name. The parent's scheduling
+deployment files and image settings are preserved.
 
 ## Roadmap
 

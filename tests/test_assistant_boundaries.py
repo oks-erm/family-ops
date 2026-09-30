@@ -21,6 +21,9 @@ class SeparationTests(unittest.TestCase):
         workflow = Path(".github/workflows/deploy.yml").read_text()
         self.assertIn("up -d --no-deps app", workflow)
         self.assertNotIn("--remove-orphans", workflow)
+        self.assertIn('target: "/opt/family-copilot/household-release"', workflow)
+        self.assertIn("cd /opt/family-copilot/household-release", workflow)
+        self.assertIn("docker compose -p family-copilot", workflow)
 
     def test_image_excludes_scheduling_and_credentials(self):
         ignored = Path(".dockerignore").read_text().splitlines()

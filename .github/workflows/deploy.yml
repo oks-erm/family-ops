@@ -140,7 +140,7 @@ jobs:
           passphrase: ${{ secrets.HETZNER_SSH_PASSPHRASE }}
           script: |
             set -e
-            mkdir -p /opt/family-copilot
+            mkdir -p /opt/family-copilot/household-release
 
       - name: Copy compose file to server
         uses: appleboy/scp-action@v0.1.7
@@ -150,7 +150,7 @@ jobs:
           key: ${{ secrets.HETZNER_SSH_KEY }}
           passphrase: ${{ secrets.HETZNER_SSH_PASSPHRASE }}
           source: "docker-compose.prod.yml"
-          target: "/opt/family-copilot"
+          target: "/opt/family-copilot/household-release"
 
       - name: Deploy
         uses: appleboy/ssh-action@v1
@@ -168,9 +168,10 @@ jobs:
           envs: ENV_FILE,GHCR_TOKEN,GITHUB_ACTOR,IMAGE_NAME,IMAGE_TAG
           script: |
             set -e
-            cd /opt/family-copilot
+            cd /opt/family-copilot/household-release
 
-            compose_cmd="docker compose -f docker-compose.prod.yml"
+            # Keep the existing project/network; isolate files from scheduling's release.
+            compose_cmd="docker compose -p family-copilot -f docker-compose.prod.yml"
 
             if ! docker info >/dev/null 2>&1; then
               echo "Docker is not available for this SSH user. Use root as HETZNER_SSH_USER or add this user to the docker group."
