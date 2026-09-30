@@ -4,8 +4,8 @@ from unittest.mock import patch
 from starlette.requests import Request
 
 from app.config import Settings
-from app.main import root, scheduling_host_allows_path
-from app.routes.auth import google_auth_start, logout, student_logout
+from app.main import app, root
+from app.routes.auth import google_auth_start, logout
 from app.routes.calendar import _calendar_result_redirect
 from app.routes.scheduling import (
     ACCOUNT_CONTROL_CSS,
@@ -150,24 +150,19 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('id="feeds"', MANAGEMENT_HTML)
 
     def test_tutor_intro_is_a_separate_landing_page(self) -> None:
-        self.assertIn("digital duct tape", TUTOR_LANDING_HTML)
-        self.assertIn("dramatic puff of experimental software", TUTOR_LANDING_HTML)
+        self.assertIn("Less scheduling admin. More actual teaching.", TUTOR_LANDING_HTML)
         self.assertNotIn(
             "The app stores only the account, scheduling, booking, and payment-tracking",
             TUTOR_LANDING_HTML,
         )
-        self.assertIn("Connect your calendars", TUTOR_LANDING_HTML)
-        self.assertIn('/api/scheduling/assets/coffee-qr.png', TUTOR_LANDING_HTML)
+        self.assertIn("Connect calendars", TUTOR_LANDING_HTML)
+        self.assertIn("https://www.buymeacoffee.com/okserm", TUTOR_LANDING_HTML)
         self.assertNotIn("digital duct tape", MANAGEMENT_HTML)
         self.assertNotIn('id="welcome-panel"', MANAGEMENT_HTML)
 
     def test_dashboard_header_links_to_separate_feedback_page(self) -> None:
-        self.assertIn('data-slug="okserm"', MANAGEMENT_HTML)
-        self.assertIn('class="dashboard-support"', MANAGEMENT_HTML)
         self.assertNotIn('class="dashboard-footer"', MANAGEMENT_HTML)
         self.assertIn('href="/schedule/feedback"', MANAGEMENT_HTML)
-        self.assertIn('.dashboard-support .bug-link', MANAGEMENT_HTML)
-        self.assertNotIn('.bug-link{display:inline-flex', MANAGEMENT_HTML)
         self.assertNotIn('id="bug-report"', MANAGEMENT_HTML)
         self.assertIn('id="bug-report"', BUG_REPORT_HTML)
         self.assertIn('data-action="bug-report"', BUG_REPORT_HTML)
@@ -261,22 +256,8 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(">Sign in</a>", body)
         self.assertIn(ACCOUNT_CONTROL_CSS, body)
 
-    async def test_student_logout_preserves_tutor_session(self) -> None:
-        session = {
-            "student_google_email": "student@example.com",
-            "student_google_name": "Student",
-            "google_email": "tutor@example.com",
-        }
-        response = await student_logout(_request(session=session), slug="oksana-erm")
-
-        self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["location"], "/book/oksana-erm")
-        self.assertNotIn("student_google_email", session)
-        self.assertNotIn("student_google_name", session)
-        self.assertEqual(session["google_email"], "tutor@example.com")
-
-        unsafe_response = await student_logout(_request(session={}), slug="//attacker.example")
-        self.assertEqual(unsafe_response.headers["location"], "/")
+    def test_family_app_has_no_student_logout(self) -> None:
+        self.assertNotIn("/auth/student/logout", set(app.openapi()["paths"]))
 
     def test_student_lesson_changes_use_an_in_page_modal(self) -> None:
         self.assertIn('id="lesson-modal"', STUDENT_HTML)
@@ -342,19 +323,12 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Your one-time Google Meet link", PUBLIC_HTML)
         self.assertIn("starts_at:selectedStarts.map", PUBLIC_HTML)
 
-    async def test_authenticated_lessons_root_opens_management(self) -> None:
-        with patch("app.main.get_settings", return_value=self.settings):
-            response = await root(_request(session={"google_email": "tutor@example.com"}))
+    async def test_family_root_does_not_route_tutors(self) -> None:
+        response = await root(_request(session={"google_email": "tutor@example.com"}))
+        self.assertEqual(response["name"], "Family Copilot")
 
-        self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["location"], "/schedule/manage")
-
-    async def test_signed_out_lessons_root_opens_tutor_landing(self) -> None:
-        with patch("app.main.get_settings", return_value=self.settings):
-            response = await root(_request())
-
-        self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["location"], "/schedule")
+    async def test_signed_out_family_root_is_independent(self) -> None:
+        self.assertEqual((await root(_request()))["health"], "/health")
 
     async def test_tutor_landing_and_dashboard_show_account_controls(self) -> None:
         signed_out = await tutor_landing_page(_request())
@@ -377,18 +351,11 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tutor@example.com", dashboard_body)
         self.assertIn('/auth/logout?next=scheduling', dashboard_body)
 
-    async def test_tutor_logout_returns_to_landing(self) -> None:
-        request = _request(session={"google_email": "tutor@example.com"})
-        response = await logout(request, next="scheduling")
-
-        self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["location"], "/schedule")
+    async def test_family_logout_returns_to_dashboard(self) -> None:
+        request = _request(session={"google_email": "family@example.com"})
+        response = await logout(request)
+        self.assertEqual(response.headers["location"], "/dashboard")
         self.assertEqual(request.session, {})
-
-        family_response = await logout(
-            _request(session={"google_email": "family@example.com"})
-        )
-        self.assertEqual(family_response.headers["location"], "/dashboard")
 
     async def test_management_page_has_no_family_dashboard_link(self) -> None:
         response = await scheduling_management_page(
@@ -399,37 +366,16 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Family Copilot", body)
         self.assertNotIn(">Dashboard<", body)
 
-    def test_lessons_host_exposes_only_scheduling_and_required_login_routes(self) -> None:
-        self.assertTrue(scheduling_host_allows_path("/schedule"))
-        self.assertTrue(scheduling_host_allows_path("/schedule/feedback"))
-        self.assertTrue(scheduling_host_allows_path("/schedule/manage"))
-        self.assertTrue(scheduling_host_allows_path("/schedule/register"))
-        self.assertTrue(scheduling_host_allows_path("/schedule/admin"))
-        self.assertTrue(scheduling_host_allows_path("/book/oksana-erm"))
-        self.assertTrue(scheduling_host_allows_path("/api/scheduling/manage"))
-        self.assertTrue(scheduling_host_allows_path("/calendar/google/start"))
-        self.assertTrue(scheduling_host_allows_path("/auth/student/logout"))
-        self.assertFalse(scheduling_host_allows_path("/dashboard"))
-        self.assertFalse(scheduling_host_allows_path("/api/dashboard"))
-        self.assertFalse(scheduling_host_allows_path("/api/tasks/day"))
+    def test_family_app_never_registers_lesson_routes(self) -> None:
+        for path in app.openapi()["paths"]:
+            self.assertFalse(path.startswith(("/schedule", "/book", "/api/scheduling")))
 
-    async def test_google_login_accepts_only_known_scheduling_destination(self) -> None:
+    async def test_family_login_does_not_set_a_tutor_destination(self) -> None:
         request = _request()
         with patch("app.routes.auth.get_settings", return_value=self.settings):
-            response = await google_auth_start(request, next="scheduling")
-
+            response = await google_auth_start(request)
         self.assertEqual(response.status_code, 307)
-        self.assertEqual(request.session["oauth_next"], "scheduling")
-
-        with patch("app.routes.auth.get_settings", return_value=self.settings):
-            await google_auth_start(request, next="https://attacker.example")
-
         self.assertNotIn("oauth_next", request.session)
-
-        with patch("app.routes.auth.get_settings", return_value=self.settings):
-            await google_auth_start(request, next="book:oksana-erm")
-
-        self.assertEqual(request.session["oauth_next"], "book:oksana-erm")
 
     def test_registration_collects_country_subjects_and_browser_timezone(self) -> None:
         self.assertIn('name="country"', REGISTRATION_HTML)
@@ -437,17 +383,12 @@ class SchedulingNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('name="timezone"', REGISTRATION_HTML)
         self.assertIn("Intl.DateTimeFormat().resolvedOptions().timeZone", REGISTRATION_HTML)
 
-    async def test_calendar_result_returns_to_lessons_for_success_and_failure(self) -> None:
+    async def test_calendar_result_returns_to_family_dashboard(self) -> None:
         for status in ("connected", "auth-failed"):
-            request = _request(session={"calendar_oauth_next": "scheduling"})
+            request = _request()
             with patch("app.routes.calendar.get_settings", return_value=self.settings):
                 response = _calendar_result_redirect(request, status)
-
-            self.assertEqual(
-                response.headers["location"],
-                f"https://lessons.example.com/schedule/manage?calendar={status}",
-            )
-            self.assertNotIn("calendar_oauth_next", request.session)
+            self.assertIn("/dashboard", response.headers["location"])
 
 
 if __name__ == "__main__":

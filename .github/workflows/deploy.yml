@@ -4,12 +4,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      restart_traefik:
-        description: Restart Traefik to retry certificate provisioning
-        required: false
-        default: false
-        type: boolean
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -36,6 +30,7 @@ jobs:
     env:
       APP_ENV: test
       DATABASE_URL: postgresql+asyncpg://family:family@localhost:5432/family_copilot_test
+      TEST_DATABASE_URL: postgresql+asyncpg://family:family@localhost:5432/family_copilot_test
       DASHBOARD_SESSION_SECRET: ci-only-session-secret
     steps:
       - name: Checkout
@@ -48,13 +43,25 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt 'ruff>=0.6.9,<1.0.0'
+
+      - name: Lint conversation changes
+        run: >-
+          ruff check app/clients app/schemas app/services/conversation
+          app/db/repositories/assistant_data.py app/db/repositories/conversations.py
+          tests/test_conversation*.py tests/test_assistant*.py
+          scripts/evaluate_assistant.py scripts/evaluate_conversation_flow.py scripts/assistant_usage.py
+          scripts/verify_release.py
+          alembic/versions/202609300001_household_conversations.py
 
       - name: Run database migrations
         run: alembic upgrade head
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
+
+      - name: Check dashboard request behavior
+        run: node tests/test_dashboard_requests.js
 
       - name: Compile and import application
         run: |
@@ -153,13 +160,12 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           IMAGE_NAME: ${{ needs.build-push.outputs.image_name }}
           IMAGE_TAG: "sha-${{ needs.build-push.outputs.image_tag }}"
-          RESTART_TRAEFIK: ${{ github.event_name == 'workflow_dispatch' && inputs.restart_traefik || false }}
         with:
           host: ${{ secrets.HETZNER_HOST }}
           username: ${{ secrets.HETZNER_SSH_USER }}
           key: ${{ secrets.HETZNER_SSH_KEY }}
           passphrase: ${{ secrets.HETZNER_SSH_PASSPHRASE }}
-          envs: ENV_FILE,GHCR_TOKEN,GITHUB_ACTOR,IMAGE_NAME,IMAGE_TAG,RESTART_TRAEFIK
+          envs: ENV_FILE,GHCR_TOKEN,GITHUB_ACTOR,IMAGE_NAME,IMAGE_TAG
           script: |
             set -e
             cd /opt/family-copilot
@@ -182,18 +188,13 @@ jobs:
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
             # Pull and restart only the family-copilot app service
+            previous_app="$($compose_cmd ps -q app)"
+            untouched_containers="$(docker ps -q --no-trunc | grep -v "^${previous_app:-none}$" || true)"
             $compose_cmd pull app
-            if ! $compose_cmd up -d app; then
+            if ! $compose_cmd up -d --no-deps app; then
               echo "First compose up failed, retrying once in 5s..."
               sleep 5
-              $compose_cmd up -d app
-            fi
-
-            if [ "$RESTART_TRAEFIK" = "true" ]; then
-              echo "Restarting Traefik to retry certificate provisioning."
-              $compose_cmd restart traefik
-              sleep 5
-              $compose_cmd logs --since=2m --tail=100 traefik
+              $compose_cmd up -d --no-deps app
             fi
 
             # Verify app is running the expected image tag.
@@ -220,12 +221,23 @@ jobs:
             done
             if [ "$health_ok" != "true" ]; then
               echo "Application health check failed."
-              $compose_cmd logs --tail=100 app
               exit 1
             fi
 
             $compose_cmd exec -T app alembic current
-            $compose_cmd logs --tail=100 app
+            $compose_cmd exec -T app python scripts/verify_release.py
 
-            # Clean up dangling images
-            docker image prune -f
+            # Inspect startup logs without publishing private payloads or provider URLs.
+            started_at="$(docker inspect "$container_id" --format '{{.State.StartedAt}}')"
+            startup_logs="$($compose_cmd logs --since "$started_at" app 2>&1)"
+            if printf '%s' "$startup_logs" | grep -Eq 'ERROR|CRITICAL|Traceback'; then
+              echo "Startup logs contain errors; inspect privately on the host."
+              exit 1
+            fi
+            printf '%s' "$startup_logs" | grep -q 'Application startup complete'
+            echo "Startup complete; no error/critical/traceback entries in release logs."
+
+            for other_id in $untouched_containers; do
+              test "$(docker inspect "$other_id" --format '{{.State.Running}}')" = true
+            done
+            echo "Existing non-app containers are still running with unchanged IDs."

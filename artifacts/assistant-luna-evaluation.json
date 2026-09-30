@@ -1,0 +1,205 @@
+{
+  "model": "gpt-6-luna",
+  "synthetic": true,
+  "estimated_usd": 0.0006118,
+  "pricing_date": "2026-09-30",
+  "results": [
+    {
+      "case": "shopping_typo",
+      "status": "pass",
+      "latency_ms": 2062,
+      "usage": {
+        "input_tokens": 1514,
+        "input_tokens_details": {
+          "cache_write_tokens": 1511,
+          "cached_tokens": 0
+        },
+        "output_tokens": 55,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1569
+      },
+      "estimated_usd": 0.00021668,
+      "response": [
+        {
+          "id": "fc_09508fc10168164b016abd38616c9087d2a09a37368ecb8707",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"items\":[{\"kind\":\"shopping\",\"title\":\"oat milk\",\"store\":null,\"due_date\":null},{\"kind\":\"shopping\",\"title\":\"eggs\",\"store\":null,\"due_date\":null}]}",
+          "call_id": "call_idXGvG6KcVfUfLpUAUanPwk5",
+          "name": "create_records"
+        }
+      ]
+    },
+    {
+      "case": "topic_switch",
+      "status": "pass",
+      "latency_ms": 1900,
+      "usage": {
+        "input_tokens": 1526,
+        "input_tokens_details": {
+          "cache_write_tokens": 53,
+          "cached_tokens": 1470
+        },
+        "output_tokens": 26,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1552
+      },
+      "estimated_usd": 3.463e-05,
+      "response": [
+        {
+          "id": "fc_0a7e09a8953719b4016abd386367ec87d29aa4f7fa2909aeaf",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"kind\":\"shopping\",\"query\":null,\"offset\":0}",
+          "call_id": "call_UNuZSLcSbiGzCPTyWnybXfr0",
+          "name": "list_records"
+        }
+      ]
+    },
+    {
+      "case": "finance_followup",
+      "status": "pass",
+      "latency_ms": 5949,
+      "usage": {
+        "input_tokens": 1542,
+        "input_tokens_details": {
+          "cache_write_tokens": 69,
+          "cached_tokens": 1470
+        },
+        "output_tokens": 345,
+        "output_tokens_details": {
+          "reasoning_tokens": 289
+        },
+        "total_tokens": 1887
+      },
+      "estimated_usd": 0.00019613,
+      "response": [
+        {
+          "id": "rs_03222002d4cc4d05016abd3865d22487d2b1cab2a13d995d15",
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqvThp9-TpakaTyXULxFJZRBrwtKKbU_VAjdiCxjWBHlSs0KPdkI8acdFcn7k_E3N_uauHtSYWeG9xkzvDw2esaX2gxg0lYRSMkqpS-rq8Pu5eZ26LXlkbTt39FQXtCSuRet2f8bMtQPwRoiijIWvN8nMWFsKZF6UqK3M75-pU6TwxPcP3PpDGThNl9hympRJCV_2hB2ZLW_A_HY9T-2uritpvhqJ-c8fd3VO7dwoGT3XIRISYEyZlwAllYfC-9kM1ZG4EniwHHTnb9ke6HBTS8pXyeZutwjKyyaZWloUAKreYtDixzD6gx_HqkezV4q8WadHjrmHufaFcG5v7C5Jqo28m3BHLTX1AeoVwcLKFYDxSa4_-XeRTSwb3SApBc_rbMdJH1Xp1Kvq5CQstSGFh3zwQTNJmXulN2zy4SLuarhL5uqnRBbCpPUaawb_Phf-C1BriulFXrnIWi_lA2SrO67FkT-XN1ULYPVWL-EmWCp6we2YQrpN46cSezjLSdbMbBrBaGF9G6oy9rrtCzMj9i_oW6lrGjU8kzLPqjOfKvieB_lx-XWIyGiZe6DLFy-RrZVNHRguVwB1iJRRUih2vp6M6iY6ropJRR3bPYNv6o1QOqhelCXOWJlXaz_Z90iiXnYXHFwwIGezcBG-1vKwso06EIL-DiPgEjY6CgbfIkjEsZTzP4o9Iud7iABvrbR4bxi7YzPTHz34R72c3CY-88hpJg7AFVkZdwTDfCmVSw7Sjqbh0hgBDi86T-iLBywFAVPzNOUel-Q3FJUpq5JWngVGH5RFyZzYeAFmQEhB1SHJsEIhNJz4656IhibyjV08qWsJzJ4wqE2_CAgFCDaWHurC6nu1HoUsf4d-6UyD3BxyL-G43UK9VrNqtnP-pWxhZzROx8apOowDOP93AvSDBt9suWbSE4G5KOVNoHO18l0IEyhL8h53MsWKB_LG48KnBiSyxYnTJ9V_GGEmvYrroVlaBoZTTrXezlhiKUP3O1ObjGo8DcKPiIsQfnbTvQhG3nv5RB_xlk2PnMXdznOrtq0_WYOvqOtUdhbUt--Cnj47da0bwFMBC4QhH-5gswCU-ZGVyosRgcE1Rd8buWQYkv_1yYKDHjZkNUT9qJtKN9tEXUPkQKmwqorfx88nt_ebwGRv_gFgA6Rl9Ge7bScKGbWtnTOCmD06z36eK1P4u8Y82GAH0UwJ2lHMgMY1Jx_wVH0eOw5IzGyxfO5rdxhccHCdzff5mxtKLXwZao_06jq2zSesjHizhc3taYsmd2iRtSqLpsImz_W0eB4R1Ry5C9A8Xua112PPt9t_bjaqJKbjfH10e1U8PbVmGfWnQtXU92fvVJ30YiO5CtQCYn9DOI6qyrOBWMbsmSeFcPY7bqV2hDgxlyKUR71McDCU0kCHcygJQJf-bO1feTRjTO9Lb9lO6bWzHqqjeSi7pkONcmDrwY8MrBpULLIe2t0rjPZmInJBCctdnRIHOdAgnbpDc_gBdHRhKlQAsN768kj1zC4g-GI2J9AO367-DIFxEBslxHIbjuOq3uN5tWi8fGEVbmd_OcmVLddZIZxvc8DGR_IxljCcV1Tli3HuE_GDWizFFM9aCV1Fwme7eH7erfXUsOd0HibxQJ3k7OfJ-usT9_kA3A2gVueurFO2a2YYY8U8Fn9ekMxMSt1H9Nj9eMhgSvP0zrzxthWOu4CN-4EcHSNFRUib5_2rHeGXEUyH0RgUHBwtWLJKDZ4yWdQOa8V-Fpd2RY6k0mQBp2-smbFjK_JTeNGoNwbShWPpTtH_bfJRjFaAaBW30udbGnI28zJIdKjd__O-HIIOUGN8jMlChJUlQ6h9VoU_Sh_G02jJ1SMaWp9D2aCToC-7YV5ePW-QIb5099tVcdktSIgO0skI8FTZRAcsoVjM1t9OdEYUOcZB-rsv5pdbygC4iTVxMPNMmilNwY2QMxGWjwEPBA8kNgCgSUr2UjZOVeUzY3Zcjyc9_FY0Y2im0LMSuz4ZeQE90rmIMjaGgOwIQpyPiwikXzxLL8GT3jEsbz4zYxikQXaHu8njmL-oAdDvYd2pATAADULDeBz2R1w881OssBXWBqSHAijq3reJzKHj81gBceJzdVDEib78O9OAmeqlLgwMWZNtco5XPKkkGnAPg9k_aTEHr0z5NeOHwgv-jF_E4q9Of-AOBTGBHMUCHPTmlxCQu7IJIuQRTvjmpEcf7ItnSGLj9M4H032rVTmz8u4hbcZ6K_8UgzkQyiBqoOfTqmJhU2wup0ik5w6HiNQRvxf7hcc7tz7_jtpEVgUv3AhAi_quEXOe2mZ7bREPIl9UuQjQ06Wf_M79MUk0kcuP3FxN1Vzq11ZaEuAUiq6AJel6fepAVtQiULoockoU5KkyifX9JFPJQx2yfSC5KJVgT44OXsJMmmp6c43LlryCmxp907sOAWKx0oOFgcWpUTLPLQkMBEr8doEm4Aboqrxe7yitahT0Tbgww-q43_XRfd3tyYBatkHncDQm-kimEZ6qS3VGd13ETgfTCeA7NyZpwMSQDnZpRl9Qp0chJvCBd6v0UEO4UdGXbp0AAl9aXblmOidg_Kav0OK4qryjL98MugW5_sZ1sRIAefvsv2AHBXTGsDiCSIfaRyZcia2W78Ohkn544EEhKfZzEUacNbs_mWfo51Mzs0yJ8G-S71rFO6gdfxe9vVHMRMrn3yGlSAbTvcjhRqpbhwZ3Ks2BzqlUzuewo9UI4_KylEvZ-gzC0SeuM7V3aOSONc4c1jKI0AVj6CNlB97MtpJ59OwILpvS3sgacqmX86rKHoUTZTmyGMDdasTHibaSObTWCwpmnq_oCbsiPtX03PM28EdaD386TNSdjMUphaNDp1bRXAcwBHcXIINhIHXOrIem_Lb_qIrAvJrdhS09lgnC4pcvW0iU1fPkPtRz-xT89z5PsNlMlYSu-y9XdNgHOfKEwOiXtDnWCsRb0HnZDRZHfMSuaYFC5upeYHNXcuyHNCGOUAaMysqulHCPg47TEtZnO4KKbq9zL2RmPaCXiHTwLiYGbqWZVSYWoUrfN5jSRwNIfd2t8A0hcKDjqZ_qUmEJzQy4gDCV90wVSMmcoNAlj3I9k_sKROlBhT47tKMpHZBPbSpfSZ44rCIVq7RsEsFuThfNbTok9j2is-fy100CiUZQ8U5sbBYucws4VQzQO22CVaR1gbbIlDlZ12AeOa1ngMIwmefC2APvHkGX7z4_b_4Ml7JKBOWE9DnFjDDsf6kygHeu-SsfRqapLkH8A_rJOhSBwRExlhf1EK6FXPCLAUaZXBxqY6iS-8dlV0jVKmYXYLjxWwaXIVtmm8FgRsVr_38jKT-pTSMaqmvfE85KtU5SHrJLZhCAsn2NxrAGTP4L-KTes6vragi6iqQrMnUPfVn02IFTZFZRvzAymWw==",
+          "summary": []
+        },
+        {
+          "id": "fc_03222002d4cc4d05016abd386910d487d2a86b4af183e1a5a9",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"start_date\":\"2026-08-01\",\"end_date\":\"2026-08-31\",\"source\":\"transactions\",\"kind\":\"expense\",\"category\":\"Uber\",\"search\":null,\"offset\":0}",
+          "call_id": "call_I6l2HjCpqxuPNL1kxhMKHdc0",
+          "name": "finance_query"
+        }
+      ]
+    },
+    {
+      "case": "ambiguous_reference",
+      "status": "pass",
+      "latency_ms": 2425,
+      "usage": {
+        "input_tokens": 1509,
+        "input_tokens_details": {
+          "cache_write_tokens": 36,
+          "cached_tokens": 1470
+        },
+        "output_tokens": 75,
+        "output_tokens_details": {
+          "reasoning_tokens": 59
+        },
+        "total_tokens": 1584
+      },
+      "estimated_usd": 5.7e-05,
+      "response": [
+        {
+          "id": "rs_0495e27f8974f9e0016abd386b3c1c87d2bdbb04d36f37b66b",
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqvThsyZPmisxEApuBfGXQGyEMf-WQiRA1TL0mCcOMAmUJa6KnE-x6_kCofpjdKYZynwYEXZ6lf6PLcFGvCFmAO5E5-BmnKrjPNIzcov3pON8mtOXEfwvXBVzsG_Hzwrrc83uMecorFY2QpvdMeUV7oVxWaVnB34L-ITHSiBS--LEV3IQt6EyirlZ7-QrZvZ8VNVpqFKmKgqKfGYbv3yoYGpJkl09OKUGdDfe6Ab3Obrgxju5S62kWstl3TX79HO_4b0RgL3H0gV7EadOZKWZO6j70PccoemN4aiWGhBePAv8VVX1bj-5FmkOvphs7pPjzQLwtsfVwx3lA4d_ghwVHIXGUUcnhdjlzmZluBG_OoPsj7AOxP43ckZ-Wq0h5adYlsevRntKDTitIVckmTOQK4X74R7-H92ti_8ekZzdkndqieiicwHnPt8xyUAYyP6PDukOAXZS32PUiCtSbKpEyuWgQEvRKmKPabT573IvVeQXSyY5z1YGsIzUOCWW7P5GjwgEADivhkccOeqj5DkhWbY0isOY_R4ykp63PX5FWve6b1Czu6pyOI99FXCVaw83p6KnAeGito44UIfMT0YwxMoN9021feig7U3bkNlYGih_KL9UKOW2gNRu8JZXtriKqLczF94g9VxC2ynBfVpAlgOdEgWsGbCfM_7Um3rreMKoxV5PSNCvq337L35juf8K06ciGS3GJ1yY_xk6Z6FzBolNDKI88Y5x6nYwbTKE3kbK-chhjuJMQSH8QfungFdpwIuhcA_rrwocKLCj3ObZyGRxVvh-eCHx_3mqvGX8JVtzgitZO4JSW5qsHhArOFoOyBFbsdK8v1m_f3p2rZFJCZGPM084kfQkNBD_jJOMvWOzcztz27PwAkkkhx3jFgJvdcsm7gFEfcUvYHBtobtQB7rveth1w9dzxZ1NYGHLgpXNbHSz64Ndoz5iQdL8KwhRdFRtbwWpPnmFP5390u0EoII32aJECs8ivJT6bUv5zrbYb4hThTGg--aqyYVoIUpdK7bZiIEhrczm7-3z0_kEnZ2Ih9IHmqsicUug8JLuRnIrteFXdD3T3pyakN3nkc_U0bv4LHmhDi0ExEq5l9sh809x70ZeunnFSQHnmWmOA15U9alcCjS1WPJBbVzPFl81T8jUUIC_BK63v3LyK5h3d5bZy6GeBJA8OGDimQIxb5kjwfP7D573fMsXQsU5O6qLF-YlqXJvzZCvZweDLXrIqSM48jtRN39tXBjQc3MBQunoEEZdTBIVrxzvAkL2aFQ4ArMVpLZPOdkzykfEI5h3tRdYQcWQru9S8kKXloFduwiZwisYMqZVbv2WpKtN3OKVnQsXeheC5DvZll2WNsqyniQmzNyKiQ35MhCFvfy3ia90HCL5hoYE7-v7rzU12FnWueOsm90k64Zgpak8eujUbQDvKADGd4m9SHhCkyOD8GMu9v0f8XzQaGXaCPrhUeFMqjK9nawYFqrfWC61CocG2hx9zlmLPRwxTXK8GxPd8j0DCcU4=",
+          "summary": []
+        },
+        {
+          "id": "msg_0495e27f8974f9e0016abd386bafc087d2a23d339ad195fa8c",
+          "type": "message",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "annotations": [],
+              "logprobs": [],
+              "text": "What would you like me to move to Friday?"
+            }
+          ],
+          "phase": "final_answer",
+          "role": "assistant"
+        }
+      ]
+    },
+    {
+      "case": "task_not_shopping",
+      "status": "pass",
+      "latency_ms": 1814,
+      "usage": {
+        "input_tokens": 1511,
+        "input_tokens_details": {
+          "cache_write_tokens": 38,
+          "cached_tokens": 1470
+        },
+        "output_tokens": 89,
+        "output_tokens_details": {
+          "reasoning_tokens": 45
+        },
+        "total_tokens": 1600
+      },
+      "estimated_usd": 6.425e-05,
+      "response": [
+        {
+          "id": "rs_0539f36b67b4561e016abd386d119c87d29bd95c9bb99d0861",
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqvTht7vKqITwctFhIi6vkIr-W4PAxmOLEYEa1jEHa8SHkaW82ZAw4_4EJ1aYaB39ELCal01qig_TTWuc5HOPBd9Ey5tr1jqt_wod3Kv9J_bg966bkXeJCBqqW41qf7EzmOuWfxY9WLlGriC6thoMpdBih3_gJKncH79K4cVHXv9zM8eyq6kMUcU6wIra0W5AyPLt6XvxNV7UcEOuDscReyaZOzQUD-fIYApEzarcrrCBUWcGbs7edp_nVSG4GRJbdAIGDtqh5V2UfbF630LmXP_1YrE-G8L3UK4bjQrNuuXlzPTWV3R6VemdQqGeFeARpgUTFTGJepN2704SvYveX5gQkVSIdeqw27AzgwwwHKFN_ZS3zL6x2Ij8pB5dWV35VWGnoUIEizb0OP1lmS8BI2RRsjnub8wJh8-nsXvbG7qmYUfUKAffh1LtYy9E4zLEyzRAP0KoBnTUltDUOdn7eYL3JGM2sXvguPioYw9-qshr3aEDO2P4S5B2k8plenc057tGAuwbxmXEHqO2wjoWdhvlDrB8mqg4opzUCtdgZ6Vn_24gEE-q20OLwhI0DbpUlR0l1QiO5eVvu3LLO2YDZ8wlyW4vWHnQnpfWl7cHB5CkTjT2BNoMTP4KPkyv5Uc3wWvLKjXygG2wqHsfmm8aEb4bt4RjChcVT44tI8wpfPwPZN5Gn1ueCZIPskDVC3qKXAl6CcPdqw5PPmjNIBXpmkBNBHuJkFgVProteNtSXooC8Q0ndbgFkamjNCW4Luhqu88ucvYh9-xGixkh9OseQHZZpCTAcj9dkIp4g-bDkWA1i97ExbHA6UET_I0LtaFppG4f-G4fWxocn9NGjjmp-ChaCUBImHpup0H_9RA3K1dUG4YCsZdbYcGWPmswjrrEGHDL68sBjkLaLgSLFHQngZBERmzGEL1PfyD7zebtsjYTHt8Rzq-ojYvuUvx7AXnuVNJPSnkzo7DFrQA8RyyBkngx4ZkD-WuJzIuOeDN5VkxL8-EyEg6xAWwEGfC2GTxEZ0aOFm33KldWkPcchna4LF6x2USapDV59uCZhsYw4le-rtJE2WX8uJ_bAz1VlaUGzQH4QSe08e5EOIq-tt6YET3bNvhBBgDZF4U2JjJqYxC_uDiVdqf9jOUW7EicnfZD1Bh4Hi9HWKDGWaifSaWZE607iMlSq6-jSlsZUM5KO0bN31RNx1hsrVHNtlYtjxuZOxQTXvyY3Mjv3_wVcbwgwBSHpeHi7PDAQ-rCmxfGyPHurryih9FGVaKL2M5v-WpHv4ywVz_96MM17foyWXspXxIbcLpiapcvqOnjLfxVCbj_Z5_FSr6MJ0WsajBtDgF6Py7-2nk3F4p4lo3mdp6R3YE3XHNzK_UOdTAt1TsgQ6U_KGIlZ4sBoKh9RC4FdiMgG1MyHqzPnnYogorzn6PNa-5epDA==",
+          "summary": []
+        },
+        {
+          "id": "fc_0539f36b67b4561e016abd386d856c87d2a16f4acb03a4985d",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"items\":[{\"kind\":\"task\",\"title\":\"Call the dentist\",\"store\":null,\"due_date\":\"2026-10-01\"}]}",
+          "call_id": "call_uHBV0nVW8ZKIug9QWllEg4k5",
+          "name": "create_records"
+        }
+      ]
+    },
+    {
+      "case": "income_capture",
+      "status": "pass",
+      "latency_ms": 1756,
+      "usage": {
+        "input_tokens": 1514,
+        "input_tokens_details": {
+          "cache_write_tokens": 41,
+          "cached_tokens": 1470
+        },
+        "output_tokens": 46,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1560
+      },
+      "estimated_usd": 4.312e-05,
+      "response": [
+        {
+          "id": "fc_0a1cdc94b52603eb016abd386f1de487d29b1ddd93610603fc",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"description\":\"Salary\",\"amount\":\"1200\",\"currency\":\"EUR\",\"kind\":\"income\",\"category\":\"Income\",\"occurred_on\":\"2026-09-30\"}",
+          "call_id": "call_OlEoz0AHvWhprioQcDJI7OF2",
+          "name": "record_transaction"
+        }
+      ]
+    }
+  ],
+  "cost_basis": "Standard short-context pricing including reported cache writes."
+}

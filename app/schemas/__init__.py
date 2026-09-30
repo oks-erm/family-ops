@@ -1,0 +1,1 @@
+"""Validated application boundary contracts."""

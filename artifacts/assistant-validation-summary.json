@@ -1,0 +1,49 @@
+{
+  "synthetic_only": true,
+  "authorized_estimated_limit_usd": 0.5,
+  "estimated_successful_calls_usd": 0.05869083,
+  "pricing_date": "2026-09-30",
+  "pricing_source": "https://developers.openai.com/api/docs/pricing",
+  "includes_cache_write_premium": true,
+  "runs": [
+    {
+      "artifact": "artifacts/assistant-astra-continuation.json",
+      "estimated_usd": 0.0027155000000000096
+    },
+    {
+      "artifact": "artifacts/assistant-astra-evaluation.json",
+      "estimated_usd": 0.04558
+    },
+    {
+      "artifact": "artifacts/assistant-flow-evaluation.json",
+      "estimated_usd": 0.00114561
+    },
+    {
+      "artifact": "artifacts/assistant-flow-repeat-evaluation.json",
+      "estimated_usd": 0.00108692
+    },
+    {
+      "artifact": "artifacts/assistant-luna-evaluation.json",
+      "estimated_usd": 0.0006118
+    },
+    {
+      "artifact": "artifacts/assistant-sol-evaluation.json",
+      "estimated_usd": 0.007551
+    }
+  ],
+  "diagnostic": {
+    "status": 400,
+    "code": "invalid_json_schema",
+    "usage_returned": false,
+    "cause": "Generated Decimal regex used unsupported lookaround; fixed with explicit decimal-string schema."
+  },
+  "limitations": [
+    "Estimates are not provider invoices; rejected diagnostic returned no usage.",
+    "Initial flow scoring rejected the valid euro symbol; corrected scoring and fresh repeat passed.",
+    "Synthetic smoke tests do not establish broad conversational reliability."
+  ],
+  "default_models": {
+    "everyday": "gpt-6-luna",
+    "reasoning": "gpt-6.1-sol"
+  }
+}

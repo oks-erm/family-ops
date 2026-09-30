@@ -36,7 +36,7 @@ def _request(*, session: dict[str, object] | None = None) -> Request:
 
 
 class TutorRegistrationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_unknown_google_tutor_is_sent_to_registration(self) -> None:
+    async def test_family_login_does_not_register_unknown_tutors(self) -> None:
         request = _request(
             session={"oauth_state": "state-123", "oauth_next": "scheduling"}
         )
@@ -84,10 +84,10 @@ class TutorRegistrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 303)
         self.assertEqual(
             response.headers["location"],
-            "https://lessons.example.com/schedule/register",
+            "/auth/not-invited",
         )
-        self.assertEqual(request.session["pending_tutor_email"], "new@example.com")
-        self.assertEqual(request.session["pending_tutor_name"], "New Tutor")
+        self.assertNotIn("pending_tutor_email", request.session)
+        self.assertNotIn("pending_tutor_name", request.session)
 
     async def test_registration_requires_verified_pending_google_identity(self) -> None:
         response = await tutor_registration_page(_request())

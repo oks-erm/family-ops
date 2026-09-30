@@ -1,0 +1,41 @@
+{
+  "synthetic": true,
+  "case": "astra_stateless_tool_continuation",
+  "status": "pass",
+  "response": [
+    {
+      "id": "msg_0e059127603aff4b016abd3924ebb487d29063a22d2f9658ae",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Your shopping list is empty."
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "calls": [
+    {
+      "model": "gpt-6-astra",
+      "usage": {
+        "input_tokens": 1579,
+        "input_tokens_details": {
+          "cache_write_tokens": 53,
+          "cached_tokens": 1523
+        },
+        "output_tokens": 10,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1589
+      },
+      "estimated_usd": 0.0027155
+    }
+  ],
+  "estimated_usd": 0.0027155000000000096
+}

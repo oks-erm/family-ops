@@ -49,7 +49,11 @@ class UserRepository:
         return result.scalar_one()
 
     async def list_users(self) -> list[User]:
-        result = await self.session.execute(select(User).order_by(User.created_at))
+        result = await self.session.execute(
+            select(User).where(
+                User.family_dashboard_enabled.is_(True), User.telegram_chat_id.is_not(None)
+            ).order_by(User.created_at)
+        )
         return list(result.scalars().all())
 
     async def get_by_id(self, *, user_id: UUID) -> User | None:

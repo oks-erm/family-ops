@@ -6,6 +6,7 @@ from app.bot.keyboards import task_action_keyboard
 from app.db.repositories.users import UserRepository
 from app.db.session import async_session_factory
 from app.services.assistant_service import AssistantIntent, AssistantService
+from app.services.conversation.service import ConversationService
 
 router = Router()
 
@@ -28,6 +29,11 @@ async def handle_text_message(message: Message) -> None:
         return
 
     settings = get_settings()
+    # Do this before upserting the user: a group message must not overwrite the
+    # private chat destination used by household reminders.
+    if settings.assistant_v2_enabled and message.chat.type != "private":
+        await message.answer("Please use our private chat for household requests.")
+        return
     async with async_session_factory() as session:
         user_repo = UserRepository(session)
         user = await user_repo.upsert_telegram_user(
@@ -38,6 +44,17 @@ async def handle_text_message(message: Message) -> None:
             username=telegram_user.username,
             timezone=settings.default_timezone,
         )
+
+        if settings.assistant_v2_enabled:
+            reply = await ConversationService(session, settings).handle(
+                user_id=user.id, text=message.text,
+                channel_key=f"telegram:{message.chat.id}",
+                message_key=str(message.message_id),
+            )
+            # Model/user text is plain text, never trusted Telegram HTML.
+            for start in range(0, len(reply), 3500):
+                await message.answer(reply[start:start + 3500], parse_mode=None)
+            return
 
         response = await AssistantService(session, settings).handle_text(
             user_id=user.id,

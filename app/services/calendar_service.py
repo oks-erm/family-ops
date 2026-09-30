@@ -17,7 +17,7 @@ from app.db.models import (
     CalendarConnection,
     CalendarEventCache,
     CalendarProvider,
-    SchedulingCalendar,
+    HouseholdCalendarSelection,
 )
 from app.db.repositories.calendar import CalendarRepository
 from app.services.credential_cipher import CredentialCipher, CredentialDecryptionError
@@ -173,9 +173,9 @@ class CalendarService:
                     if not access_token:
                         continue
                     result = await self.session.execute(
-                        select(SchedulingCalendar).where(
-                            SchedulingCalendar.connection_id == connection.id,
-                            SchedulingCalendar.include_in_conflicts.is_(True),
+                        select(HouseholdCalendarSelection).where(
+                            HouseholdCalendarSelection.connection_id == connection.id,
+                            HouseholdCalendarSelection.include_in_conflicts.is_(True),
                         )
                     )
                     selected = list(result.scalars().all())
@@ -219,7 +219,7 @@ class CalendarService:
         return synced
 
     async def discover_icloud_calendars(
-        self, *, profile, connection: CalendarConnection
+        self, *, connection: CalendarConnection
     ) -> int:
         password = self._icloud_password(connection)
         async with httpx.AsyncClient(timeout=15) as client:
@@ -300,16 +300,14 @@ class CalendarService:
             discovered_urls.add(calendar_url)
             display_name = properties.findtext(f"{{{self._DAV}}}displayname") or "iCloud"
             result = await self.session.execute(
-                select(SchedulingCalendar).where(
-                    SchedulingCalendar.profile_id == profile.id,
-                    SchedulingCalendar.connection_id == connection.id,
-                    SchedulingCalendar.external_calendar_id == calendar_url,
+                select(HouseholdCalendarSelection).where(
+                    HouseholdCalendarSelection.connection_id == connection.id,
+                    HouseholdCalendarSelection.external_calendar_id == calendar_url,
                 )
             )
             calendar = result.scalar_one_or_none()
             if calendar is None:
-                calendar = SchedulingCalendar(
-                    profile_id=profile.id,
+                calendar = HouseholdCalendarSelection(
                     connection_id=connection.id,
                     external_calendar_id=calendar_url,
                     name=display_name.strip() or "iCloud",
@@ -323,9 +321,8 @@ class CalendarService:
             discovered += 1
         if discovered_urls:
             existing_result = await self.session.execute(
-                select(SchedulingCalendar).where(
-                    SchedulingCalendar.profile_id == profile.id,
-                    SchedulingCalendar.connection_id == connection.id,
+                select(HouseholdCalendarSelection).where(
+                    HouseholdCalendarSelection.connection_id == connection.id,
                 )
             )
             for calendar in existing_result.scalars().all():
@@ -359,9 +356,9 @@ class CalendarService:
             for connection in connections:
                 try:
                     result = await self.session.execute(
-                        select(SchedulingCalendar).where(
-                            SchedulingCalendar.connection_id == connection.id,
-                            SchedulingCalendar.include_in_conflicts.is_(True),
+                        select(HouseholdCalendarSelection).where(
+                            HouseholdCalendarSelection.connection_id == connection.id,
+                            HouseholdCalendarSelection.include_in_conflicts.is_(True),
                         )
                     )
                     calendars = list(result.scalars().all())
@@ -394,7 +391,7 @@ class CalendarService:
         client: httpx.AsyncClient,
         connection: CalendarConnection,
         password: str,
-        calendar: SchedulingCalendar,
+        calendar: HouseholdCalendarSelection,
         range_start: datetime,
         range_end: datetime,
     ) -> int:
@@ -1003,6 +1000,63 @@ class CalendarService:
         await self.repository.delete_cached_event(event=event)
         return deleted
 
+    async def change_household_event(
+        self, *, event: CalendarEventCache, household_id: UUID, action: str,
+        title: str | None = None, starts_at: datetime | None = None,
+        ends_at: datetime | None = None,
+    ) -> None:
+        """Change an exact cached event, with provider version checks and no title guessing."""
+        if event.household_id != household_id or event.source_type != CalendarProvider.google:
+            raise CalendarEventMatchError("This event is not an editable household event.")
+        connection = await self.session.get(CalendarConnection, event.source_id)
+        if connection is None or connection.household_id != household_id:
+            raise CalendarNotConnectedError("The calendar connection is no longer available.")
+        if "https://www.googleapis.com/auth/calendar.events" not in set(connection.scopes or []):
+            raise CalendarWritePermissionError("Reconnect Google Calendar with event access.")
+        calendar_id = (event.raw_event or {}).get("_calendar_id")
+        if not calendar_id:
+            raise CalendarEventMatchError("Refresh this calendar before editing the event.")
+        provider_id = quote(self._provider_event_id(event.external_event_id), safe="")
+        url = f"{self._google_events_url(calendar_id)}/{provider_id}"
+        async with httpx.AsyncClient(timeout=12) as client:
+            token = await self._google_access_token(client=client, connection=connection)
+            if not token:
+                raise CalendarNotConnectedError("Reconnect Google Calendar.")
+            headers = {"Authorization": f"Bearer {token}"}
+            latest = await client.get(url, headers=headers)
+            self._raise_for_google_write(latest)
+            raw = latest.json()
+            cached_etag = (event.raw_event or {}).get("etag")
+            if not cached_etag or raw.get("etag") != cached_etag:
+                raise CalendarEventMatchError(
+                    "The event changed. Refresh Calendar and request the edit again."
+                )
+            headers["If-Match"] = cached_etag
+            if action == "delete":
+                response = await client.delete(url, headers=headers, params={"sendUpdates": "none"})
+                self._raise_for_google_write(response)
+                await self.repository.delete_cached_event(event=event)
+                return
+            body = {}
+            if title:
+                body["summary"] = title
+            if starts_at is not None and ends_at is not None:
+                body["start"] = {"dateTime": starts_at.isoformat()}
+                body["end"] = {"dateTime": ends_at.isoformat()}
+            response = await client.patch(
+                url, headers=headers, json=body, params={"sendUpdates": "none"}
+            )
+            self._raise_for_google_write(response)
+            updated = response.json()
+            parsed = self._google_event_from_raw(updated)
+            if parsed is None:
+                raise CalendarEventMatchError("Calendar returned an unreadable update.")
+            event.title = parsed["summary"]
+            event.starts_at = parsed["starts_at"]
+            event.ends_at = parsed["ends_at"]
+            event.raw_event = {**updated, "_calendar_id": calendar_id}
+            await self.session.flush()
+
     async def _google_write_connection(
         self,
         *,
@@ -1014,13 +1068,13 @@ class CalendarService:
             result = await self.session.execute(
                 select(CalendarConnection)
                 .join(
-                    SchedulingCalendar,
-                    SchedulingCalendar.connection_id == CalendarConnection.id,
+                    HouseholdCalendarSelection,
+                    HouseholdCalendarSelection.connection_id == CalendarConnection.id,
                 )
                 .where(
                     CalendarConnection.household_id == household_id,
-                    SchedulingCalendar.external_calendar_id == calendar_id,
-                    SchedulingCalendar.can_write.is_(True),
+                    HouseholdCalendarSelection.external_calendar_id == calendar_id,
+                    HouseholdCalendarSelection.can_write.is_(True),
                 )
                 .limit(1)
             )
@@ -1029,15 +1083,15 @@ class CalendarService:
             result = await self.session.execute(
                 select(CalendarConnection)
                 .join(
-                    SchedulingCalendar,
-                    SchedulingCalendar.connection_id == CalendarConnection.id,
+                    HouseholdCalendarSelection,
+                    HouseholdCalendarSelection.connection_id == CalendarConnection.id,
                 )
                 .where(
                     CalendarConnection.household_id == household_id,
                     CalendarConnection.provider == CalendarProvider.google,
-                    SchedulingCalendar.can_write.is_(True),
+                    HouseholdCalendarSelection.can_write.is_(True),
                 )
-                .order_by(CalendarConnection.created_at, SchedulingCalendar.created_at)
+                .order_by(CalendarConnection.created_at, HouseholdCalendarSelection.created_at)
                 .limit(1)
             )
             connection = result.scalar_one_or_none()

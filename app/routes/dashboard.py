@@ -1963,6 +1963,27 @@ async def dashboard_page(request: Request) -> str:
   <div class="toast" id="toast"></div>
 
   <script>
+    // Latest-request loader: stale responses must never overwrite a newer filter selection.
+    function createLatestLoader(fetcher = fetch) {
+      let generation = 0;
+      let controller;
+      return async (url, onError) => {
+        const current = ++generation;
+        if (controller) controller.abort();
+        controller = new AbortController();
+        try {
+          const response = await fetcher(url, { signal: controller.signal });
+          if (!response.ok) throw new Error("Request failed");
+          const data = await response.json();
+          return current === generation ? data : null;
+        } catch (error) {
+          if (current === generation && error.name !== "AbortError") onError();
+          return null;
+        }
+      };
+    }
+    const fetchDashboard = createLatestLoader();
+    const fetchActivity = createLatestLoader();
     const moneyNumber = value => Number(String(value || "0").replace(" EUR", "").replace(",", "."));
     const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({
       "&": "&amp;",
@@ -2367,13 +2388,17 @@ async def dashboard_page(request: Request) -> str:
 
     async function loadDashboard() {
       document.querySelector("#status").textContent = "Updating";
-      const response = await fetch(`/api/dashboard?${dashboardQuery()}`);
-      const data = await response.json();
-      latestDashboardData = data;
+      const data = await fetchDashboard(`/api/dashboard?${dashboardQuery()}`, () => {
+        document.querySelector("#status").textContent = "Could not update";
+        toast("Dashboard data could not be loaded. Your previous view is still available.");
+      });
+      if (!data) return;
       if (data.error) {
-        document.querySelector(".shell").innerHTML = `<div class="panel">${escapeHtml(data.error)}</div>`;
+        document.querySelector("#status").textContent = "Could not update";
+        toast(String(data.error));
         return;
       }
+      latestDashboardData = data;
 
       document.querySelector("#month-filter").value = data.period.month;
       const t = data.totals;
@@ -2519,8 +2544,10 @@ async def dashboard_page(request: Request) -> str:
       new FormData(form).forEach((value, key) => {
         if (String(value).trim()) params.set(key, String(value).trim());
       });
-      const response = await fetch(`/api/activity?${params.toString()}`);
-      const data = await response.json();
+      const data = await fetchActivity(`/api/activity?${params.toString()}`, () => {
+        toast("Activity could not be loaded. Please try again.");
+      });
+      if (!data) return;
       setSelectOptions(form.elements.entity_type, data.entity_types || [], "All types");
       setSelectOptions(form.elements.action, data.actions || [], "All actions");
       setSelectOptions(form.elements.category, data.categories || [], "All categories");

@@ -1,0 +1,34 @@
+// Exercises the actual embedded helper with out-of-order and failed network responses.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync('app/routes/dashboard.py', 'utf8');
+const start = source.indexOf('    function createLatestLoader(');
+const end = source.indexOf('    const fetchDashboard', start);
+const context = { AbortController };
+vm.createContext(context);
+vm.runInContext(source.slice(start, end), context);
+const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
+(async () => {
+  const first = deferred(), second = deferred();
+  const responses = [first, second];
+  const loader = context.createLatestLoader(() => responses.shift().promise);
+  let errors = 0;
+  const older = loader('/old', () => errors++);
+  const newer = loader('/new', () => errors++);
+  second.resolve({ ok: true, json: async () => ({ period: 'new' }) });
+  assert.equal((await newer).period, 'new');
+  first.resolve({ ok: true, json: async () => ({ period: 'old' }) });
+  assert.equal(await older, null);
+  assert.equal(errors, 0);
+  const failed = context.createLatestLoader(async () => ({ ok: false }));
+  assert.equal(await failed('/failed', () => errors++), null);
+  assert.equal(errors, 1);
+  const offline = context.createLatestLoader(async () => { throw new Error('offline'); });
+  assert.equal(await offline('/offline', () => errors++), null);
+  assert.equal(errors, 2);
+  const badJson = context.createLatestLoader(async () => ({ ok: true, json: async () => { throw new Error('invalid json'); } }));
+  assert.equal(await badJson('/bad-json', () => errors++), null);
+  assert.equal(errors, 3);
+  console.log('Dashboard request ordering and failure handling: passed');
+})().catch(error => { console.error(error); process.exitCode = 1; });

@@ -136,10 +136,9 @@ class ICloudCalDAVTests(unittest.IsolatedAsyncioTestCase):
         self.session.execute = AsyncMock(
             side_effect=[new_calendar_result, existing_calendars_result]
         )
-        profile = SimpleNamespace(id=uuid4())
 
         count = await self.service.discover_icloud_calendars(
-            profile=profile, connection=self.connection
+            connection=self.connection
         )
 
         self.assertEqual(count, 1)

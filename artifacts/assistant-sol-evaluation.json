@@ -1,0 +1,183 @@
+{
+  "model": "gpt-6.1-sol",
+  "synthetic": true,
+  "estimated_usd": 0.007551,
+  "pricing_date": "2026-09-30",
+  "results": [
+    {
+      "case": "shopping_typo",
+      "status": "pass",
+      "latency_ms": 3175,
+      "usage": {
+        "input_tokens": 1514,
+        "input_tokens_details": {
+          "cache_write_tokens": 1511,
+          "cached_tokens": 0
+        },
+        "output_tokens": 55,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1569
+      },
+      "estimated_usd": 0.004333,
+      "response": [
+        {
+          "id": "fc_02f9438a671edf2e016abd42ef4c1087d2a568e9d4fa5b7ea3",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"items\":[{\"kind\":\"shopping\",\"title\":\"oat milk\",\"store\":null,\"due_date\":null},{\"kind\":\"shopping\",\"title\":\"eggs\",\"store\":null,\"due_date\":null}]}",
+          "call_id": "call_EJETBIJkhL7m7dOTYSUA6xw5",
+          "name": "create_records"
+        }
+      ]
+    },
+    {
+      "case": "topic_switch",
+      "status": "pass",
+      "latency_ms": 2599,
+      "usage": {
+        "input_tokens": 1526,
+        "input_tokens_details": {
+          "cache_write_tokens": 53,
+          "cached_tokens": 1470
+        },
+        "output_tokens": 26,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1552
+      },
+      "estimated_usd": 0.000545,
+      "response": [
+        {
+          "id": "fc_088ff111cf4245ea016abd42f240d087d2b9b55e6babb60272",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"kind\":\"shopping\",\"query\":null,\"offset\":0}",
+          "call_id": "call_eyos9Vrfv2zySCJUigICR4bv",
+          "name": "list_records"
+        }
+      ]
+    },
+    {
+      "case": "finance_followup",
+      "status": "pass",
+      "latency_ms": 4116,
+      "usage": {
+        "input_tokens": 1542,
+        "input_tokens_details": {
+          "cache_write_tokens": 69,
+          "cached_tokens": 1470
+        },
+        "output_tokens": 54,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1596
+      },
+      "estimated_usd": 0.000865,
+      "response": [
+        {
+          "id": "fc_00188c6c8e468a82016abd42f547c887d2a06d2a46cd471073",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"start_date\":\"2026-08-01\",\"end_date\":\"2026-08-31\",\"source\":\"transactions\",\"kind\":\"expense\",\"category\":\"Uber\",\"search\":null,\"offset\":0}",
+          "call_id": "call_AcwrfbXGrTNQHRiPcaVVHFgx",
+          "name": "finance_query"
+        }
+      ]
+    },
+    {
+      "case": "ambiguous_reference",
+      "status": "pass",
+      "latency_ms": 2564,
+      "usage": {
+        "input_tokens": 1509,
+        "input_tokens_details": {
+          "cache_write_tokens": 36,
+          "cached_tokens": 1470
+        },
+        "output_tokens": 18,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1527
+      },
+      "estimated_usd": 0.000423,
+      "response": [
+        {
+          "id": "msg_04440e4a0464dc15016abd42f8fe2c87d2bd80fc4c7a63e04a",
+          "type": "message",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "annotations": [],
+              "logprobs": [],
+              "text": "What would you like me to move to Friday, October 2?"
+            }
+          ],
+          "phase": "final_answer",
+          "role": "assistant"
+        }
+      ]
+    },
+    {
+      "case": "task_not_shopping",
+      "status": "pass",
+      "latency_ms": 2442,
+      "usage": {
+        "input_tokens": 1511,
+        "input_tokens_details": {
+          "cache_write_tokens": 38,
+          "cached_tokens": 1470
+        },
+        "output_tokens": 42,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1553
+      },
+      "estimated_usd": 0.000668,
+      "response": [
+        {
+          "id": "fc_00f3e62724b40cc4016abd42fb240887d28892803415f0edb7",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"items\":[{\"kind\":\"task\",\"title\":\"Call the dentist\",\"store\":null,\"due_date\":\"2026-10-01\"}]}",
+          "call_id": "call_tRKuVTjmQy2WM7Vapa2p2IgK",
+          "name": "create_records"
+        }
+      ]
+    },
+    {
+      "case": "income_capture",
+      "status": "pass",
+      "latency_ms": 3535,
+      "usage": {
+        "input_tokens": 1514,
+        "input_tokens_details": {
+          "cache_write_tokens": 41,
+          "cached_tokens": 1470
+        },
+        "output_tokens": 46,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1560
+      },
+      "estimated_usd": 0.000715,
+      "response": [
+        {
+          "id": "fc_0f743ee449773f4e016abd42fe2d5487d2a00246e6bab588ea",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"description\":\"salary\",\"amount\":\"1200\",\"currency\":\"EUR\",\"kind\":\"income\",\"category\":\"Income\",\"occurred_on\":\"2026-09-30\"}",
+          "call_id": "call_tMFuPb9DxGQ0xshGK5b97bee",
+          "name": "record_transaction"
+        }
+      ]
+    }
+  ]
+}

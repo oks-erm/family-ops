@@ -40,7 +40,9 @@ class CalendarRepository:
         household_id: UUID | None = None,
         feed_id: UUID | None = None,
     ) -> list[ICalFeed]:
-        query = select(ICalFeed).where(ICalFeed.is_active.is_(True))
+        query = select(ICalFeed).where(
+            ICalFeed.is_active.is_(True), ICalFeed.household_id.is_not(None)
+        )
         if household_id is not None:
             query = query.where(ICalFeed.household_id == household_id)
         if feed_id is not None:
@@ -108,7 +110,8 @@ class CalendarRepository:
         self, *, household_id: UUID | None = None
     ) -> list[CalendarConnection]:
         query = select(CalendarConnection).where(
-            CalendarConnection.provider == CalendarProvider.google
+            CalendarConnection.provider == CalendarProvider.google,
+            CalendarConnection.household_id.is_not(None),
         )
         if household_id is not None:
             query = query.where(CalendarConnection.household_id == household_id)
@@ -157,7 +160,8 @@ class CalendarRepository:
         self, *, household_id: UUID | None = None
     ) -> list[CalendarConnection]:
         query = select(CalendarConnection).where(
-            CalendarConnection.provider == CalendarProvider.icloud
+            CalendarConnection.provider == CalendarProvider.icloud,
+            CalendarConnection.household_id.is_not(None),
         )
         if household_id is not None:
             query = query.where(CalendarConnection.household_id == household_id)

@@ -11,7 +11,6 @@ It combines deterministic command routing with optional AI-assisted understandin
 - Daily planning pipeline with free-window calculation, fixed events, and actionable task scheduling.
 - Finance ingestion from text, receipts, and screenshots, with dashboard analytics.
 - Calendar integration (iCal and Google OAuth start flow).
-- Public lesson booking with multi-calendar conflict checking and tutor-managed availability.
 - Production deployment via Docker Compose and GitHub Actions.
 
 ## Architecture
@@ -98,34 +97,13 @@ Current dashboard capabilities include:
 - Event actions for day-level planning events (delete/move for note-based events).
 - Planning defaults management (work window, wake/sleep times, commute, meal assumptions).
 - Finance and receipt analytics views.
-- A private lesson-scheduling workspace at `/schedule/manage`.
 
-## Lesson Scheduling
+## Separate lesson-scheduling application
 
-The scheduling module provides a public, unauthenticated booking experience and a private
-management interface protected by the existing dashboard login.
-
-- Public booking page: `https://<scheduling-domain>/book/<tutor-slug>`
-- Private management: `/schedule/manage`
-- Configurable lesson types, durations, buffers, notice period, booking horizon, weekly
-  availability, timezone, and destination calendar.
-- Conflict checking across selected calendars from multiple Google accounts, private iCloud
-  CalDAV accounts, and private HTTPS iCal subscriptions (including recurring events and
-  timezone-aware feeds).
-- Five-minute background synchronization plus a mandatory refresh immediately before booking.
-- Signed-in students can book up to ten lessons at once, manage lessons and credits, and reuse a
-  permanent Meet conference. Guests provide a name and email and can book one lesson at a time.
-- New lessons are written to the configured writable Google calendar. Google Calendar sends the
-  attendee an invitation; guest bookings receive a fresh one-time Meet conference.
-
-Calendars stored only “On My Mac” have no server-accessible source and cannot be synchronized.
-Move them to Google/iCloud/Exchange or expose a private HTTPS iCal subscription first.
-
-To connect private iCloud calendars, generate an app-specific password at
-`account.apple.com` under **Sign-In and Security → App-Specific Passwords**, then enter the Apple
-Account email and generated password in the scheduling management page. Never enter the primary
-Apple Account password. The credential is encrypted at rest using a key derived from
-`DASHBOARD_SESSION_SECRET`; rotating that secret requires reconnecting iCloud.
+Lesson scheduling runs independently from Family Copilot. Its existing application and
+behavior are outside household changes. Family images, routes and deployments exclude it.
+Historical shared-schema notes are retained in [legacy reference](docs/legacy-scheduling.md).
+Do not deploy or restart scheduling through the household workflow.
 
 ## Telegram Commands
 
@@ -138,6 +116,19 @@ Core bot commands:
 - `/ical URL` Attach an iCal feed URL for calendar sync.
 
 Everything else is natural-language driven in regular messages (for example tasks, planning, shopping, and finance capture).
+
+## Conversational engine v2
+
+The new household-only engine is available behind `ASSISTANT_V2_ENABLED=true` after
+migration and provider verification. It adds persisted context, exact-command fast paths,
+validated data tools, expiring confirmations, duplicate protection, and measured model usage.
+Default models are configurable (`ASSISTANT_MODEL`, `ASSISTANT_REASONING_MODEL`); the default
+monthly allowance is 250,000 tokens per household. This is not a dollar cap.
+
+See [conversation architecture and activation](docs/conversation-engine.md) and `AGENTS.md`
+for tests, limitations, model evaluation and deployment instructions. Lesson scheduling is
+an independent app; household deployment must never load its separate service definition.
+The following provider settings describe the retained legacy engine and image extraction.
 
 ## AI Provider Strategy
 
@@ -166,7 +157,7 @@ docker compose exec ollama ollama pull llama3.2:3b
 
 ## Configuration
 
-Refer to `.env.example` for the complete variable list.
+See `app/config.py` for available environment settings and `AGENTS.md` for safe defaults.
 
 Common required variables:
 
@@ -175,23 +166,8 @@ Common required variables:
 - `TELEGRAM_BOT_TOKEN`
 - `DEFAULT_TIMEZONE`
 - `PUBLIC_BASE_URL`
-- `SCHEDULING_PUBLIC_BASE_URL`
 - `DASHBOARD_SESSION_SECRET`
 - Google OAuth settings (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, redirect URIs)
-
-Tutor bug reports additionally require a Gmail account with an app-specific password and a
-Cloudflare Turnstile widget. Configure `SCHEDULING_FEEDBACK_SMTP_USERNAME`,
-`SCHEDULING_FEEDBACK_SMTP_APP_PASSWORD`, `SCHEDULING_FEEDBACK_TO_EMAIL`,
-`TURNSTILE_SITE_KEY`, and `TURNSTILE_SECRET_KEY`. Keep the SMTP password and Turnstile secret
-server-side; only the Turnstile site key is rendered in the tutor dashboard.
-The feedback-recipient Google account can open `/schedule/admin` for aggregate tutor-registration
-statistics. Add comma-separated additional administrators with `SCHEDULING_SUPERADMIN_EMAILS`.
-
-Tutors can register from the scheduling sign-in flow with Google. Registration asks for country,
-tutoring subjects, and timezone, then creates a scheduling-only account that cannot access the
-private Family Copilot household dashboard. Each tutor can configure currency, hourly pricing,
-editable packages, and a structured cancellation policy. Existing profiles are migrated to EUR,
-€30/hour, and the previous 8/12/20-lesson package totals.
 
 Database hostname guidance:
 
@@ -219,10 +195,12 @@ Typical flow:
 
 1. Push to `main`.
 2. CI builds and pushes image tags.
-3. Deploy job updates server `.env` image tag and restarts stack.
+3. Deploy job updates the server image tag and restarts only the household app.
 
-The production Compose file accepts `SCHEDULING_DOMAIN` and routes that hostname to the same app
-and database. Point its DNS A/AAAA record to the existing server before deployment.
+Production Compose enables the conversation engine with Luna and the Sol fallback.
+To roll back the engine, set `ASSISTANT_V2_ENABLED` to `"false"` in the app's Compose
+environment and recreate only `app`. Lesson scheduling has its own deployment;
+the household release does not restart its service, PostgreSQL, or Traefik.
 
 ## Roadmap
 

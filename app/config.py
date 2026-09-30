@@ -20,6 +20,23 @@ class Settings(BaseSettings):
     ai_light_provider: str = Field(default="deterministic", alias="AI_LIGHT_PROVIDER")
     ai_heavy_provider: str = Field(default="openai", alias="AI_HEAVY_PROVIDER")
     ai_request_timeout_seconds: float = Field(default=8.0, alias="AI_REQUEST_TIMEOUT_SECONDS")
+    assistant_v2_enabled: bool = Field(default=False, alias="ASSISTANT_V2_ENABLED")
+    assistant_model: str = Field(default="gpt-6-luna", alias="ASSISTANT_MODEL")
+    assistant_reasoning_model: str = Field(
+        default="gpt-6.1-sol", alias="ASSISTANT_REASONING_MODEL"
+    )
+    assistant_timeout_seconds: float = Field(
+        default=30, ge=1, le=120, alias="ASSISTANT_TIMEOUT_SECONDS"
+    )
+    assistant_max_output_tokens: int = Field(
+        default=1500, ge=256, le=8000, alias="ASSISTANT_MAX_OUTPUT_TOKENS"
+    )
+    assistant_monthly_token_limit: int = Field(
+        default=250000, ge=0, le=100000000, alias="ASSISTANT_MONTHLY_TOKEN_LIMIT"
+    )
+    assistant_history_days: int = Field(
+        default=7, ge=1, le=30, alias="ASSISTANT_HISTORY_DAYS"
+    )
     monthly_summary_time: str = Field(default="20:00", alias="MONTHLY_SUMMARY_TIME")
     planning_evening_time: str = Field(default="21:00", alias="PLANNING_EVENING_TIME")
     morning_plan_time: str = Field(default="07:30", alias="MORNING_PLAN_TIME")

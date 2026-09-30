@@ -624,3 +624,82 @@ class ShoppingPriceQuote(Base, TimestampMixin):
     is_promotion: Mapped[bool] = mapped_column(default=False, index=True)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     source: Mapped[str] = mapped_column(String(50), default="web")
+
+
+class HouseholdCalendarSelection(Base, TimestampMixin):
+    """Calendar choices owned by the household connection, never a tutor profile."""
+
+    __tablename__ = "household_calendar_selections"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "external_calendar_id", name="uq_household_calendar"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    connection_id: Mapped[UUID] = mapped_column(
+        ForeignKey("calendar_connections.id", ondelete="CASCADE"), index=True
+    )
+    external_calendar_id: Mapped[str] = mapped_column(String(255))
+    name: Mapped[str] = mapped_column(String(255))
+    access_role: Mapped[str | None] = mapped_column(String(32))
+    include_in_conflicts: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_write: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AssistantConversation(Base, TimestampMixin):
+    __tablename__ = "assistant_conversations"
+    __table_args__ = (UniqueConstraint("user_id", "channel_key", name="uq_assistant_conversation"),)
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    household_id: Mapped[UUID] = mapped_column(ForeignKey("households.id", ondelete="CASCADE"))
+    channel_key: Mapped[str] = mapped_column(String(150))
+    history: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    pending: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+
+class AssistantTurn(Base, TimestampMixin):
+    __tablename__ = "assistant_turns"
+    __table_args__ = (UniqueConstraint("conversation_id", "message_key", name="uq_assistant_turn"),)
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("assistant_conversations.id", ondelete="CASCADE"), index=True
+    )
+    message_key: Mapped[str] = mapped_column(String(150))
+    status: Mapped[str] = mapped_column(String(20), default="started")
+    response: Mapped[str | None] = mapped_column(Text)
+
+
+class AssistantAction(Base, TimestampMixin):
+    __tablename__ = "assistant_actions"
+    __table_args__ = (UniqueConstraint("turn_id", "action_key", name="uq_assistant_action"),)
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    turn_id: Mapped[UUID] = mapped_column(ForeignKey("assistant_turns.id", ondelete="CASCADE"))
+    action_key: Mapped[str] = mapped_column(String(64))
+    tool_name: Mapped[str] = mapped_column(String(80))
+    status: Mapped[str] = mapped_column(String(20), default="started")
+    result: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class AssistantBudget(Base, TimestampMixin):
+    __tablename__ = "assistant_budgets"
+    __table_args__ = (UniqueConstraint("household_id", "month", name="uq_assistant_budget"),)
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    household_id: Mapped[UUID] = mapped_column(ForeignKey("households.id", ondelete="CASCADE"))
+    month: Mapped[date] = mapped_column(Date)
+    tokens: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AssistantModelCall(Base, TimestampMixin):
+    """Operational metadata only: no prompt text or financial/calendar payloads."""
+
+    __tablename__ = "assistant_model_calls"
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    household_id: Mapped[UUID] = mapped_column(ForeignKey("households.id", ondelete="CASCADE"))
+    turn_id: Mapped[UUID] = mapped_column(ForeignKey("assistant_turns.id", ondelete="CASCADE"))
+    model: Mapped[str] = mapped_column(String(100))
+    route: Mapped[str] = mapped_column(String(30))
+    prompt_version: Mapped[str] = mapped_column(String(30))
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cached_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_tokens: Mapped[int] = mapped_column(Integer)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(30), default="reserved")
