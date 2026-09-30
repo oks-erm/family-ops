@@ -52,7 +52,9 @@ for deduplication/accounting. History is also bounded to eight exchanges. This i
 background deletion SLA; see `docs/conversation-engine.md` for limitations.
 
 Confirm destructive edits and external calendar changes with an exact expiring code.
-A topic change invalidates a pending confirmation. Recheck the selected record/version
+A topic change invalidates a pending confirmation; asking for its code/details preserves
+the original expiry. Inline confirmation buttons use the same scoped, deduplicated path.
+Recheck the selected record/version
 before acting. User/household scope is supplied by the application, never model arguments.
 Personal tasks stay personal; shopping and finance use existing household membership.
 Never let scheduling-only accounts enter the household dashboard or conversation engine.
@@ -86,7 +88,15 @@ and WEB_WORKERS (1) control capacity. Per-household defaults are 2 active jobs /
 minute; each chat remains sequential. Budget connections across all processes before scaling.
 Joining another household changes membership only: records remain in the original household.
 Never infer a transfer from /join; any future transfer requires explicit scope and authorization. Models/account access must pass live evaluation
-before activation. Existing Gemini receipt/bank-image extraction remains unchanged.
+before activation. Existing Gemini receipt/bank-image extraction stays enabled, accepting
+photos and JPEG/PNG/WebP documents. Keep previews plain text. Receipt confirmation commits
+the receipt, matched shopping updates, activity and pending-preview removal together.
+Images are read in memory; confirmation uses persisted extraction, not a worker-local file.
+
+Work-hour ranges use one bounded bulk upsert (at most 366 days), preserving existing notes
+and household ownership. Work times are local wall-clock values without UTC offsets.
+Purchase suggestions use SQL aggregates over saved receipt items, disclose coverage and
+do not add items automatically. Case/whitespace normalization does not merge brand aliases.
 
 ## Setup and validation
 

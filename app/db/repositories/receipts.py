@@ -4,8 +4,8 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import delete, select
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.models import PendingReceipt, Receipt, ReceiptItem, ReceiptStatus
 
@@ -25,6 +25,7 @@ class ReceiptRepository:
         currency: str | None,
         items: list[dict[str, Any]],
         raw_extraction: dict[str, Any],
+        commit: bool = True,
     ) -> Receipt:
         receipt = Receipt(
             user_id=user_id,
@@ -52,8 +53,11 @@ class ReceiptRepository:
                 )
             )
 
-        await self.session.commit()
-        await self.session.refresh(receipt)
+        if commit:
+            await self.session.commit()
+            await self.session.refresh(receipt)
+        else:
+            await self.session.flush()
         return receipt
 
     async def create_pending_receipt(

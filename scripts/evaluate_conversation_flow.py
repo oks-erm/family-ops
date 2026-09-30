@@ -24,6 +24,9 @@ from app.db.models import (
     FinancialTransaction,
     Household,
     HouseholdMember,
+    PlanningConversation,
+    Receipt,
+    ReceiptItem,
     ShoppingItem,
     ShoppingItemStatus,
     Task,
@@ -140,7 +143,9 @@ async def run(args):
         await turn(
             "correction",
             "actually make the milk lactose-free milk",
-            lambda r, items, *_: len(items) == 2 and any("lactose" in i.name for i in items),
+            lambda r, items, *_: (
+                len(items) == 2 and any("lactose" in i.name.lower() for i in items)
+            ),
         )
         tomorrow = datetime.now(ZoneInfo("Europe/Lisbon")).date() + timedelta(days=1)
         await turn(
@@ -164,9 +169,17 @@ async def run(args):
             lambda r, items, tasks, tx, c: len(items) == 2 and bool(c.pending),
         )
         await turn(
+            "copy_confirmation_help",
+            "Output the exact reply so I could copy it",
+            lambda r, items, tasks, tx, c: (
+                c.pending is not None and r == "confirm " + c.pending["token"]
+            ),
+            zero_calls=True,
+        )
+        await turn(
             "confirmed_removal",
             "confirm " + (pending or {}).get("token", "missing"),
-            lambda r, items, *_: len(items) == 1 and "lactose" in items[0].name,
+            lambda r, items, *_: len(items) == 1 and "lactose" in items[0].name.lower(),
             zero_calls=True,
         )
         await turn(
@@ -217,6 +230,50 @@ async def run(args):
             "what do I need to buy?",
             lambda r, items, tasks, tx, c: "banana" in r.lower() and "lactose" in r.lower(),
         )
+        await turn(
+            "work_schedule_clarification",
+            "Set my work hours to 09:00 to 17:00, Monday to Friday.",
+            lambda r, items, tasks, tx, c: bool(c.context.get("dialogue", {}).get("question")),
+        )
+        await turn(
+            "whole_month_followup",
+            "All November 2026",
+            lambda r, items, tasks, tx, c: "21 days" in r and "processing limit" not in r,
+        )
+        async with factory() as session:
+            plans = (
+                await session.scalars(
+                    select(PlanningConversation).where(
+                        PlanningConversation.household_id == household_id
+                    )
+                )
+            ).all()
+            if len(plans) != 21 or not all(
+                p.plan_date.month == 11
+                and p.plan_date.weekday() < 5
+                and str(p.work_start) == "09:00:00"
+                and str(p.work_end) == "17:00:00"
+                for p in plans
+            ):
+                results[-1]["status"] = "fail"
+            for days_ago in [21, 14, 7]:
+                receipt = Receipt(
+                    user_id=user_id,
+                    household_id=household_id,
+                    purchased_at=datetime.now(ZoneInfo("Europe/Lisbon")).date()
+                    - timedelta(days=days_ago),
+                )
+                session.add(receipt)
+                await session.flush()
+                session.add(ReceiptItem(receipt_id=receipt.id, name="Milk"))
+            await session.commit()
+        await turn(
+            "frequent_purchase_suggestions",
+            "What do we buy frequently that we could consider buying again?",
+            lambda r, items, tasks, tx, c: (
+                "milk" in r.lower() and len(items) == 2 and "processing limit" not in r
+            ),
+        )
     finally:
         report = {
             "synthetic": True,
@@ -238,7 +295,7 @@ async def run(args):
             }
         )
     )
-    return len(results) == 14 and all(r["status"] == "pass" for r in results)
+    return len(results) == 18 and all(r["status"] == "pass" for r in results)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 {
   "synthetic_only": true,
   "authorized_estimated_limit_usd": 0.5,
-  "estimated_successful_calls_usd": 0.06287823,
+  "estimated_successful_calls_usd": 0.07976786,
   "pricing_date": "2026-09-30",
   "pricing_source": "https://developers.openai.com/api/docs/pricing",
   "includes_cache_write_premium": true,
@@ -37,6 +37,34 @@
     {
       "artifact": "artifacts/assistant-flow-v22.json",
       "estimated_usd": 0.0019834
+    },
+    {
+      "artifact": "artifacts/assistant-routing-v23.json",
+      "estimated_usd": 0.002402
+    },
+    {
+      "artifact": "artifacts/assistant-flow-v23.json",
+      "estimated_usd": 0.00290867
+    },
+    {
+      "artifact": "artifacts/assistant-routing-v23-repeat.json",
+      "estimated_usd": 0.002574
+    },
+    {
+      "artifact": "artifacts/assistant-flow-v23-repeat.json",
+      "estimated_usd": 0.00283131
+    },
+    {
+      "artifact": "artifacts/assistant-routing-v23-final.json",
+      "estimated_usd": 0.00232
+    },
+    {
+      "artifact": "artifacts/image-extraction-v23.json",
+      "estimated_usd": 0.000973
+    },
+    {
+      "artifact": "artifacts/assistant-flow-v23-final.json",
+      "estimated_usd": 0.00288065
     }
   ],
   "diagnostic": {
@@ -48,7 +76,11 @@
   "limitations": [
     "Estimates are not provider invoices; rejected diagnostic returned no usage.",
     "Initial flow scoring rejected the valid euro symbol; corrected scoring and fresh repeat passed.",
-    "Synthetic smoke tests do not establish broad conversational reliability."
+    "Synthetic smoke tests do not establish broad conversational reliability.",
+    "v2.3 initial routing/flow failures exposed ambiguous current-list routing and timezone-bearing work times; prompt and local-time JSON schema corrected.",
+    "v2.3 first flow scoring also rejected capitalized Lactose-free; case-insensitive scoring corrected without changing app behavior.",
+    "v2.3 routing repeat read a list for an ungrounded reference; clarification instruction tightened, final routing passed 27/27.",
+    "Synthetic Gemini image validation adds $0.000973, conservatively included in the cumulative approved budget. No real images or Telegram messages were sent."
   ],
   "default_models": {
     "everyday": "gpt-6-luna",

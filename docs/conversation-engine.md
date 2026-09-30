@@ -32,7 +32,20 @@ be re-read. Each tool returns source IDs; edits require an ID the conversation h
 Tools cover shopping/tasks, transaction recording, exact financial queries, daily planning,
 work hours/notes, and confirmed household Google Calendar changes. Calendar answers read
 the existing synchronized cache. iCloud/iCal are read-only. Existing receipt-image processing
-continues through its existing handler; multimodal conversation history is not yet unified.
+continues through its existing provider/handler; multimodal conversation history is not yet unified.
+Photos and JPEG/PNG/WebP files up to 20 MB are supported in private chat. Receipt previews
+still require confirmation; saving the receipt and updating matching shopping items is atomic.
+Image bytes stay in memory and extraction is persisted for confirmation across workers.
+
+`save_work_schedule` expands a date range and explicit ISO weekdays in one atomic upsert,
+bounded to 366 days. It preserves planning notes and updates existing dates without duplicate
+plans. Follow-ups can supply the month after hours/weekdays were established. Local work
+times must not carry timezone offsets. This is household planning, independent of lessons.
+
+`purchase_history` aggregates distinct receipts per normalized item across the requested
+period, returning last purchase, average gap and current-list membership. Suggestions are
+read-only and cover saved receipts only. Names differing by case/whitespace match; brands
+and aliases are not merged. Purchase frequency does not establish current stock.
 
 ## Financial semantics
 
@@ -56,7 +69,10 @@ external action's started marker is committed first. An uncertain external outco
 checking the provider before a new request. Calendar edits use cached/provider ETags.
 
 Removal and calendar proposals require `confirm CODE`, expire after ten minutes, and are
-invalidated by a new topic. A bare yes/number is not authorization. The selected record is
+invalidated by a new topic. Asking for the exact reply/details preserves the existing code
+and original expiry. Telegram Confirm/Cancel buttons carry that same scoped code; stale
+buttons cannot approve or cancel a newer proposal. A bare yes/number is not authorization.
+The selected record is
 checked again before a confirmed action. Calendar attendee emails and communications are
 not exposed as assistant tool parameters.
 

@@ -20,13 +20,24 @@ from app.db.repositories.assistant_queue import UNCERTAIN
 from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.leases import LeaseLost
 from app.db.repositories.users import UserRepository
+from app.services.conversation.confirmations import confirmation_buttons, confirmation_callback
 from app.services.conversation.service import ConversationService
 
 logger = logging.getLogger(__name__)
 
 
 async def process_text(payload, factory, settings, *, model=None):
-    message, sender = payload["message"], payload["message"]["from"]
+    callback_text = confirmation_callback(payload)
+    if callback_text:
+        callback = payload["callback_query"]
+        message = {
+            **callback["message"],
+            "text": callback_text,
+            "message_id": f"callback:{payload['update_id']}",
+        }
+        sender = callback["from"]
+    else:
+        message, sender = payload["message"], payload["message"]["from"]
     if message["chat"]["type"] != "private":
         return "Please use our private chat for household requests."
     async with factory() as session:
@@ -75,6 +86,9 @@ async def process_job(queue, job, owner, factory, settings, bot, dispatcher, *, 
         if message and message.get("chat", {}).get("type") != "private":
             return "Please use our private chat for household requests."
         if job.replay_safe:
+            if confirmation_callback(job.payload):
+                with suppress(TelegramAPIError, OSError, TimeoutError):
+                    await bot.answer_callback_query(job.payload["callback_query"]["id"])
             return await process_text(job.payload, factory, settings, model=model)
         await dispatcher.feed_update(bot, Update.model_validate(job.payload, context={"bot": bot}))
         return None
@@ -128,7 +142,11 @@ async def deliver_once(queue, bot, owner):
         return False
     try:
         sent = await bot.send_message(
-            chat_id=message.chat_id, text=message.body, parse_mode=None, request_timeout=20
+            chat_id=message.chat_id,
+            text=message.body,
+            parse_mode=None,
+            request_timeout=20,
+            reply_markup=confirmation_buttons(message.body),
         )
     except TelegramRetryAfter as exc:
         # Telegram explicitly rejected this request: retrying after its deadline is safe.

@@ -6,6 +6,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Date, Numeric, and_, case, cast, func, or_, select
+from sqlalchemy.dialects.postgresql import insert
 
 from app.db.models import (
     ActivityAction,
@@ -16,6 +17,7 @@ from app.db.models import (
     PlanningConversationState,
     Receipt,
     ReceiptItem,
+    ReceiptStatus,
     Routine,
     ShoppingItem,
     ShoppingItemStatus,
@@ -326,6 +328,142 @@ class AssistantDataRepository:
             planning, ActivityAction.updated, "planning", f"Updated planning for {args.day}"
         )
         return {"message": f"Saved planning for {args.day}.", "state": planning.state.value}
+
+    async def save_work_schedule(self, args):
+        days = [
+            args.start_date + timedelta(days=i)
+            for i in range((args.end_date - args.start_date).days + 1)
+            if (args.start_date + timedelta(days=i)).isoweekday() in args.weekdays
+        ]
+        if not days:
+            raise ValueError("No selected weekdays fall within this date range")
+        statement = insert(PlanningConversation).values(
+            [
+                {
+                    "user_id": self.user_id,
+                    "household_id": self.household_id,
+                    "plan_date": day,
+                    "work_start": args.work_start,
+                    "work_end": args.work_end,
+                    "state": PlanningConversationState.complete,
+                    "raw_notes": [],
+                }
+                for day in days
+            ]
+        )
+        await self.session.execute(
+            statement.on_conflict_do_update(
+                constraint="uq_planning_conversations_user_date",
+                set_={
+                    "work_start": args.work_start,
+                    "work_end": args.work_end,
+                    "state": PlanningConversationState.complete,
+                    "updated_at": func.now(),
+                },
+            )
+        )
+        self.session.add(
+            ActivityLog(
+                household_id=self.household_id,
+                user_id=self.user_id,
+                action=ActivityAction.updated,
+                entity_type="work_schedule",
+                entity_id=self.user_id,
+                summary=f"Updated work hours for {len(days)} days",
+                metadata_json={
+                    "source": "assistant_v2",
+                    "start_date": str(args.start_date),
+                    "end_date": str(args.end_date),
+                    "weekdays": args.weekdays,
+                },
+            )
+        )
+        weekdays = ", ".join(
+            ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][d - 1] for d in sorted(args.weekdays)
+        )
+        return {
+            "message": f"Saved work hours {args.work_start:%H:%M}–{args.work_end:%H:%M} "
+            f"for {len(days)} days, {args.start_date} to {args.end_date} ({weekdays}).",
+            "count": len(days),
+            "start_date": str(args.start_date),
+            "end_date": str(args.end_date),
+            "weekdays": args.weekdays,
+        }
+
+    async def purchase_history(self, args):
+        # Count receipts, not duplicate line items; compute over the whole period in SQL.
+        day = func.coalesce(Receipt.purchased_at, cast(Receipt.created_at, Date))
+        normalized = func.lower(func.trim(func.regexp_replace(ReceiptItem.name, r"\s+", " ", "g")))
+        filters = [
+            Receipt.household_id == self.household_id,
+            Receipt.status == ReceiptStatus.extracted,
+            day >= args.start_date,
+            day <= args.end_date,
+        ]
+        groups = select(
+            normalized.label("key"),
+            func.min(ReceiptItem.name).label("name"),
+            func.count(func.distinct(Receipt.id)).label("purchases"),
+            func.count(func.distinct(day)).label("purchase_days"),
+            func.min(day).label("first"),
+            func.max(day).label("last"),
+        )
+        groups = (
+            groups.join(Receipt, Receipt.id == ReceiptItem.receipt_id)
+            .where(*filters, normalized != "")
+            .group_by(normalized)
+            .subquery()
+        )
+        pending = (
+            select(ShoppingItem.id)
+            .where(
+                ShoppingItem.household_id == self.household_id,
+                ShoppingItem.status == ShoppingItemStatus.pending,
+                func.lower(func.trim(func.regexp_replace(ShoppingItem.name, r"\s+", " ", "g")))
+                == groups.c.key,
+            )
+            .exists()
+        )
+        rows = (
+            (
+                await self.session.execute(
+                    select(groups, pending.label("already_listed"))
+                    .order_by(groups.c.purchases.desc(), groups.c.last.desc(), groups.c.key)
+                    .limit(args.limit)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        count = await self.session.scalar(select(func.count()).select_from(Receipt).where(*filters))
+        total = await self.session.scalar(select(func.count()).select_from(groups))
+        today = datetime.now(ZoneInfo(self.timezone)).date()
+        return {
+            "source": "saved_receipt_items",
+            "start_date": str(args.start_date),
+            "end_date": str(args.end_date),
+            "receipt_count": count,
+            "distinct_items": total,
+            "truncated": total > args.limit,
+            "items": [
+                {
+                    "name": r["name"],
+                    "purchases": r["purchases"],
+                    "last_bought": str(r["last"]),
+                    "days_since_last": (today - r["last"]).days,
+                    "typical_gap_days": round(
+                        (r["last"] - r["first"]).days / (r["purchase_days"] - 1), 1
+                    )
+                    if r["purchase_days"] > 1
+                    else None,
+                    "already_on_list": r["already_listed"],
+                }
+                for r in rows
+            ],
+            "limitations": "Saved receipts only; matching ignores case and extra spaces, "
+            "but does not merge brands or aliases. Frequency is not proof "
+            "of current stock. Suggestions need approval before adding.",
+        }
 
     async def active_planning(self):
         now = datetime.now(UTC)

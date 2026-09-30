@@ -1,0 +1,858 @@
+{
+  "model": "gpt-6-luna",
+  "synthetic": true,
+  "estimated_usd": 0.002402,
+  "pricing_date": "2026-09-30",
+  "results": [
+    {
+      "case": "shopping_typo",
+      "status": "pass",
+      "latency_ms": 2815,
+      "usage": {
+        "input_tokens": 2391,
+        "input_tokens_details": {
+          "cache_write_tokens": 2388,
+          "cached_tokens": 0
+        },
+        "output_tokens": 60,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2451
+      },
+      "estimated_usd": 0.000329,
+      "response": [
+        {
+          "id": "fc_0d27823f8416d3cb016abd8093bc0087d2bf58369533d8ef47",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"request_complete\":true,\"items\":[{\"kind\":\"shopping\",\"title\":\"Oat milk\",\"store\":null,\"due_date\":null},{\"kind\":\"shopping\",\"title\":\"Eggs\",\"store\":null,\"due_date\":null}]}",
+          "call_id": "call_88BsgmijJFGU1HrpAzgk2PwD",
+          "name": "create_records"
+        }
+      ]
+    },
+    {
+      "case": "topic_switch",
+      "status": "pass",
+      "latency_ms": 2057,
+      "usage": {
+        "input_tokens": 2403,
+        "input_tokens_details": {
+          "cache_write_tokens": 53,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 26,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2429
+      },
+      "estimated_usd": 4.3e-05,
+      "response": [
+        {
+          "id": "fc_0e729361b7f6cd6b016abd8096114087d2a8454a20a1ce2a53",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"kind\":\"shopping\",\"query\":null,\"offset\":0}",
+          "call_id": "call_tDmmfB1B75GrgEUm8seqgfis",
+          "name": "list_records"
+        }
+      ]
+    },
+    {
+      "case": "finance_followup",
+      "status": "pass",
+      "latency_ms": 5403,
+      "usage": {
+        "input_tokens": 2419,
+        "input_tokens_details": {
+          "cache_write_tokens": 69,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 376,
+        "output_tokens_details": {
+          "reasoning_tokens": 320
+        },
+        "total_tokens": 2795
+      },
+      "estimated_usd": 0.00022,
+      "response": [
+        {
+          "id": "rs_0f33cb7b3a38f67c016abd8098231887d2b5ff104143497778",
+          "type": "reasoning",
+          "content": [],
+          "summary": []
+        },
+        {
+          "id": "fc_0f33cb7b3a38f67c016abd809b261487d2a80db4bbef8eb7b6",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"start_date\":\"2026-08-01\",\"end_date\":\"2026-08-31\",\"source\":\"transactions\",\"kind\":\"expense\",\"category\":\"Transport\",\"search\":null,\"offset\":0}",
+          "call_id": "call_IgppXfPS6DB9pKhYr2kcL7G8",
+          "name": "finance_query"
+        }
+      ]
+    },
+    {
+      "case": "ambiguous_reference",
+      "status": "pass",
+      "latency_ms": 2941,
+      "usage": {
+        "input_tokens": 2386,
+        "input_tokens_details": {
+          "cache_write_tokens": 36,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 89,
+        "output_tokens_details": {
+          "reasoning_tokens": 53
+        },
+        "total_tokens": 2475
+      },
+      "estimated_usd": 7.3e-05,
+      "response": [
+        {
+          "id": "rs_0f5c2d9f83435a9f016abd809db7cc87d2b28cb353c1288479",
+          "type": "reasoning",
+          "content": [],
+          "summary": []
+        },
+        {
+          "id": "msg_0f5c2d9f83435a9f016abd809e4d3087d28919eb6360337ebc",
+          "type": "message",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "annotations": [],
+              "logprobs": [],
+              "text": "{\"reply\":\"What would you like me to move to Friday?\",\"topic\":\"general\",\"needs_clarification\":true}"
+            }
+          ],
+          "phase": "final_answer",
+          "role": "assistant"
+        }
+      ]
+    },
+    {
+      "case": "task_not_shopping",
+      "status": "pass",
+      "latency_ms": 1796,
+      "usage": {
+        "input_tokens": 2388,
+        "input_tokens_details": {
+          "cache_write_tokens": 38,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 91,
+        "output_tokens_details": {
+          "reasoning_tokens": 42
+        },
+        "total_tokens": 2479
+      },
+      "estimated_usd": 7.4e-05,
+      "response": [
+        {
+          "id": "rs_086444763f1d0456016abd809fbe9887d28bec402c8e1d3cee",
+          "type": "reasoning",
+          "content": [],
+          "summary": []
+        },
+        {
+          "id": "fc_086444763f1d0456016abd80a01b1887d295a485edbfb24f72",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"request_complete\":true,\"items\":[{\"kind\":\"task\",\"title\":\"Call the dentist\",\"store\":null,\"due_date\":\"2026-10-01\"}]}",
+          "call_id": "call_epKYAnhDDo8QaOGlXJb22nkI",
+          "name": "create_records"
+        }
+      ]
+    },
+    {
+      "case": "income_capture",
+      "status": "pass",
+      "latency_ms": 2071,
+      "usage": {
+        "input_tokens": 2391,
+        "input_tokens_details": {
+          "cache_write_tokens": 41,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 51,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2442
+      },
+      "estimated_usd": 5.4e-05,
+      "response": [
+        {
+          "id": "fc_0579c9f8270ae64f016abd80a2214087d2bde73186ed9475ab",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"request_complete\":true,\"description\":\"Salary\",\"amount\":\"1200\",\"currency\":\"EUR\",\"kind\":\"income\",\"category\":\"Income\",\"occurred_on\":\"2026-09-30\"}",
+          "call_id": "call_YufxXd3p6aZbjII67OKekJ5k",
+          "name": "record_transaction"
+        }
+      ]
+    },
+    {
+      "case": "shopping_typo_variation_1",
+      "status": "pass",
+      "latency_ms": 1592,
+      "usage": {
+        "input_tokens": 2393,
+        "input_tokens_details": {
+          "cache_write_tokens": 43,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 60,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2453
+      },
+      "estimated_usd": 5.9e-05,
+      "response": [
+        {
+          "id": "fc_003410f1087b817d016abd80a39c3487d2a3a60c65dbe37100",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"request_complete\":true,\"items\":[{\"kind\":\"shopping\",\"title\":\"oat milk\",\"store\":null,\"due_date\":null},{\"kind\":\"shopping\",\"title\":\"eggs\",\"store\":null,\"due_date\":null}]}",
+          "call_id": "call_f0LWWZAC1Ra1qdzby6Pc0NAL",
+          "name": "create_records"
+        }
+      ]
+    },
+    {
+      "case": "shopping_typo_variation_2",
+      "status": "pass",
+      "latency_ms": 2797,
+      "usage": {
+        "input_tokens": 2393,
+        "input_tokens_details": {
+          "cache_write_tokens": 43,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 60,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2453
+      },
+      "estimated_usd": 5.9e-05,
+      "response": [
+        {
+          "id": "fc_03106c1a3d34f184016abd80a68a9c87d29b97888c42edd29b",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"request_complete\":true,\"items\":[{\"kind\":\"shopping\",\"title\":\"eggs\",\"store\":null,\"due_date\":null},{\"kind\":\"shopping\",\"title\":\"oat milk\",\"store\":null,\"due_date\":null}]}",
+          "call_id": "call_lufhHo95y0D5vi9FiRbjQTaO",
+          "name": "create_records"
+        }
+      ]
+    },
+    {
+      "case": "shopping_typo_variation_3",
+      "status": "pass",
+      "latency_ms": 2330,
+      "usage": {
+        "input_tokens": 2389,
+        "input_tokens_details": {
+          "cache_write_tokens": 39,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 60,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2449
+      },
+      "estimated_usd": 5.9e-05,
+      "response": [
+        {
+          "id": "fc_0393a689e427791a016abd80a8f68087d286422f18f6234195",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"request_complete\":true,\"items\":[{\"kind\":\"shopping\",\"title\":\"Oat milk\",\"store\":null,\"due_date\":null},{\"kind\":\"shopping\",\"title\":\"Eggs\",\"store\":null,\"due_date\":null}]}",
+          "call_id": "call_zxizU4WiCqFufSkVmLcIWCNl",
+          "name": "create_records"
+        }
+      ]
+    },
+    {
+      "case": "topic_switch_variation_1",
+      "status": "fail",
+      "latency_ms": 1589,
+      "usage": {
+        "input_tokens": 2407,
+        "input_tokens_details": {
+          "cache_write_tokens": 57,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 38,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2445
+      },
+      "estimated_usd": 5e-05,
+      "response": [
+        {
+          "id": "fc_0681bfb82c82503c016abd80aa3d5c87d282a0f53b198452b3",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"start_date\":\"2026-03-30\",\"end_date\":\"2026-09-30\",\"limit\":30}",
+          "call_id": "call_Q53TdrA4rxPFMprBBBYlvtt8",
+          "name": "purchase_history"
+        }
+      ]
+    },
+    {
+      "case": "topic_switch_variation_2",
+      "status": "pass",
+      "latency_ms": 1230,
+      "usage": {
+        "input_tokens": 2402,
+        "input_tokens_details": {
+          "cache_write_tokens": 52,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 26,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2428
+      },
+      "estimated_usd": 4.3e-05,
+      "response": [
+        {
+          "id": "fc_02c32635f0a63f4d016abd80abfde887d29ee3345970e1ee14",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"kind\":\"shopping\",\"query\":null,\"offset\":0}",
+          "call_id": "call_4PTR1zlXMgpRB8kuCJpYp1k8",
+          "name": "list_records"
+        }
+      ]
+    },
+    {
+      "case": "topic_switch_variation_3",
+      "status": "pass",
+      "latency_ms": 1071,
+      "usage": {
+        "input_tokens": 2405,
+        "input_tokens_details": {
+          "cache_write_tokens": 55,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 26,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2431
+      },
+      "estimated_usd": 4.4e-05,
+      "response": [
+        {
+          "id": "fc_01f2a4b8ff2100e4016abd80ad009487d2a436541dc7bc05e9",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"kind\":\"shopping\",\"query\":null,\"offset\":0}",
+          "call_id": "call_mjaa5kUGkdedNXekGOHsY7Oj",
+          "name": "list_records"
+        }
+      ]
+    },
+    {
+      "case": "finance_followup_variation_1",
+      "status": "pass",
+      "latency_ms": 4150,
+      "usage": {
+        "input_tokens": 2419,
+        "input_tokens_details": {
+          "cache_write_tokens": 69,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 397,
+        "output_tokens_details": {
+          "reasoning_tokens": 341
+        },
+        "total_tokens": 2816
+      },
+      "estimated_usd": 0.000231,
+      "response": [
+        {
+          "id": "rs_0e24d8620673ec22016abd80ae18ac87d29bbbce27f2f26659",
+          "type": "reasoning",
+          "content": [],
+          "summary": []
+        },
+        {
+          "id": "fc_0e24d8620673ec22016abd80b0ee3c87d2b4e0d6bf3cc18f8f",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"start_date\":\"2026-08-01\",\"end_date\":\"2026-08-31\",\"source\":\"transactions\",\"kind\":\"expense\",\"category\":null,\"search\":\"transport\",\"offset\":0}",
+          "call_id": "call_Qpr3Lrm6C0dix8DcB5sQZMli",
+          "name": "finance_query"
+        }
+      ]
+    },
+    {
+      "case": "finance_followup_variation_2",
+      "status": "pass",
+      "latency_ms": 2216,
+      "usage": {
+        "input_tokens": 2421,
+        "input_tokens_details": {
+          "cache_write_tokens": 71,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 185,
+        "output_tokens_details": {
+          "reasoning_tokens": 129
+        },
+        "total_tokens": 2606
+      },
+      "estimated_usd": 0.000125,
+      "response": [
+        {
+          "id": "rs_03a4edd21b5f5f3c016abd80b2380487d291c05edb756135cf",
+          "type": "reasoning",
+          "content": [],
+          "summary": []
+        },
+        {
+          "id": "fc_03a4edd21b5f5f3c016abd80b34ce887d2b5109edf788e2a37",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"start_date\":\"2026-08-01\",\"end_date\":\"2026-08-31\",\"source\":\"transactions\",\"kind\":\"expense\",\"category\":\"Transport\",\"search\":null,\"offset\":0}",
+          "call_id": "call_fvVCxlLArLEZVdCWbOUvuopP",
+          "name": "finance_query"
+        }
+      ]
+    },
+    {
+      "case": "finance_followup_variation_3",
+      "status": "pass",
+      "latency_ms": 3331,
+      "usage": {
+        "input_tokens": 2422,
+        "input_tokens_details": {
+          "cache_write_tokens": 72,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 214,
+        "output_tokens_details": {
+          "reasoning_tokens": 158
+        },
+        "total_tokens": 2636
+      },
+      "estimated_usd": 0.00014,
+      "response": [
+        {
+          "id": "rs_0397603dd22b260c016abd80b5306087d290bd49cd9c93c86b",
+          "type": "reasoning",
+          "content": [],
+          "summary": []
+        },
+        {
+          "id": "fc_0397603dd22b260c016abd80b67c8487d2b115014bf091dff4",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"start_date\":\"2026-08-01\",\"end_date\":\"2026-08-31\",\"source\":\"transactions\",\"kind\":\"expense\",\"category\":\"transport\",\"search\":null,\"offset\":0}",
+          "call_id": "call_zmjs9Nxizr86ilOgAtJjfoOx",
+          "name": "finance_query"
+        }
+      ]
+    },
+    {
+      "case": "ambiguous_reference_variation_1",
+      "status": "pass",
+      "latency_ms": 2718,
+      "usage": {
+        "input_tokens": 2386,
+        "input_tokens_details": {
+          "cache_write_tokens": 36,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 151,
+        "output_tokens_details": {
+          "reasoning_tokens": 100
+        },
+        "total_tokens": 2537
+      },
+      "estimated_usd": 0.000104,
+      "response": [
+        {
+          "id": "rs_0c13269641f768c3016abd80b8239887d2a3134f6b9257ace1",
+          "type": "reasoning",
+          "content": [],
+          "summary": []
+        },
+        {
+          "id": "msg_0c13269641f768c3016abd80b903e887d29b749b2ae789b205",
+          "type": "message",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "annotations": [],
+              "logprobs": [],
+              "text": "{\"reply\":\"Which one would you like me to delete? Please tell me what it is or identify it from the options you\u2019re referring to.\",\"topic\":\"general\",\"needs_clarification\":true}"
+            }
+          ],
+          "phase": "final_answer",
+          "role": "assistant"
+        }
+      ]
+    },
+    {
+      "case": "ambiguous_reference_variation_2",
+      "status": "pass",
+      "latency_ms": 2218,
+      "usage": {
+        "input_tokens": 2388,
+        "input_tokens_details": {
+          "cache_write_tokens": 38,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 159,
+        "output_tokens_details": {
+          "reasoning_tokens": 116
+        },
+        "total_tokens": 2547
+      },
+      "estimated_usd": 0.000108,
+      "response": [
+        {
+          "id": "rs_0a5feb18b0a2b8b5016abd80ba911487d2abbcba1c473ef9a5",
+          "type": "reasoning",
+          "content": [],
+          "summary": []
+        },
+        {
+          "id": "msg_0a5feb18b0a2b8b5016abd80bb75b887d29bac13ff5c55ab57",
+          "type": "message",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "annotations": [],
+              "logprobs": [],
+              "text": "{\"reply\":\"Which item do you mean, and what day next week should I move it to?\",\"topic\":\"general\",\"needs_clarification\":true}"
+            }
+          ],
+          "phase": "final_answer",
+          "role": "assistant"
+        }
+      ]
+    },
+    {
+      "case": "ambiguous_reference_variation_3",
+      "status": "pass",
+      "latency_ms": 1622,
+      "usage": {
+        "input_tokens": 2385,
+        "input_tokens_details": {
+          "cache_write_tokens": 35,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 65,
+        "output_tokens_details": {
+          "reasoning_tokens": 29
+        },
+        "total_tokens": 2450
+      },
+      "estimated_usd": 6.1e-05,
+      "response": [
+        {
+          "id": "rs_04c188e38a79e481016abd80bcad9087d29ea39281a63e1353",
+          "type": "reasoning",
+          "content": [],
+          "summary": []
+        },
+        {
+          "id": "msg_04c188e38a79e481016abd80bd15d087d29c579dbdc08151d7",
+          "type": "message",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "annotations": [],
+              "logprobs": [],
+              "text": "{\"reply\":\"What would you like me to mark as done?\",\"topic\":\"tasks\",\"needs_clarification\":true}"
+            }
+          ],
+          "phase": "final_answer",
+          "role": "assistant"
+        }
+      ]
+    },
+    {
+      "case": "task_not_shopping_variation_1",
+      "status": "pass",
+      "latency_ms": 1482,
+      "usage": {
+        "input_tokens": 2390,
+        "input_tokens_details": {
+          "cache_write_tokens": 40,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 47,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2437
+      },
+      "estimated_usd": 5.2e-05,
+      "response": [
+        {
+          "id": "fc_00f67547f6a627c3016abd80be734487d29daec8aaf94e02de",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"request_complete\":true,\"items\":[{\"kind\":\"task\",\"title\":\"Phone the dentist\",\"store\":null,\"due_date\":\"2026-10-01\"}]}",
+          "call_id": "call_QdtRcRwv9oay0t8AN9jXg8bh",
+          "name": "create_records"
+        }
+      ]
+    },
+    {
+      "case": "task_not_shopping_variation_2",
+      "status": "pass",
+      "latency_ms": 1972,
+      "usage": {
+        "input_tokens": 2389,
+        "input_tokens_details": {
+          "cache_write_tokens": 39,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 46,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2435
+      },
+      "estimated_usd": 5.2e-05,
+      "response": [
+        {
+          "id": "fc_05df5a6f2d6b6a9e016abd80c0519887d2af0b62bf29aa45e8",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"request_complete\":true,\"items\":[{\"kind\":\"task\",\"title\":\"Ring dentist\",\"store\":null,\"due_date\":\"2026-10-01\"}]}",
+          "call_id": "call_QWWflPsRSQAv4DFDTkTSURxv",
+          "name": "create_records"
+        }
+      ]
+    },
+    {
+      "case": "task_not_shopping_variation_3",
+      "status": "pass",
+      "latency_ms": 1865,
+      "usage": {
+        "input_tokens": 2393,
+        "input_tokens_details": {
+          "cache_write_tokens": 43,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 47,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2440
+      },
+      "estimated_usd": 5.3e-05,
+      "response": [
+        {
+          "id": "fc_0cf013e585d08cfa016abd80c28c6087d2b8a2e4a154cdd502",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"request_complete\":true,\"items\":[{\"kind\":\"task\",\"title\":\"Call the dentist\",\"store\":null,\"due_date\":\"2026-10-01\"}]}",
+          "call_id": "call_F8ghRmVqYLRMjojX4Tfimf2D",
+          "name": "create_records"
+        }
+      ]
+    },
+    {
+      "case": "income_capture_variation_1",
+      "status": "pass",
+      "latency_ms": 1496,
+      "usage": {
+        "input_tokens": 2390,
+        "input_tokens_details": {
+          "cache_write_tokens": 40,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 52,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2442
+      },
+      "estimated_usd": 5.5e-05,
+      "response": [
+        {
+          "id": "fc_0f511cf72b78a56c016abd80c3cd5087d2b39905f9f2dd28b3",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"request_complete\":true,\"description\":\"Salary received\",\"amount\":\"1200\",\"currency\":\"EUR\",\"kind\":\"income\",\"category\":\"Income\",\"occurred_on\":\"2026-09-30\"}",
+          "call_id": "call_aEdkUidgeAaifDXbZQzIlL8J",
+          "name": "record_transaction"
+        }
+      ]
+    },
+    {
+      "case": "income_capture_variation_2",
+      "status": "pass",
+      "latency_ms": 1703,
+      "usage": {
+        "input_tokens": 2394,
+        "input_tokens_details": {
+          "cache_write_tokens": 44,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 51,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2445
+      },
+      "estimated_usd": 5.5e-05,
+      "response": [
+        {
+          "id": "fc_00d2c4ed58d87e08016abd80c591f487d2852992c395213a66",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"request_complete\":true,\"description\":\"Salary\",\"amount\":\"1200\",\"currency\":\"EUR\",\"kind\":\"income\",\"category\":\"Income\",\"occurred_on\":\"2026-09-30\"}",
+          "call_id": "call_IiITzgnMVMwnIKbF214IJaxU",
+          "name": "record_transaction"
+        }
+      ]
+    },
+    {
+      "case": "income_capture_variation_3",
+      "status": "pass",
+      "latency_ms": 1992,
+      "usage": {
+        "input_tokens": 2392,
+        "input_tokens_details": {
+          "cache_write_tokens": 42,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 96,
+        "output_tokens_details": {
+          "reasoning_tokens": 43
+        },
+        "total_tokens": 2488
+      },
+      "estimated_usd": 7.7e-05,
+      "response": [
+        {
+          "id": "rs_020abd322239c3ac016abd80c6e5dc87d28fd69cc23d7a09eb",
+          "type": "reasoning",
+          "content": [],
+          "summary": []
+        },
+        {
+          "id": "fc_020abd322239c3ac016abd80c76eac87d2a3a6a8d6d707b5d0",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"request_complete\":true,\"description\":\"Salary\",\"amount\":\"1200\",\"currency\":\"EUR\",\"kind\":\"income\",\"category\":\"Income\",\"occurred_on\":\"2026-09-30\"}",
+          "call_id": "call_dKqhS5SXAA5oHLSF3PLO7C0a",
+          "name": "record_transaction"
+        }
+      ]
+    },
+    {
+      "case": "whole_month_work_schedule",
+      "status": "fail",
+      "latency_ms": 2867,
+      "usage": {
+        "input_tokens": 2421,
+        "input_tokens_details": {
+          "cache_write_tokens": 71,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 111,
+        "output_tokens_details": {
+          "reasoning_tokens": 30
+        },
+        "total_tokens": 2532
+      },
+      "estimated_usd": 8.8e-05,
+      "response": [
+        {
+          "id": "rs_089be4a8c7a6259e016abd80c9408c87d28000f0f6a2d791d9",
+          "type": "reasoning",
+          "content": [],
+          "summary": []
+        },
+        {
+          "id": "fc_089be4a8c7a6259e016abd80c98a6c87d2ab4941c1fac90bbd",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"request_complete\":true,\"start_date\":\"2026-11-01\",\"end_date\":\"2026-11-30\",\"weekdays\":[1,2,3,4,5],\"work_start\":\"09:00:00+00:00\",\"work_end\":\"17:00:00+00:00\"}",
+          "call_id": "call_gL63m9GIulKetdanYXiz6eCL",
+          "name": "save_work_schedule"
+        }
+      ]
+    },
+    {
+      "case": "purchase_recommendations",
+      "status": "pass",
+      "latency_ms": 1051,
+      "usage": {
+        "input_tokens": 2396,
+        "input_tokens_details": {
+          "cache_write_tokens": 46,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 38,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2434
+      },
+      "estimated_usd": 4.9e-05,
+      "response": [
+        {
+          "id": "fc_06606444f7c1f61c016abd80cba69087d2ab6cda2ad662c204",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"start_date\":\"2026-03-30\",\"end_date\":\"2026-09-30\",\"limit\":30}",
+          "call_id": "call_Is6z1COKBYb9vLo368a2Htxn",
+          "name": "purchase_history"
+        }
+      ]
+    },
+    {
+      "case": "confirmation_help_variation",
+      "status": "pass",
+      "latency_ms": 1707,
+      "usage": {
+        "input_tokens": 2458,
+        "input_tokens_details": {
+          "cache_write_tokens": 108,
+          "cached_tokens": 2347
+        },
+        "output_tokens": 18,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 2476
+      },
+      "estimated_usd": 4.6e-05,
+      "response": [
+        {
+          "id": "fc_0b5902981242ee48016abd80cd28d887d2b7fb1ee8d1e4e413",
+          "type": "function_call",
+          "status": "completed",
+          "arguments": "{\"format\":\"code\"}",
+          "call_id": "call_nQXtq02tJsdGMkEM0lX4L8Ov",
+          "name": "pending_action"
+        }
+      ]
+    }
+  ]
+}

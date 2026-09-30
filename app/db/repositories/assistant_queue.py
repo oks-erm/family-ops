@@ -15,6 +15,7 @@ from app.db.models import (
     User,
 )
 from app.db.repositories.leases import LeaseLost
+from app.services.conversation.confirmations import confirmation_callback
 
 UNCERTAIN = (
     "Processing was interrupted. Completed changes may already be saved. "
@@ -73,6 +74,7 @@ class AssistantQueueRepository:
                     and message_text
                     and (not message_text.startswith("/") or message_text == "/last_reply")
                 )
+                replay_safe = replay_safe or bool(v2_enabled and confirmation_callback(payload))
                 await session.execute(
                     insert(AssistantInbox)
                     .values(

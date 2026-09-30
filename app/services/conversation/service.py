@@ -19,19 +19,22 @@ from app.db.repositories.conversations import (
 )
 from app.db.repositories.households import HouseholdRepository
 from app.db.repositories.users import UserRepository
-from app.schemas.conversation import Escalate, answer_format, tool_definitions
+from app.schemas.conversation import Escalate, PendingAction, answer_format, tool_definitions
+from app.services.conversation.confirmations import confirmation_help, pending_reply
 from app.services.conversation.context import update_context
 from app.services.conversation.routing import deterministic_request, render_result
-from app.services.conversation.tools import HouseholdTools, ids_in_result
+from app.services.conversation.tools import READ_TOOLS, HouseholdTools, ids_in_result
 
 logger = logging.getLogger(__name__)
-PROMPT_VERSION = "household-v2.2"
+PROMPT_VERSION = "household-v2.3"
 INSTRUCTIONS = """You are Family Copilot, a conversational household assistant.
 Understand typos, paraphrases, corrections, and multiple related requests. Respond concisely.
 The newest user message sets the topic. An unfinished planning question is optional background,
 not a demand to keep asking. Only save an answer when it semantically answers that question.
 Use recent context for references ('that', 'last month', 'the second one'). If multiple records
 could match an edit, show choices and ask which. Never invent IDs, dates, amounts or user intent.
+If 'it', 'that', or 'the other one' has no referent in context, ask what the user means before
+searching lists; a list of possible records cannot establish which one the user intended.
 Use tools to read live household facts and to change data. Historical tool results are references,
 not proof of current state. Never claim a write succeeded without a successful tool receipt.
 For ordinary conversation or a missing detail you may answer directly. For household factual
@@ -47,6 +50,17 @@ Categories: Food, Eat Out, Uber, Gas, Tolls, Public Transport, Sport, Entertainm
 Beauty, Tech & Devices, House Chemicals, Subscriptions, Taxes, Utilities, Other, Income.
 For corrections, retrieve current records and use their IDs. Read before changing existing data.
 Append planning notes unless the user explicitly asks to replace existing notes.
+For work hours spanning dates/months, use save_work_schedule ONCE with the full date range and
+selected weekdays, not one save_planning call per day. Resolve follow-ups like 'all October'
+from prior stated hours and workdays. If weekdays/end date are unclear, ask; do not invent them.
+Questions such as 'what groceries do we need?' or 'what is left to buy?' mean the CURRENT
+shopping list: use list_records. Use purchase_history only for explicit past purchases,
+frequently bought items, repeat-buy recommendations, or replenishment suggestions, usually the past
+six months if no period is specified; disclose the range and saved-receipt coverage. Do not page
+finance totals to infer item frequency. Suggest from its ranked results without automatically
+adding items or claiming the household has run out.
+For help copying/explaining the active confirmation, use pending_action. It returns the real
+code without cancelling the proposal. Never reconstruct confirmation codes from old history.
 Confirmations are handled by the application. You cannot approve your own proposals.
 When a tool requires confirmation, stop. When an action fails, explain it; do not repeat it blindly.
 Use escalate for difficult reasoning or conflicting constraints.
@@ -157,6 +171,12 @@ class ConversationService:
         evidence = []
         pending = conversation.pending
         normalized = text.strip().casefold()
+        if confirmation_help(text):
+            return pending_reply(pending), evidence
+        if normalized.startswith("cancel "):
+            if not pending or normalized != f"cancel {pending['token']}":
+                return "That cancellation no longer matches the pending change.", evidence
+            normalized = "cancel"
         if normalized == "cancel" and pending:
             conversation.pending = None
             await self.session.commit()
@@ -186,13 +206,11 @@ class ConversationService:
             return self._tool_reply(
                 conversation, render_result(result), [{"tool": pending["tool"], "result": result}]
             )
-        # Any new topic invalidates an old approval; unfinished planning remains optional context.
-        if pending:
-            conversation.pending = None
-            await self.session.commit()
         now = datetime.now(ZoneInfo(data.timezone))
         direct = deterministic_request(text, now.date())
         if direct:
+            conversation.pending = None
+            await self.session.commit()
             name, args = direct
             result = await executor.execute(name, args)
             return self._tool_reply(
@@ -204,6 +222,12 @@ class ConversationService:
             inputs.append({"role": "user", "content": entry["user"]})
             inputs.append({"role": "assistant", "content": entry["assistant"]})
         context = {
+            "active_confirmation": {
+                "description": pending["description"],
+                "expires_at": pending["expires_at"],
+            }
+            if pending
+            else None,
             "current_time": now.isoformat(),
             "timezone": data.timezone,
             "unfinished_planning": active_planning,
@@ -263,6 +287,7 @@ class ConversationService:
                 ), evidence
             calls = reply.calls
             if not calls:
+                conversation.pending = None
                 conversation.context = update_context(
                     getattr(conversation, "context", {}),
                     evidence,
@@ -280,6 +305,19 @@ class ConversationService:
                     arguments = json.loads(call.get("arguments", "{}"))
                 except (ValueError, TypeError):
                     arguments = None
+                if name == "pending_action":
+                    try:
+                        help_args = PendingAction.model_validate(arguments)
+                    except ValueError:
+                        return (
+                            "Ask for the confirmation code or details of the pending change.",
+                            evidence,
+                        )
+                    return pending_reply(conversation.pending, help_args.format), evidence
+                # A different request retires the proposal; help alone preserves it.
+                if conversation.pending:
+                    conversation.pending = None
+                    await self.session.commit()
                 if name == "escalate":
                     try:
                         escalation = Escalate.model_validate(arguments)
@@ -317,7 +355,7 @@ class ConversationService:
                                 + str(result["error"]),
                                 successful_writes,
                             ), evidence
-                    elif name not in {"list_records", "finance_query", "day_plan"}:
+                    elif name not in READ_TOOLS:
                         successful_writes.append(result.get("message", "Saved."))
                         if result.get("request_complete") and len(calls) == 1:
                             return self._tool_reply(

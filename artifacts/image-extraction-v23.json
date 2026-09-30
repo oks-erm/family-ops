@@ -1,0 +1,51 @@
+{
+  "synthetic_only": true,
+  "receipt_passed": true,
+  "bank_passed": true,
+  "calls": [
+    {
+      "status": 200,
+      "usage": {
+        "promptTokenCount": 1177,
+        "candidatesTokenCount": 153,
+        "totalTokenCount": 1330,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 70
+          },
+          {
+            "modality": "IMAGE",
+            "tokenCount": 1107
+          }
+        ],
+        "serviceTier": "standard"
+      },
+      "estimated_usd": 0.00052375
+    },
+    {
+      "status": 200,
+      "usage": {
+        "promptTokenCount": 1269,
+        "candidatesTokenCount": 88,
+        "totalTokenCount": 1357,
+        "promptTokensDetails": [
+          {
+            "modality": "IMAGE",
+            "tokenCount": 1107
+          },
+          {
+            "modality": "TEXT",
+            "tokenCount": 162
+          }
+        ],
+        "serviceTier": "standard"
+      },
+      "estimated_usd": 0.00044925
+    }
+  ],
+  "estimated_usd": 0.000973,
+  "pricing_source": "https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-lite",
+  "pricing_date": "2026-09-30",
+  "writes_or_messages": 0
+}

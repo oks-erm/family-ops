@@ -7,6 +7,8 @@ TOPICS = {
     "record_transaction": "finance",
     "day_plan": "planning",
     "save_planning": "planning",
+    "save_work_schedule": "planning",
+    "purchase_history": "shopping",
     "calendar_change": "calendar",
 }
 

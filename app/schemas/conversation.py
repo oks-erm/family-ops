@@ -8,6 +8,16 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema, model_validator
 
 ShortText = Annotated[str, Field(min_length=1, max_length=255)]
+LocalTime = Annotated[
+    time,
+    WithJsonSchema(
+        {
+            "type": "string",
+            "pattern": r"^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$",
+            "description": "Local wall-clock time HH:MM, without a timezone offset.",
+        }
+    ),
+]
 
 
 class Arguments(BaseModel):
@@ -128,18 +138,60 @@ class DayPlan(Arguments):
 
 class SavePlanning(WriteArguments):
     day: date
-    work_start: time | None = None
-    work_end: time | None = None
+    work_start: LocalTime | None = None
+    work_end: LocalTime | None = None
     note: str | None = Field(default=None, max_length=1000)
     note_mode: Literal["append", "replace"] = "append"
 
     @model_validator(mode="after")
     def valid_plan(self):
+        if any(t is not None and t.tzinfo is not None for t in (self.work_start, self.work_end)):
+            raise ValueError("Use local work times without timezone offsets")
         if self.work_start is None and self.work_end is None and not self.note:
             raise ValueError("Provide a work time or planning note")
         if self.work_start and self.work_end and self.work_start >= self.work_end:
             raise ValueError("Work end must follow work start")
         return self
+
+
+class SaveWorkSchedule(WriteArguments):
+    start_date: date
+    end_date: date
+    weekdays: list[int] = Field(
+        min_length=1,
+        max_length=7,
+        description="Selected ISO weekdays: Monday=1 through Sunday=7. Ask if unclear.",
+    )
+    work_start: LocalTime
+    work_end: LocalTime
+
+    @model_validator(mode="after")
+    def valid_schedule(self):
+        if not 0 <= (self.end_date - self.start_date).days <= 365:
+            raise ValueError("Choose an ordered date range of at most one year")
+        if len(set(self.weekdays)) != len(self.weekdays) or any(
+            d not in range(1, 8) for d in self.weekdays
+        ):
+            raise ValueError("Choose distinct ISO weekdays from 1 to 7")
+        if self.work_start.tzinfo or self.work_end.tzinfo or self.work_start >= self.work_end:
+            raise ValueError("Use local work times with the end after the start")
+        return self
+
+
+class PurchaseHistory(Arguments):
+    start_date: date
+    end_date: date
+    limit: int = Field(default=15, ge=1, le=30)
+
+    @model_validator(mode="after")
+    def valid_range(self):
+        if not 0 <= (self.end_date - self.start_date).days <= 3660:
+            raise ValueError("Choose an ordered date range of at most ten years")
+        return self
+
+
+class PendingAction(Arguments):
+    format: Literal["code", "details"] = "code"
 
 
 class CalendarChange(Arguments):
@@ -174,6 +226,24 @@ class Escalate(Arguments):
 
 
 TOOL_MODELS = {
+    "pending_action": (
+        PendingAction,
+        "Show the active confirmation or its exact copyable reply. "
+        "Use only for help about the current pending change; does not confirm it.",
+    ),
+    "save_work_schedule": (
+        SaveWorkSchedule,
+        "Save work hours for a date range and selected weekdays "
+        "in ONE atomic operation. Use for a whole month or recurring workdays "
+        "within explicit dates instead of calling save_planning for each day.",
+    ),
+    "purchase_history": (
+        PurchaseHistory,
+        "Read purchased receipt items ranked by purchase frequency, "
+        "last purchase, typical gap and whether already on the shopping list. "
+        "Use for what we bought before, often buy, or should consider buying again. "
+        "Read-only; never adds suggestions automatically.",
+    ),
     "list_records": (
         ListRecords,
         "Find current shopping items or your tasks; use returned IDs for edits.",

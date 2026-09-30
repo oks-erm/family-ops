@@ -153,3 +153,30 @@ class RoutingImprovementTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Added milk", text)
         self.assertIn("Recorded expense", text)
         self.assertEqual(self.model.respond.await_count, 2)
+
+
+class ConfirmationHelpTests(unittest.IsolatedAsyncioTestCase):
+    setUp = baseline.ConversationTests.setUp
+
+    async def test_paraphrased_help_uses_saved_confirmation_without_cancelling(self):
+        self.conversation.pending = {
+            "token": "a1b2c3d4",
+            "description": "Remove synthetic item?",
+            "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+        }
+        self.model.respond.return_value = reply(tool="pending_action", arguments={"format": "code"})
+        result, _ = await self.service.run_turn(
+            self.conversation, self.turn, self.data, "Give me just the line I should send"
+        )
+        self.assertEqual(result, "confirm a1b2c3d4")
+        self.assertEqual(self.conversation.pending["token"], "a1b2c3d4")
+        self.assertEqual(self.model.respond.await_count, 1)
+
+    async def test_old_cancel_button_does_not_cancel_a_new_proposal(self):
+        self.conversation.pending = {"token": "a1b2c3d4"}
+        result, _ = await self.service.run_turn(
+            self.conversation, self.turn, self.data, "cancel deadbeef"
+        )
+        self.assertIn("no longer matches", result)
+        self.assertEqual(self.conversation.pending["token"], "a1b2c3d4")
+        self.model.respond.assert_not_awaited()

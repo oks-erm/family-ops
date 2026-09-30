@@ -78,21 +78,26 @@ class ReceiptService:
 
         data = pending_receipt.extraction
         items = data.get("items") if isinstance(data.get("items"), list) else []
-        item_names = [str(item.get("name")) for item in items if isinstance(item, dict) and item.get("name")]
+        item_names = [
+            str(item.get("name")) for item in items if isinstance(item, dict) and item.get("name")
+        ]
 
         receipt = await self.receipt_repository.create_extracted_receipt(
             user_id=pending_receipt.user_id,
             household_id=pending_receipt.household_id,
             shop_name=self._optional_string(data.get("shop_name")),
-            purchased_at=self._parse_date(data.get("purchased_at")) or pending_receipt.created_at.date(),
+            purchased_at=self._parse_date(data.get("purchased_at"))
+            or pending_receipt.created_at.date(),
             total_amount=self._optional_string(data.get("total_amount")),
             currency=self._optional_string(data.get("currency")),
             items=[item for item in items if isinstance(item, dict)],
             raw_extraction=data,
+            commit=False,
         )
         matched_items = await self.shopping_repository.mark_pending_items_purchased_by_names(
             household_id=pending_receipt.household_id,
             item_names=item_names,
+            commit=False,
         )
         await self.activity_repository.log(
             household_id=pending_receipt.household_id,
@@ -100,12 +105,15 @@ class ReceiptService:
             action=ActivityAction.created,
             entity_type="receipt",
             entity_id=receipt.id,
-            summary=f"Saved receipt: {receipt.shop_name or 'Unknown'} {receipt.total_amount or ''} {receipt.currency or ''}".strip(),
+            summary=(
+                f"Saved receipt: {receipt.shop_name or 'Unknown'} "
+                f"{receipt.total_amount or ''} {receipt.currency or ''}"
+            ).strip(),
             commit=False,
         )
         image_path = Path(pending_receipt.image_path)
         await self.receipt_repository.delete_pending_receipt(pending_receipt=pending_receipt)
-        if image_path.exists():
+        if pending_receipt.image_path and image_path.is_file():
             image_path.unlink()
 
         cleared_names = [item.name for item in matched_items]
@@ -126,7 +134,7 @@ class ReceiptService:
 
         image_path = Path(pending_receipt.image_path)
         await self.receipt_repository.delete_pending_receipt(pending_receipt=pending_receipt)
-        if image_path.exists():
+        if pending_receipt.image_path and image_path.is_file():
             image_path.unlink()
         return "Receipt discarded."
 

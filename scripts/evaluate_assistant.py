@@ -121,6 +121,53 @@ for original, variations in zip(list(CASES), VARIATIONS, strict=True):
         )
 
 
+CASES.extend(
+    [
+        {
+            "name": "whole_month_work_schedule",
+            "history": [
+                {"role": "user", "content": "Set my work hours to 09:00–17:00 Monday to Friday."},
+                {"role": "assistant", "content": "Which dates should those hours cover?"},
+            ],
+            "text": "All November 2026",
+            "tool": "save_work_schedule",
+            "fields": {
+                "start_date": "2026-11-01",
+                "end_date": "2026-11-30",
+                "weekdays": [1, 2, 3, 4, 5],
+                "work_start": "09:00:00",
+                "work_end": "17:00:00",
+            },
+        },
+        {
+            "name": "purchase_recommendations",
+            "text": "Look at our past purchases and suggest things we often buy to get again",
+            "tool": "purchase_history",
+        },
+        {
+            "name": "confirmation_help_variation",
+            "history": [
+                {
+                    "role": "assistant",
+                    "content": "Remove the synthetic oat drink? Reply confirm a1b2c3d4.",
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        'Application context: {"active_confirmation": {"description": '
+                        '"Remove synthetic oat drink?", '
+                        '"expires_at": "2026-09-30T12:10:00+01:00"}}'
+                    ),
+                },
+            ],
+            "text": "Could you give just the line I need to send?",
+            "tool": "pending_action",
+            "fields": {"format": "code"},
+        },
+    ]
+)
+
+
 async def run(args):
     if not args.live or not 0 < args.max_usd <= 0.50:
         raise SystemExit("Use --live to authorize the bounded synthetic API evaluation.")
@@ -174,7 +221,8 @@ async def run(args):
             if passed:
                 try:
                     values = json.loads(calls[0]["arguments"])
-                    TOOL_MODELS[case["tool"]][0].model_validate(values)
+                    validated = TOOL_MODELS[case["tool"]][0].model_validate(values)
+                    values = validated.model_dump(mode="json")
                     passed &= all(values.get(k) == v for k, v in case.get("fields", {}).items())
                     if "size" in case:
                         passed &= len(values.get(case["field"], [])) == case["size"]
@@ -189,7 +237,10 @@ async def run(args):
                 "latency_ms": round((time.monotonic() - started) * 1000),
                 "usage": usage,
                 "estimated_usd": round(cost, 6),
-                "response": response.output,
+                "response": [
+                    {k: v for k, v in item.items() if k != "encrypted_content"}
+                    for item in response.output
+                ],
             }
         )
     report = {

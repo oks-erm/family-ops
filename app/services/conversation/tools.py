@@ -13,7 +13,7 @@ from app.schemas.conversation import TOOL_MODELS
 from app.services.calendar_service import CalendarService, CalendarSyncError
 from app.services.finance_category_service import FinanceCategoryService
 
-READ_TOOLS = {"list_records", "finance_query", "day_plan"}
+READ_TOOLS = {"list_records", "finance_query", "day_plan", "purchase_history"}
 
 
 def fingerprint(value):
@@ -101,7 +101,8 @@ class HouseholdTools:
             if requires_confirmation and not confirmed:
                 token = secrets.token_hex(4)
                 if name == "change_record":
-                    description = f"Remove {args.kind} item: {target['title']} (ID {target['id']})."
+                    collection = "shopping list" if args.kind == "shopping" else "tasks"
+                    description = f"Remove {target['title']} from your {collection}?"
                 else:
                     description = f"Calendar {args.action}: " + json.dumps(
                         {
@@ -122,8 +123,9 @@ class HouseholdTools:
                 return {
                     "confirmation": True,
                     "message": (
-                        f"{description}\nReply confirm {token} to apply this change, "
-                        f"or cancel. This expires in 10 minutes."
+                        f"{description}\n\nconfirm {token}\n\n"
+                        "Tap Confirm change, or send the line above. "
+                        "Or cancel. Expires in 10 minutes."
                     ),
                 }
             action_key = fingerprint(

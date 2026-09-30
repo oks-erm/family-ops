@@ -1,0 +1,472 @@
+{
+  "synthetic": true,
+  "estimated_usd": 0.00288065,
+  "pricing_date": "2026-09-30",
+  "includes_cache_write_premium": true,
+  "results": [
+    {
+      "case": "shopping_typo",
+      "status": "pass",
+      "model_calls": 1,
+      "latency_ms": 2113,
+      "response": "Added: Oat milk; Eggs"
+    },
+    {
+      "case": "correction",
+      "status": "pass",
+      "model_calls": 2,
+      "latency_ms": 4005,
+      "response": "Updated Lactose-free milk: rename."
+    },
+    {
+      "case": "task_topic",
+      "status": "pass",
+      "model_calls": 1,
+      "latency_ms": 3112,
+      "response": "Added: Call the dentist"
+    },
+    {
+      "case": "shopping_topic_return",
+      "status": "pass",
+      "model_calls": 2,
+      "latency_ms": 4034,
+      "response": "Your shopping list has lactose-free milk and eggs."
+    },
+    {
+      "case": "removal_proposal",
+      "status": "pass",
+      "model_calls": 2,
+      "latency_ms": 4210,
+      "response": "Remove Eggs from your shopping list?\n\nconfirm ad2f2b9a\n\nTap Confirm change, or send the line above. Or cancel. Expires in 10 minutes."
+    },
+    {
+      "case": "copy_confirmation_help",
+      "status": "pass",
+      "model_calls": 0,
+      "latency_ms": 14,
+      "response": "confirm ad2f2b9a"
+    },
+    {
+      "case": "confirmed_removal",
+      "status": "pass",
+      "model_calls": 0,
+      "latency_ms": 15,
+      "response": "Updated Eggs: remove."
+    },
+    {
+      "case": "exact_read",
+      "status": "pass",
+      "model_calls": 0,
+      "latency_ms": 13,
+      "response": "1 pending item(s):\n\u2022 Lactose-free milk"
+    },
+    {
+      "case": "duplicate_after_restart",
+      "status": "pass",
+      "model_calls": 0,
+      "latency_ms": 9,
+      "response": "Added: Oat milk; Eggs"
+    },
+    {
+      "case": "income_capture",
+      "status": "pass",
+      "model_calls": 1,
+      "latency_ms": 1893,
+      "response": "Recorded income: Salary, 1200 EUR on 2026-09-30."
+    },
+    {
+      "case": "income_query",
+      "status": "pass",
+      "model_calls": 2,
+      "latency_ms": 4177,
+      "response": "For September 1\u201330, 2026, you\u2019ve recorded \u20ac1,200 in income in transactions (1 entry). The results are complete."
+    },
+    {
+      "case": "compound_two_domains",
+      "status": "pass",
+      "model_calls": 1,
+      "latency_ms": 2464,
+      "response": "Added: Bananas; Call the plumber"
+    },
+    {
+      "case": "resume_finance_after_topics",
+      "status": "pass",
+      "model_calls": 2,
+      "latency_ms": 6757,
+      "response": "From September 1\u201330, 2026, you recorded \u20ac1,200 in income in transactions (1 entry). The results are complete."
+    },
+    {
+      "case": "missing_target",
+      "status": "pass",
+      "model_calls": 1,
+      "latency_ms": 2446,
+      "response": "What would you like me to delete?"
+    },
+    {
+      "case": "read_during_clarification",
+      "status": "pass",
+      "model_calls": 2,
+      "latency_ms": 4218,
+      "response": "Your shopping list has: lactose-free milk and bananas."
+    },
+    {
+      "case": "work_schedule_clarification",
+      "status": "pass",
+      "model_calls": 1,
+      "latency_ms": 2827,
+      "response": "What date range should I apply those hours to\u2014for example, starting today through a specific end date?"
+    },
+    {
+      "case": "whole_month_followup",
+      "status": "pass",
+      "model_calls": 1,
+      "latency_ms": 2458,
+      "response": "Saved work hours 09:00\u201317:00 for 21 days, 2026-11-01 to 2026-11-30 (Mon, Tue, Wed, Thu, Fri)."
+    },
+    {
+      "case": "frequent_purchase_suggestions",
+      "status": "pass",
+      "model_calls": 2,
+      "latency_ms": 4288,
+      "response": "From saved receipts for April 30\u2013September 30, 2026, milk is the only frequent purchase listed: 3 times, most recently September 23, typically about 7 days apart. It isn\u2019t currently on your shopping list. This is based on 3 saved receipts; frequency doesn\u2019t confirm you\u2019re out."
+    }
+  ],
+  "calls": [
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 2700,
+        "input_tokens_details": {
+          "cache_write_tokens": 83,
+          "cached_tokens": 2614
+        },
+        "output_tokens": 83,
+        "output_tokens_details": {
+          "reasoning_tokens": 21
+        },
+        "total_tokens": 2783
+      },
+      "estimated_usd": 7.8315e-05
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3010,
+        "input_tokens_details": {
+          "cache_write_tokens": 393,
+          "cached_tokens": 2614
+        },
+        "output_tokens": 60,
+        "output_tokens_details": {
+          "reasoning_tokens": 32
+        },
+        "total_tokens": 3070
+      },
+      "estimated_usd": 0.00010556500000000001
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3153,
+        "input_tokens_details": {
+          "cache_write_tokens": 143,
+          "cached_tokens": 3007
+        },
+        "output_tokens": 59,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3212
+      },
+      "estimated_usd": 7.774500000000001e-05
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3164,
+        "input_tokens_details": {
+          "cache_write_tokens": 547,
+          "cached_tokens": 2614
+        },
+        "output_tokens": 103,
+        "output_tokens_details": {
+          "reasoning_tokens": 54
+        },
+        "total_tokens": 3267
+      },
+      "estimated_usd": 0.000146315
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3365,
+        "input_tokens_details": {
+          "cache_write_tokens": 748,
+          "cached_tokens": 2614
+        },
+        "output_tokens": 26,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3391
+      },
+      "estimated_usd": 0.00013293999999999998
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3525,
+        "input_tokens_details": {
+          "cache_write_tokens": 160,
+          "cached_tokens": 3362
+        },
+        "output_tokens": 33,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3558
+      },
+      "estimated_usd": 7.042000000000001e-05
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3428,
+        "input_tokens_details": {
+          "cache_write_tokens": 811,
+          "cached_tokens": 2614
+        },
+        "output_tokens": 66,
+        "output_tokens_details": {
+          "reasoning_tokens": 37
+        },
+        "total_tokens": 3494
+      },
+      "estimated_usd": 0.000160815
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3576,
+        "input_tokens_details": {
+          "cache_write_tokens": 148,
+          "cached_tokens": 3425
+        },
+        "output_tokens": 86,
+        "output_tokens_details": {
+          "reasoning_tokens": 29
+        },
+        "total_tokens": 3662
+      },
+      "estimated_usd": 9.605000000000002e-05
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3287,
+        "input_tokens_details": {
+          "cache_write_tokens": 670,
+          "cached_tokens": 2614
+        },
+        "output_tokens": 84,
+        "output_tokens_details": {
+          "reasoning_tokens": 31
+        },
+        "total_tokens": 3371
+      },
+      "estimated_usd": 0.00015219
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3396,
+        "input_tokens_details": {
+          "cache_write_tokens": 779,
+          "cached_tokens": 2614
+        },
+        "output_tokens": 54,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3450
+      },
+      "estimated_usd": 0.000150815
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3617,
+        "input_tokens_details": {
+          "cache_write_tokens": 221,
+          "cached_tokens": 3393
+        },
+        "output_tokens": 54,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3671
+      },
+      "estimated_usd": 8.885499999999999e-05
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3543,
+        "input_tokens_details": {
+          "cache_write_tokens": 926,
+          "cached_tokens": 2614
+        },
+        "output_tokens": 86,
+        "output_tokens_details": {
+          "reasoning_tokens": 24
+        },
+        "total_tokens": 3629
+      },
+      "estimated_usd": 0.00018519
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3594,
+        "input_tokens_details": {
+          "cache_write_tokens": 977,
+          "cached_tokens": 2614
+        },
+        "output_tokens": 113,
+        "output_tokens_details": {
+          "reasoning_tokens": 57
+        },
+        "total_tokens": 3707
+      },
+      "estimated_usd": 0.000205065
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3874,
+        "input_tokens_details": {
+          "cache_write_tokens": 280,
+          "cached_tokens": 3591
+        },
+        "output_tokens": 53,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3927
+      },
+      "estimated_usd": 9.771000000000001e-05
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3713,
+        "input_tokens_details": {
+          "cache_write_tokens": 1096,
+          "cached_tokens": 2614
+        },
+        "output_tokens": 79,
+        "output_tokens_details": {
+          "reasoning_tokens": 45
+        },
+        "total_tokens": 3792
+      },
+      "estimated_usd": 0.00020294000000000003
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3530,
+        "input_tokens_details": {
+          "cache_write_tokens": 913,
+          "cached_tokens": 2614
+        },
+        "output_tokens": 39,
+        "output_tokens_details": {
+          "reasoning_tokens": 11
+        },
+        "total_tokens": 3569
+      },
+      "estimated_usd": 0.000160065
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3706,
+        "input_tokens_details": {
+          "cache_write_tokens": 176,
+          "cached_tokens": 3527
+        },
+        "output_tokens": 34,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3740
+      },
+      "estimated_usd": 7.457e-05
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3577,
+        "input_tokens_details": {
+          "cache_write_tokens": 960,
+          "cached_tokens": 2614
+        },
+        "output_tokens": 125,
+        "output_tokens_details": {
+          "reasoning_tokens": 71
+        },
+        "total_tokens": 3702
+      },
+      "estimated_usd": 0.00020894
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3442,
+        "input_tokens_details": {
+          "cache_write_tokens": 825,
+          "cached_tokens": 2614
+        },
+        "output_tokens": 114,
+        "output_tokens_details": {
+          "reasoning_tokens": 45
+        },
+        "total_tokens": 3556
+      },
+      "estimated_usd": 0.000186565
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3637,
+        "input_tokens_details": {
+          "cache_write_tokens": 1020,
+          "cached_tokens": 2614
+        },
+        "output_tokens": 71,
+        "output_tokens_details": {
+          "reasoning_tokens": 31
+        },
+        "total_tokens": 3708
+      },
+      "estimated_usd": 0.00018944
+    },
+    {
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 3865,
+        "input_tokens_details": {
+          "cache_write_tokens": 228,
+          "cached_tokens": 3634
+        },
+        "output_tokens": 90,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3955
+      },
+      "estimated_usd": 0.00011014
+    }
+  ]
+}

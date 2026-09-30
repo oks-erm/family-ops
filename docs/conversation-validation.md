@@ -128,3 +128,35 @@ and periodic notifications retain direct sends; uncertain legacy jobs are not bl
 Queue backlog and retained metadata require monitoring. Physical infrastructure and credentials
 remain shared with the separate scheduling deployment. This release does not claim universal
 exactly-once delivery or unlimited household capacity.
+
+
+## Screenshot regressions and image preservation — v2.3
+
+- **169 automated tests passed**. New database/worker tests reproduce confirmation copy
+  help followed by a button click, duplicate callbacks, whole-October weekday hours, preserved
+  notes, cross-household purchase isolation, receipt preview/confirmation and bank-file import.
+- Asking for a copyable confirmation no longer retires the pending change. Original expiry
+  and record-version checks still apply; Confirm/Cancel buttons carry the exact scoped code.
+- Month-long work hours use one atomic range operation; October 2026 saves all 22 weekdays.
+  Receipt-item frequency is computed in SQL and suggestions do not automatically add items.
+- Luna final routing passed **27/27**. Complete-flow repeat and final run passed **18/18**, including
+  month follow-up and purchase suggestions. Initial failures remain in the artifacts: current
+  groceries were confused with past purchases, time schemas produced UTC offsets, and an
+  ungrounded reference prompted a list read. These were corrected in routing instructions
+  and the local-time schema. A separate case-sensitive scoring error was also corrected.
+- Two live **Gemini 3.1 Flash-Lite** calls extracted a generated receipt and bank screenshot
+  correctly. Both returned HTTP 200; estimated cost **$0.000973**. No real user images,
+  household data or Telegram messages were sent. Synthetic worker tests independently
+  exercise receipt confirmation, plain-text previews and PNG document MIME handling.
+- Targeted lint, Python compilation, dashboard request tests and diff checks passed. Full
+  lint retains **510 historical findings** (previous release: 515). No dependencies, schema
+  migrations, dashboard layouts or lesson-scheduling code changed.
+- Cumulative live validation estimate: **$0.07976786**, below the approved **$0.50**.
+  Per-run costs are in `artifacts/assistant-validation-summary.json`.
+  Image validation uses Google pricing; all other runs use the recorded OpenAI pricing.
+
+Image extraction still uses its existing provider and is outside the v2 conversation budget
+controls. New photos are processed in memory; confirmation uses persisted extraction.
+Purchase suggestions cover saved receipts and exact case/space-normalized item names, not
+all spending or inferred inventory. These synthetic checks are regression evidence, not a
+guarantee for every receipt or wording. Live Telegram delivery is not exercised by tests.

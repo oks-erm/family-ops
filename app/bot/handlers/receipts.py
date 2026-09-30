@@ -1,8 +1,8 @@
-from pathlib import Path
-from tempfile import NamedTemporaryFile
+from io import BytesIO
 from uuid import UUID
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.config import get_settings
@@ -32,22 +32,36 @@ def receipt_confirmation_keyboard(pending_receipt_id: str) -> InlineKeyboardMark
     )
 
 
+@router.message(F.document.mime_type.in_({"image/jpeg", "image/png", "image/webp"}))
 @router.message(F.photo)
 async def handle_receipt_photo(message: Message, bot: Bot) -> None:
     telegram_user = message.from_user
-    if telegram_user is None or not message.photo:
-        await message.answer("I could not read this photo. Please try again.")
+    if message.chat.type != "private":
+        await message.answer("Please use our private chat for household images.", parse_mode=None)
         return
-
+    media = message.photo[-1] if message.photo else message.document
+    if telegram_user is None or media is None:
+        await message.answer("I could not read this image. Please try again.", parse_mode=None)
+        return
+    mime_type = "image/jpeg" if message.photo else media.mime_type
     settings = get_settings()
-    largest_photo = message.photo[-1]
-    file = await bot.get_file(largest_photo.file_id)
-
-    with NamedTemporaryFile(prefix="receipt_", suffix=".jpg", delete=False) as tmp_file:
-        tmp_path = Path(tmp_file.name)
-        await bot.download_file(file.file_path, destination=tmp_file)
-
-    image_bytes = tmp_path.read_bytes()
+    max_bytes = 20 * 1024 * 1024
+    try:
+        file = await bot.get_file(media.file_id)
+        if (file.file_size or media.file_size or 0) > max_bytes:
+            await message.answer("Please send an image smaller than 20 MB.", parse_mode=None)
+            return
+        buffer = BytesIO()
+        await bot.download_file(file.file_path, destination=buffer)
+        image_bytes = buffer.getvalue()
+        if len(image_bytes) > max_bytes:
+            await message.answer("Please send an image smaller than 20 MB.", parse_mode=None)
+            return
+    except (TelegramAPIError, OSError, TimeoutError):
+        await message.answer(
+            "I couldn't download this image. Please send it again.", parse_mode=None
+        )
+        return
 
     async with async_session_factory() as session:
         user = await UserRepository(session).upsert_telegram_user(
@@ -58,31 +72,37 @@ async def handle_receipt_photo(message: Message, bot: Bot) -> None:
             username=telegram_user.username,
             timezone=settings.default_timezone,
         )
+        if not user.family_dashboard_enabled:
+            await message.answer(
+                "The household assistant is unavailable for this account.", parse_mode=None
+            )
+            return
         finance_summary = await FinanceService(session, settings).extract_bank_screenshot(
             user_id=user.id,
             image_bytes=image_bytes,
-            mime_type="image/jpeg",
+            mime_type=mime_type,
             occurred_on=now_in_timezone(user.timezone).date(),
         )
         if finance_summary is not None:
             summary, pending_receipt_id = finance_summary, None
         else:
-            summary, pending_receipt_id = await ReceiptService(session, settings).extract_and_create_pending(
+            summary, pending_receipt_id = await ReceiptService(
+                session, settings
+            ).extract_and_create_pending(
                 user_id=user.id,
                 telegram_chat_id=message.chat.id,
                 image_bytes=image_bytes,
-                image_path=str(tmp_path),
-                mime_type="image/jpeg",
+                image_path="",
+                mime_type=mime_type,
             )
 
     if pending_receipt_id is None:
-        if finance_summary is not None and tmp_path.exists():
-            tmp_path.unlink()
-        await message.answer(summary)
+        await message.answer(summary, parse_mode=None)
         return
 
     await message.answer(
         summary,
+        parse_mode=None,
         reply_markup=receipt_confirmation_keyboard(pending_receipt_id),
     )
 
@@ -93,8 +113,12 @@ async def handle_receipt_confirmation(callback: CallbackQuery) -> None:
         await callback.answer("Missing receipt action.")
         return
 
-    _, pending_receipt_id_raw, action = callback.data.split(":", 2)
-    pending_receipt_id = UUID(pending_receipt_id_raw)
+    try:
+        _, pending_receipt_id_raw, action = callback.data.split(":", 2)
+        pending_receipt_id = UUID(pending_receipt_id_raw)
+    except ValueError:
+        await callback.answer("This receipt action is invalid.")
+        return
 
     settings = get_settings()
     async with async_session_factory() as session:
@@ -113,4 +137,4 @@ async def handle_receipt_confirmation(callback: CallbackQuery) -> None:
 
     await callback.answer()
     if callback.message is not None:
-        await callback.message.edit_text(text)
+        await callback.message.edit_text(text, parse_mode=None)

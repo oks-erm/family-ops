@@ -59,6 +59,7 @@ class ShoppingRepository:
         *,
         household_id: UUID,
         item_names: list[str],
+        commit: bool = True,
     ) -> list[ShoppingItem]:
         pending_items = await self._list_all_pending(household_id=household_id)
         normalized_targets = [self._normalize_name(name) for name in item_names if name.strip()]
@@ -70,7 +71,7 @@ class ShoppingRepository:
                 item.status = ShoppingItemStatus.purchased
                 matched.append(item)
 
-        if matched:
+        if matched and commit:
             await self.session.commit()
             for item in matched:
                 await self.session.refresh(item)
