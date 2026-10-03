@@ -35,9 +35,11 @@ async def process_text(payload, factory, settings, *, model=None):
             "text": callback_text,
             "message_id": f"callback:{payload['update_id']}",
         }
-        sender = callback["from"]
+        # Older inbox entries used aiogram's Python field names instead of wire aliases.
+        sender = callback.get("from") or callback["from_user"]
     else:
-        message, sender = payload["message"], payload["message"]["from"]
+        message = payload["message"]
+        sender = message.get("from") or message["from_user"]
     if message["chat"]["type"] != "private":
         return "Please use our private chat for household requests."
     async with factory() as session:

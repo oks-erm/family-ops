@@ -23,6 +23,11 @@ from app.services.scheduler_service import SchedulerService
 logger = logging.getLogger(__name__)
 
 
+def telegram_update_payload(update):
+    """Persist Telegram wire keys (not Python aliases such as from_user)."""
+    return update.model_dump(mode="json", exclude_none=True, by_alias=True)
+
+
 async def wait_for_schema():
     for _ in range(90):
         try:
@@ -56,7 +61,7 @@ async def ingress(queue, bot, settings, progress):
         failures = 0
         # Next getUpdates acknowledges this offset only after this transaction commits.
         await queue.ingest(
-            [u.model_dump(mode="json", exclude_none=True) for u in updates],
+            [telegram_update_payload(u) for u in updates],
             v2_enabled=settings.assistant_v2_enabled,
         )
         progress["at"] = time.time()

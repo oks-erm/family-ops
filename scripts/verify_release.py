@@ -6,15 +6,29 @@ import sys
 from pathlib import Path
 
 import httpx
+from aiogram.types import Update
 from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import get_settings
 from app.db.session import async_session_factory
+from app.runtime import telegram_update_payload
 
 
 async def verify():
+    # Pure synthetic transport check: never enqueue, write records, or send a message.
+    update = Update.model_validate({
+        "update_id": 1,
+        "message": {
+            "message_id": 1, "date": 0,
+            "from": {"id": 1, "is_bot": False, "first_name": "Synthetic"},
+            "chat": {"id": 1, "type": "private"}, "text": "Shopping list",
+        },
+    })
+    payload = telegram_update_payload(update)
+    assert payload["message"]["from"]["id"] == 1, "Telegram sender serialization failed"
+    assert "from_user" not in payload["message"], "Python field names leaked into inbox"
     settings = get_settings()
     assert settings.assistant_v2_enabled, "Conversation engine is disabled"
     assert settings.assistant_model == "gpt-6-luna", "Unexpected everyday model"
@@ -57,6 +71,7 @@ async def verify():
                 "internal_and_public_health": "passed",
                 "household_lesson_routes": "absent",
                 "dashboard_authentication": "passed",
+                "telegram_serialization": "passed",
             }
         )
     )

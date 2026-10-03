@@ -160,3 +160,24 @@ controls. New photos are processed in memory; confirmation uses persisted extrac
 Purchase suggestions cover saved receipts and exact case/space-normalized item names, not
 all spending or inferred inventory. These synthetic checks are regression evidence, not a
 guarantee for every receipt or wording. Live Telegram delivery is not exercised by tests.
+
+## Telegram transport incident — 2026-10-03
+
+Production workers reported `KeyError` for three text requests, including a deterministic
+shopping-list read. aiogram's default `model_dump` emits `from_user`; inbox classification
+and text processing expected Telegram's `from`. The exception occurred before conversation
+processing. Process heartbeat checks therefore passed while requests failed.
+
+Ingress now serializes with `by_alias=True`. Both inbox household lookup and text/callback
+workers accept the earlier Python-field format for queued messages. Failed/uncertain jobs
+are not automatically replayed. No household records or schemas were changed for recovery.
+
+Two new PostgreSQL regressions start with actual aiogram Update objects: real ingress ->
+inbox -> worker -> outbox -> mocked Telegram delivery, including the reported shopping
+write/read sequence, duplicate ingestion, household attribution and older callback payloads.
+The previous tests started with hand-built wire dictionaries and missed the serialization
+boundary. Release verification now checks this contract using a synthetic Update inside the
+production container, without writing data or sending messages.
+
+**171 tests passed**, including both new transport regressions. Targeted lint, compilation,
+dashboard request tests and diff checks passed. No model/prompt changes or paid evaluations.

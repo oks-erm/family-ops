@@ -43,6 +43,9 @@ claims. Token and optional dollar reservations use row locks per household/month
 `assistant_inbox` persists Telegram updates before acknowledging them; per-chat ordering and
 per-household fairness/concurrency/rate limits apply. `assistant_outbox` persists v2 replies.
 Unknown delivery outcomes are not blindly resent; `/last_reply` retrieves the saved response.
+Telegram updates must be serialized with `by_alias=True` so sender fields stay `from`.
+Readers accept older `from_user` payloads; do not replay previously failed/uncertain jobs.
+Transport tests must start from real aiogram Update objects through ingress, not only raw dicts.
 Legacy commands/images and periodic notifications still use their existing direct send paths.
 
 `assistant_model_calls` contains metadata only: model, route, prompt version, usage, latency,

@@ -45,8 +45,10 @@ class AssistantQueueRepository:
                 message = payload.get("message") or (payload.get("callback_query") or {}).get(
                     "message", {}
                 )
-                sender = (payload.get("callback_query") or {}).get("from") or message.get(
-                    "from", {}
+                callback = payload.get("callback_query") or {}
+                sender = (
+                    callback.get("from") or callback.get("from_user")
+                    or message.get("from") or message.get("from_user") or {}
                 )
                 chat = message.get("chat", {})
                 chat_id = chat.get("id")
